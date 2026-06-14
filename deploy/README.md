@@ -83,17 +83,7 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Caddy 需要把这些路径反向代理到 hostctl：
-
-- `/api/*`
-- `/admin*`
-- `/agents*`
-- `/skill/*`
-- `/agent/*`
-- `/deploy/*`
-- `/openapi.json`
-
-其余短链路径可以由静态文件服务处理。
+Caddy 直接把整个站点反向代理到 hostctl 即可。hostctl 自己处理首页、后台、API、Skill 下载、应用访问与短链路由，不需要在 Caddy 里维护路径白名单。
 
 ## 5. 首次登录
 
