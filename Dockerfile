@@ -51,7 +51,9 @@ ENV HOSTCTL_HTTP_ADDR=0.0.0.0:8787 \
     HOSTCTL_DB_PATH=/var/lib/hostctl/hostctl.db \
     HOSTCTL_PUBLIC_BASE_URL=http://localhost:8787 \
     HOSTCTL_COOLDOWN_SECONDS=10 \
-    REQUIRE_AUTH=true
+    REQUIRE_AUTH=true \
+    HOSTCTL_ADMIN_USERNAME=admin \
+    HOSTCTL_ADMIN_PASSWORD=123456
 
 VOLUME ["/var/lib/hostctl", "/var/lib/hostctl/sql", "/var/www/hosted", "/var/log/hostctl"]
 
@@ -60,8 +62,8 @@ EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8787/api/health || exit 1
 
-# There is no default admin password. First run opens /admin setup when no admin exists.
-# For unattended bootstrap, set HOSTCTL_ADMIN_USERNAME and HOSTCTL_ADMIN_PASSWORD.
+# Docker starts with admin / 123456 only when the database has no users.
+# Change the password immediately after first login.
 ENTRYPOINT ["hostctl-server"]
 CMD ["--addr", "0.0.0.0:8787", \
      "--hosted-dir", "/var/www/hosted", \

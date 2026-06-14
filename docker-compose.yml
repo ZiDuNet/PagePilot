@@ -12,8 +12,10 @@
 #   ./data/docker/hosted   -> /var/www/hosted       deployed static sites
 #   ./data/docker/logs     -> /var/log/hostctl      service logs, if file logging is enabled later
 #
-# There is no default username or password.
-# For unattended bootstrap, uncomment HOSTCTL_ADMIN_USERNAME / HOSTCTL_ADMIN_PASSWORD.
+# Default first-run admin:
+#   username: admin
+#   password: 123456
+# Change the password immediately after first login. Existing databases are never overwritten.
 
 services:
   hostctl:
@@ -37,9 +39,9 @@ services:
       # A short deploy cooldown keeps accidental repeated agent calls under control.
       HOSTCTL_COOLDOWN_SECONDS: "10"
 
-      # Optional unattended first-admin bootstrap:
-      # HOSTCTL_ADMIN_USERNAME: "admin"
-      # HOSTCTL_ADMIN_PASSWORD: "change-this-password"
+      # First-run admin bootstrap. Only used when the database has no users.
+      HOSTCTL_ADMIN_USERNAME: "admin"
+      HOSTCTL_ADMIN_PASSWORD: "123456"
 
     volumes:
       - ./data/docker/hostctl:/var/lib/hostctl

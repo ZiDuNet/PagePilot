@@ -16,16 +16,14 @@ docker compose up -d --build
 HOSTCTL_PUBLIC_BASE_URL: "https://pagepilot.example.com"
 ```
 
-首次启动没有默认用户名和密码。打开 `https://pagepilot.example.com/admin` 后，如果数据库里还没有管理员，页面会引导创建第一个管理员账号。
-
-如果你需要无人值守部署，可以在环境变量中预置首个管理员：
+首次启动会在空数据库中自动创建默认管理员：
 
 ```yaml
 HOSTCTL_ADMIN_USERNAME: "admin"
-HOSTCTL_ADMIN_PASSWORD: "change-this-password"
+HOSTCTL_ADMIN_PASSWORD: "123456"
 ```
 
-设置这两个变量后，服务启动时会在没有任何用户的情况下自动创建管理员；如果已经有用户，不会覆盖现有账号。
+打开 `https://pagepilot.example.com/admin`，使用 `admin / 123456` 登录。首次登录后请进入“账号设置”立即修改密码。这个默认账号只会在数据库里没有任何用户时创建；如果已经有用户，不会覆盖现有账号。
 
 Docker 默认把这些目录挂载到宿主机的 `./data/docker/` 下：
 
@@ -95,17 +93,20 @@ Caddy 需要把这些路径反向代理到 hostctl：
 
 其余短链路径可以由静态文件服务处理。
 
-## 5. 创建首个管理员
+## 5. 首次登录
 
-没有默认管理员账号，也没有默认密码。
+默认管理员账号：
 
-推荐方式：服务启动后直接打开 `https://host.example.com/admin`，按页面引导创建第一个管理员。这个入口只在数据库里没有管理员时开放；创建成功后会自动关闭。
+- 用户名：`admin`
+- 密码：`123456`
 
-无人值守方式：在 systemd unit 中添加环境变量，再启动服务：
+首次登录后请进入后台“账号设置”修改密码。
+
+systemd 部署如果要使用同样的默认账号，请在 unit 中添加：
 
 ```ini
 Environment=HOSTCTL_ADMIN_USERNAME=admin
-Environment=HOSTCTL_ADMIN_PASSWORD=change-this-password
+Environment=HOSTCTL_ADMIN_PASSWORD=123456
 ```
 
 这两个变量只会在数据库里没有任何用户时创建首个管理员，不会覆盖已有账号。
