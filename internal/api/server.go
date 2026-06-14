@@ -1659,6 +1659,10 @@ func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	base := strings.TrimRight(s.deployer.PublicBaseURL(), "/")
+	if base == "" {
+		base = strings.TrimRight(s.cfg.PublicBaseURL, "/")
+	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy-skill.zip"`)
 	zw := zip.NewWriter(w)
@@ -1683,9 +1687,26 @@ func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil
 		}
+		data = injectSkillServerURL(rel, data, base)
 		_, _ = fw.Write(data)
 		return nil
 	})
+}
+
+func injectSkillServerURL(rel string, data []byte, base string) []byte {
+	if base == "" {
+		return data
+	}
+	text := string(data)
+	switch rel {
+	case "SKILL.md":
+		text = strings.ReplaceAll(text, "If unset, the script uses `http://localhost:8787`.", "If unset, the script uses `"+base+"`.")
+		text = strings.ReplaceAll(text, "python skill/hostctl-deploy/scripts/hostctl_deploy.py --server http://127.0.0.1:8787 doctor", "python skill/hostctl-deploy/scripts/hostctl_deploy.py doctor")
+	case "scripts/hostctl_deploy.py":
+		text = strings.ReplaceAll(text, `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "http://localhost:8787")`, `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "`+base+`")`)
+		text = strings.ReplaceAll(text, `parser.add_argument("--server", help="hostctl server URL (default: $HOSTCTL_SERVER or http://localhost:8787)")`, `parser.add_argument("--server", help="hostctl server URL (default: $HOSTCTL_SERVER or `+base+`)")`)
+	}
+	return []byte(text)
 }
 
 type adminSkillFile struct {
