@@ -1,0 +1,54 @@
+# hostctl Caddyfile template.
+#
+# Replace host.example.com with your domain, then:
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+
+host.example.com {
+	encode gzip
+
+	@hostctlApp {
+		path /
+		path /index.html
+		path /deploy.html
+		path /api-docs.html
+		path /openapi.json
+		path /api/*
+		path /admin*
+		path /agent/*
+		path /deploy/*
+	}
+
+	handle @hostctlApp {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	handle {
+		root * /var/www/hosted
+
+		@shortCode path_regexp shortCode ^/[a-z0-9-]{3,32}$
+		redir @shortCode {uri}/ 308
+
+		@codePath path_regexp codePath ^/([a-z0-9-]{3,32})(/.*)?$
+		rewrite @codePath /{re.codePath.1}/current{re.codePath.2}
+
+		file_server {
+			index index.html
+		}
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+
+	log {
+		output file /var/log/caddy/host.example.com.log {
+			roll_size 100mb
+			roll_keep 7
+		}
+		format json
+	}
+}

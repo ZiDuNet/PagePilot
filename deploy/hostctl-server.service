@@ -1,0 +1,50 @@
+[Unit]
+Description=hostctl static hosting control plane
+Documentation=https://github.com/yourorg/hostctl
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hostctl
+Group=hostctl
+WorkingDirectory=/var/lib/hostctl
+StateDirectory=hostctl
+LogsDirectory=hostctl
+
+ExecStart=/usr/local/bin/hostctl-server \
+	--addr 127.0.0.1:8787 \
+	--hosted-dir /var/www/hosted \
+	--db /var/lib/hostctl/hostctl.db \
+	--public-url https://host.example.com \
+	--require-auth
+
+Restart=on-failure
+RestartSec=5s
+
+MemoryMax=256M
+CPUQuota=50%
+TasksMax=64
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/www/hosted /var/lib/hostctl /var/log/hostctl
+RestrictSUIDSGID=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @swap
+
+# Optional:
+# Environment=HOSTCTL_COOLDOWN_SECONDS=10
+
+[Install]
+WantedBy=multi-user.target

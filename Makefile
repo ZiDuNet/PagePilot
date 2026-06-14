@@ -1,0 +1,65 @@
+.PHONY: all build build-linux run test skill-test clean fmt vet tidy deps docker
+
+BIN_DIR := bin
+SERVER_BIN := $(BIN_DIR)/hostctl-server
+CLI_BIN := $(BIN_DIR)/hostctl
+MCP_BIN := $(BIN_DIR)/hostctl-mcp
+
+all: build
+
+# Download dependencies.
+deps:
+	go mod download
+
+# Tidy go.mod/go.sum.
+tidy:
+	go mod tidy
+
+# Build all binaries for the local platform.
+build: $(SERVER_BIN) $(CLI_BIN) $(MCP_BIN)
+
+$(SERVER_BIN):
+	@mkdir -p $(BIN_DIR)
+	go build -o $(SERVER_BIN) ./cmd/hostctl-server
+
+$(CLI_BIN):
+	@mkdir -p $(BIN_DIR)
+	go build -o $(CLI_BIN) ./cmd/hostctl
+
+$(MCP_BIN):
+	@mkdir -p $(BIN_DIR)
+	go build -o $(MCP_BIN) ./cmd/hostctl-mcp
+
+# Build Linux amd64 binaries for deployment.
+build-linux:
+	@mkdir -p $(BIN_DIR)
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(SERVER_BIN)-linux-amd64 ./cmd/hostctl-server
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(CLI_BIN)-linux-amd64 ./cmd/hostctl
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(MCP_BIN)-linux-amd64 ./cmd/hostctl-mcp
+
+# Run a local dev server.
+run: build
+	HOSTCTL_DEV=1 $(SERVER_BIN) --addr 127.0.0.1:8787 --public-url http://localhost:8787
+
+# Run Go tests.
+test:
+	go test ./...
+
+# Skill smoke test. Requires a local dev server on 127.0.0.1:8787.
+skill-test:
+	python test_skill.py
+
+# Format Go code.
+fmt:
+	gofmt -w .
+
+vet:
+	go vet ./...
+
+# Build Docker image.
+docker:
+	docker build -t hostctl:latest .
+
+# Remove generated local artifacts.
+clean:
+	rm -rf $(BIN_DIR) data

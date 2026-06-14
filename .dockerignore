@@ -1,0 +1,25 @@
+# Build artifacts
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Local dev data
+data/
+test-site/
+server.log
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Test outputs
+test_*.out
+test_*.sh
+
+# Already-built artifacts
+dist/

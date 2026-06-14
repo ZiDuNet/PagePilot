@@ -1,0 +1,374 @@
+// Package client 是 hostctl HTTP API 的 Go 客户端。
+// CLI 和 MCP 都基于此封装。
+package client
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/yourorg/hostctl/internal/api"
+)
+
+// Client 是 hostctl API 客户端。
+type Client struct {
+	baseURL string
+	token   string
+	http    *http.Client
+}
+
+// New 构造客户端。token 可空（用于 dev 模式）。
+func New(baseURL, token string) *Client {
+	return &Client{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		token:   token,
+		http:    &http.Client{},
+	}
+}
+
+// APIError 是服务端返回的标准化错误。
+type APIError struct {
+	Status int
+	Body   *api.APIError
+}
+
+func (e *APIError) Error() string {
+	if e.Body != nil {
+		return fmt.Sprintf("[%d] %s: %s", e.Status, e.Body.ErrorCode, e.Body.Detail)
+	}
+	return fmt.Sprintf("http %d", e.Status)
+}
+
+// IsCode 判断错误码。
+func (e *APIError) IsCode(code api.ErrorCode) bool {
+	return e.Body != nil && e.Body.ErrorCode == code
+}
+
+// do 发请求；如果响应 4xx/5xx，解析 JSON 错误体并返回 *APIError。
+func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	var reader io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("marshal body: %w", err)
+		}
+		reader = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		var apiErr api.APIError
+		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
+		return resp, &APIError{Status: resp.StatusCode, Body: &apiErr}
+	}
+	return resp, nil
+}
+
+// doGet 发 GET 请求并把响应解码到 v。
+func (c *Client) doGet(ctx context.Context, path string, v any) error {
+	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// doPost 发 POST 请求并把响应解码到 v。
+func (c *Client) doPost(ctx context.Context, path string, body, v any) error {
+	resp, err := c.do(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// doPatch / doDelete 类似。
+func (c *Client) doPatch(ctx context.Context, path string, body, v any) error {
+	resp, err := c.do(ctx, http.MethodPatch, path, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+func (c *Client) doDelete(ctx context.Context, path string, v any) error {
+	resp, err := c.do(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// ===== API 方法 =====
+
+// Deploy 调用 POST /api/deploy。
+func (c *Client) Deploy(ctx context.Context, req api.DeployRequest) (*api.DeployResponse, error) {
+	var resp api.DeployResponse
+	if err := c.doPost(ctx, "/api/deploy", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// RawDeploy 是 Deploy 的等价物，但接受原始 JSON 字节，
+// 便于调用方按 map 构造请求体（用于 MCP server 等场景）。
+func (c *Client) RawDeploy(ctx context.Context, body []byte) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/deploy", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return out, &APIError{Status: resp.StatusCode, Body: parseAPIError(out)}
+	}
+	return out, nil
+}
+
+// parseAPIError 从 RawDeploy 等返回的 map 里抽出 api.APIError。
+func parseAPIError(m map[string]any) *api.APIError {
+	if m == nil {
+		return nil
+	}
+	out := &api.APIError{}
+	if v, ok := m["errorCode"].(string); ok {
+		out.ErrorCode = api.ErrorCode(v)
+	}
+	if v, ok := m["stage"].(string); ok {
+		out.Stage = v
+	}
+	if v, ok := m["detail"].(string); ok {
+		out.Detail = v
+	}
+	if v, ok := m["hint"].(string); ok {
+		out.Hint = v
+	}
+	return out
+}
+
+// SearchMarketplace 调用 GET /api/deploys —— 公开应用商城搜索。
+// q 可空；sort 取 newest/oldest/likes_desc/views_desc；page / pageSize 默认值由服务端兜底。
+func (c *Client) SearchMarketplace(ctx context.Context, q, sort string, page, pageSize int) (map[string]any, error) {
+	qs := url.Values{}
+	if q != "" {
+		qs.Set("q", q)
+	}
+	if sort != "" {
+		qs.Set("sort", sort)
+	}
+	if page > 0 {
+		qs.Set("page", fmt.Sprintf("%d", page))
+	}
+	if pageSize > 0 {
+		qs.Set("pageSize", fmt.Sprintf("%d", pageSize))
+	}
+	path := "/api/deploys"
+	if enc := qs.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	var out map[string]any
+	if err := c.doGet(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetDeployDetail 调用 GET /api/deploys/{publicId} —— 单条应用详情。
+// publicId 既支持 32 字符 UUID，也支持短码 code。
+func (c *Client) GetDeployDetail(ctx context.Context, publicID string) (map[string]any, error) {
+	var out map[string]any
+	if err := c.doGet(ctx, "/api/deploys/"+url.PathEscape(publicID), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// LikeDeploy 调用 POST /api/deploys/{code}/like。
+// 点赞按用户 / token / 指纹去重，只影响市场排序，不授予写权限。
+func (c *Client) LikeDeploy(ctx context.Context, code string) (map[string]any, error) {
+	var out map[string]any
+	if err := c.doPost(ctx, "/api/deploys/"+url.PathEscape(code)+"/like", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SetPrimaryStrategy 调用 PATCH /api/deploys/{code}/primary-strategy。
+// strategy: "likes" 或 "latest"。决定 /agent/{code} 对外暴露的版本。
+func (c *Client) SetPrimaryStrategy(ctx context.Context, code, strategy string) (*api.PrimaryStrategyResponse, error) {
+	var resp api.PrimaryStrategyResponse
+	if err := c.doPatch(ctx,
+		"/api/deploys/"+url.PathEscape(code)+"/primary-strategy",
+		api.PrimaryStrategyRequest{PrimaryVersionStrategy: api.PrimaryVersionStrategy(strategy)},
+		&resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// SetSiteAccessPassword sets or clears a site's visit password.
+func (c *Client) SetSiteAccessPassword(ctx context.Context, code, password string) (map[string]any, error) {
+	var resp map[string]any
+	if err := c.doPatch(ctx,
+		"/api/deploys/"+url.PathEscape(code)+"/access",
+		map[string]any{"password": password}, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// ListVersions 调用 GET /api/deploys/{code}/versions。
+func (c *Client) ListVersions(ctx context.Context, code string) (*api.ListVersionsResponse, error) {
+	var resp api.ListVersionsResponse
+	if err := c.doGet(ctx, "/api/deploys/"+url.PathEscape(code)+"/versions", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Lock 调用 POST /api/deploys/{code}/versions/{version}/lock。
+func (c *Client) Lock(ctx context.Context, code string, version int64, locked bool) (*api.LockResponse, error) {
+	var resp api.LockResponse
+	if err := c.doPost(ctx,
+		fmt.Sprintf("/api/deploys/%s/versions/%d/lock", url.PathEscape(code), version),
+		api.LockRequest{Locked: locked}, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// SetCurrent 调用 PATCH /api/deploys/{code}/current。
+func (c *Client) SetCurrent(ctx context.Context, code string, version int64) (*api.SetCurrentResponse, error) {
+	var resp api.SetCurrentResponse
+	body := api.SetCurrentRequest{VersionNumber: &version}
+	if err := c.doPatch(ctx, "/api/deploys/"+url.PathEscape(code)+"/current", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Overwrite 调用 PATCH /api/deploys/{code}/versions/{version}（覆盖模式）。
+func (c *Client) Overwrite(ctx context.Context, code string, version int64, req api.OverwriteRequest) (*api.DeployResponse, error) {
+	var resp api.DeployResponse
+	if err := c.doPatch(ctx,
+		fmt.Sprintf("/api/deploys/%s/versions/%d", url.PathEscape(code), version),
+		req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// SetStatus 调用 PATCH /api/deploys/{code}/versions/{version}（状态模式）。
+func (c *Client) SetStatus(ctx context.Context, code string, version int64, status string) (*api.LockResponse, error) {
+	var resp api.LockResponse
+	body := map[string]any{"status": status}
+	if err := c.doPatch(ctx,
+		fmt.Sprintf("/api/deploys/%s/versions/%d", url.PathEscape(code), version),
+		body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// DeleteVersion 调用 DELETE /api/deploys/{code}/versions/{version}。
+func (c *Client) DeleteVersion(ctx context.Context, code string, version int64) (*api.SetCurrentResponse, error) {
+	var resp api.SetCurrentResponse
+	if err := c.doDelete(ctx,
+		fmt.Sprintf("/api/deploys/%s/versions/%d", url.PathEscape(code), version),
+		&resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetContent 调用 GET /api/deploy/content（JSON 模式）。
+func (c *Client) GetContent(ctx context.Context, code string, version *int64) (*api.GetContentResponse, error) {
+	q := url.Values{}
+	q.Set("code", code)
+	if version != nil {
+		q.Set("version", fmt.Sprintf("%d", *version))
+	}
+	var resp api.GetContentResponse
+	if err := c.doGet(ctx, "/api/deploy/content?"+q.Encode(), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Download 调用 GET /api/deploy/content?download=1，返回 stream。
+// 调用方负责关闭返回的 io.ReadCloser。
+func (c *Client) Download(ctx context.Context, code string, version *int64) (io.ReadCloser, string, error) {
+	q := url.Values{}
+	q.Set("code", code)
+	q.Set("download", "1")
+	if version != nil {
+		q.Set("version", fmt.Sprintf("%d", *version))
+	}
+	resp, err := c.do(ctx, http.MethodGet, "/api/deploy/content?"+q.Encode(), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	contentType := resp.Header.Get("Content-Type")
+	return resp.Body, contentType, nil
+}
+
+// CreateToken 调用 POST /api/token。
+func (c *Client) CreateToken(ctx context.Context, label string, isAdmin bool) (*api.TokenCreateResponse, error) {
+	var resp api.TokenCreateResponse
+	if err := c.doPost(ctx, "/api/token",
+		api.TokenCreateRequest{Label: label, IsAdmin: isAdmin}, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ListTokens 调用 GET /api/tokens。
+func (c *Client) ListTokens(ctx context.Context) (*api.TokenListResponse, error) {
+	var resp api.TokenListResponse
+	if err := c.doGet(ctx, "/api/tokens", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// RevokeToken 调用 DELETE /api/tokens/{id}。
+func (c *Client) RevokeToken(ctx context.Context, id string) (*api.TokenRevokeResponse, error) {
+	var resp api.TokenRevokeResponse
+	if err := c.doDelete(ctx, "/api/tokens/"+url.PathEscape(id), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}

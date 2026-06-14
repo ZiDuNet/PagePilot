@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 使用中心 - PagePilot</title>
+<meta name="description" content="下载 PagePilot Agent Skill，让 Agent 连接当前服务并发布 HTML 应用。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700;900&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #e8f7ff;
+    --ink: #07101f;
+    --muted: #607086;
+    --line: rgba(125, 211, 252, 0.48);
+    --sky: #0284c7;
+    --cyan: #0891b2;
+    --violet: #6366f1;
+    --card: rgba(255, 255, 255, 0.82);
+    --shadow: 0 28px 90px rgba(14, 116, 144, 0.13);
+    font-synthesis-weight: none;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    font-family: "Noto Sans SC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background:
+      radial-gradient(circle at 13% 7%, rgba(125, 211, 252, 0.28), transparent 30%),
+      radial-gradient(circle at 87% 11%, rgba(196, 181, 253, 0.26), transparent 28%),
+      radial-gradient(circle at 50% 35%, rgba(224, 242, 254, 0.76), transparent 37%),
+      linear-gradient(180deg, #e8f7ff 0%, #f3fbff 46%, #ffffff 100%);
+    background-attachment: fixed;
+  }
+
+  a { color: inherit; text-decoration: none; }
+  button, textarea, select { font: inherit; }
+  button { cursor: pointer; }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    border-bottom: 1px solid var(--line);
+    background: rgba(240, 249, 255, 0.84);
+    box-shadow: 0 10px 34px rgba(14, 116, 144, 0.10);
+    backdrop-filter: blur(18px);
+  }
+  .nav-inner {
+    max-width: 1200px;
+    height: 64px;
+    margin: 0 auto;
+    padding: 0 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    transition: transform 180ms ease;
+  }
+  .brand:hover { transform: scale(1.035); }
+  .brand-name {
+    font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+    font-size: 25px;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+  .nav-left, .nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    min-width: 0;
+  }
+  .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    color: #475569;
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .nav-links a:hover, .nav-links a.active { color: #075985; }
+  .nav-actions { gap: 12px; }
+  .nav-button {
+    height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid #bae6fd;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.76);
+    color: #075985;
+    padding: 0 13px;
+    font-size: 14px;
+    font-weight: 700;
+    box-shadow: 0 3px 12px rgba(14, 116, 144, 0.08);
+    transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+  }
+  .nav-button:hover {
+    border-color: #7dd3fc;
+    background: white;
+    transform: translateY(-1px);
+  }
+  .nav-secondary {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    color: #475569;
+  }
+  .nav-secondary:hover {
+    background: rgba(255,255,255,0.82);
+    border-color: #bae6fd;
+  }
+
+  .container {
+    width: min(1200px, calc(100% - 48px));
+    margin: 0 auto;
+    padding: 32px 0 54px;
+  }
+  .hero {
+    position: relative;
+    overflow: hidden;
+    min-height: 520px;
+    border: 1px solid rgba(255,255,255,0.86);
+    border-radius: 36px;
+    background: rgba(255,255,255,0.55);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(18px);
+  }
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 16% 18%, rgba(34, 211, 238, 0.28), transparent 32%),
+      radial-gradient(circle at 82% 16%, rgba(216, 180, 254, 0.28), transparent 32%),
+      radial-gradient(circle at 50% 96%, rgba(186, 230, 253, 0.54), transparent 38%),
+      linear-gradient(145deg, rgba(255,255,255,0.72) 0%, rgba(219,242,255,0.72) 46%, rgba(226,232,255,0.76) 100%);
+  }
+  .hero::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    opacity: 0.35;
+    background:
+      linear-gradient(90deg, rgba(14,116,144,0.08) 1px, transparent 1px),
+      linear-gradient(rgba(14,116,144,0.06) 1px, transparent 1px);
+    background-size: 52px 52px;
+    mask-image: linear-gradient(180deg, black, transparent 82%);
+  }
+  .hero-inner {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 0.95fr) minmax(360px, 0.78fr);
+    gap: 28px;
+    padding: 44px;
+    align-items: stretch;
+  }
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: fit-content;
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid rgba(14, 165, 233, 0.25);
+    border-radius: 999px;
+    background: rgba(255,255,255,0.72);
+    color: #075985;
+    font-size: 13px;
+    font-weight: 900;
+    box-shadow: 0 10px 24px rgba(14, 116, 144, 0.08);
+  }
+  h1 {
+    max-width: 760px;
+    margin: 18px 0 0;
+    font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+    font-size: clamp(42px, 6.3vw, 76px);
+    line-height: 0.98;
+    letter-spacing: 0;
+  }
+  .lead {
+    max-width: 660px;
+    margin: 20px 0 0;
+    color: #475569;
+    font-size: 17px;
+    line-height: 1.85;
+  }
+  .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 28px;
+  }
+  .primary-cta, .secondary-cta, .ghost-cta {
+    min-height: 46px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    border-radius: 14px;
+    padding: 0 16px;
+    font-weight: 900;
+    font-size: 15px;
+    transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
+  }
+  .primary-cta {
+    color: white;
+    background: linear-gradient(135deg, #0284c7, #6366f1);
+    box-shadow: 0 18px 38px rgba(2, 132, 199, 0.28);
+  }
+  .secondary-cta, .ghost-cta {
+    border: 1px solid #bae6fd;
+    background: rgba(255,255,255,0.78);
+    color: #075985;
+  }
+  .ghost-cta { color: #334155; }
+  .primary-cta:hover, .secondary-cta:hover, .ghost-cta:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 16px 34px rgba(14, 116, 144, 0.16);
+  }
+  .service-strip {
+    display: grid;
+    gap: 10px;
+    max-width: 760px;
+    margin-top: 28px;
+  }
+  .url-line {
+    display: grid;
+    grid-template-columns: 142px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    min-height: 46px;
+    padding: 8px 12px;
+    border: 1px solid rgba(186,230,253,0.86);
+    border-radius: 16px;
+    background: rgba(255,255,255,0.62);
+  }
+  .url-line span {
+    color: #64748b;
+    font-size: 13px;
+    font-weight: 800;
+  }
+  .url-line code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: #0f172a;
+    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .package-board {
+    display: grid;
+    gap: 16px;
+    align-content: start;
+  }
+  .bundle {
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.9);
+    border-radius: 28px;
+    background: rgba(15, 23, 42, 0.92);
+    color: white;
+    box-shadow: 0 30px 70px rgba(15, 23, 42, 0.22);
+  }
+  .bundle-top {
+    padding: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.10);
+    background:
+      radial-gradient(circle at 20% 10%, rgba(34,211,238,0.25), transparent 28%),
+      radial-gradient(circle at 90% 0%, rgba(167,139,250,0.28), transparent 26%);
+  }
+  .bundle-mark {
+    width: 58px;
+    height: 58px;
+    display: grid;
+    place-items: center;
+    border-radius: 18px;
+    background: linear-gradient(135deg, #f8fafc, #dff8ff);
+    color: #075985;
+    box-shadow: inset 0 -8px 18px rgba(14,116,144,0.10);
+  }
+  .bundle-title { min-width: 0; }
+  .bundle-title strong {
+    display: block;
+    font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+    font-size: 21px;
+    letter-spacing: 0;
+  }
+  .bundle-title span {
+    display: block;
+    margin-top: 4px;
+    color: #bae6fd;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+  .bundle-pill {
+    flex: 0 0 auto;
+    padding: 7px 10px;
+    border: 1px solid rgba(186,230,253,0.28);
+    border-radius: 999px;
+    color: #dff8ff;
+    font-size: 12px;
+    font-weight: 900;
+  }
+  .command-panel {
+    padding: 18px 20px 20px;
+  }
+  .command-label {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    color: #cbd5e1;
+    font-size: 12px;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+  textarea {
+    width: 100%;
+    min-height: 136px;
+    margin-top: 10px;
+    resize: vertical;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 16px;
+    padding: 14px;
+    background: rgba(2, 6, 23, 0.46);
+    color: #e0f2fe;
+    font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    outline: none;
+  }
+  textarea:focus { border-color: #38bdf8; box-shadow: 0 0 0 4px rgba(56,189,248,0.14); }
+  .copy-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .copy-note {
+    color: #93c5fd;
+    font-size: 13px;
+  }
+  .copy-button {
+    min-height: 40px;
+    border: 0;
+    border-radius: 12px;
+    padding: 0 13px;
+    background: #e0f2fe;
+    color: #075985;
+    font-weight: 900;
+  }
+  .copy-button:hover { background: white; }
+
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    margin-top: 24px;
+  }
+  .step {
+    min-height: 180px;
+    border: 1px solid rgba(186,230,253,0.76);
+    border-radius: 24px;
+    padding: 20px;
+    background: rgba(255,255,255,0.74);
+    box-shadow: 0 20px 48px rgba(14, 116, 144, 0.08);
+  }
+  .step-tag {
+    width: fit-content;
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: #e0f2fe;
+    color: #075985;
+    font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .step h2 {
+    margin: 16px 0 8px;
+    font-size: 19px;
+    letter-spacing: 0;
+  }
+  .step p, .step li {
+    margin: 0;
+    color: #475569;
+    line-height: 1.75;
+    font-size: 14px;
+  }
+  .step code {
+    color: #0f172a;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+  }
+  .step ul {
+    margin: 10px 0 0;
+    padding-left: 18px;
+  }
+  .footer {
+    margin-top: 28px;
+    padding: 22px 4px 0;
+    color: #64748b;
+    font-size: 13px;
+  }
+
+  @media (max-width: 980px) {
+    .hero-inner { grid-template-columns: 1fr; padding: 30px; }
+    .steps { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 760px) {
+    .container { width: min(100% - 28px, 1200px); padding-top: 18px; }
+    .nav-inner { height: auto; min-height: 64px; padding: 10px 16px; align-items: flex-start; }
+    .nav-left { align-items: flex-start; gap: 12px; flex-direction: column; }
+    .nav-links { gap: 14px; flex-wrap: wrap; }
+    .nav-actions { display: none; }
+    .brand-name { font-size: 22px; }
+    .hero { border-radius: 26px; }
+    .hero-inner { padding: 24px; }
+    h1 { font-size: clamp(38px, 13vw, 56px); }
+    .lead { font-size: 16px; }
+    .url-line { grid-template-columns: 1fr; }
+    .bundle-top { align-items: flex-start; flex-direction: column; }
+    .copy-row { align-items: stretch; flex-direction: column; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      scroll-behavior: auto !important;
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 1ms !important;
+    }
+  }
+</style>
+</head>
+<body>
+<nav class="topbar">
+  <div class="nav-inner">
+    <div class="nav-left">
+      <a class="brand" href="/" aria-label="PagePilot 首页">
+        <svg width="52" height="52" viewBox="0 0 96 96" aria-hidden="true">
+          <defs>
+            <linearGradient id="logo-bg" x1="6" x2="88" y1="6" y2="90">
+              <stop stop-color="#101348"></stop><stop offset="0.55" stop-color="#172D67"></stop><stop offset="1" stop-color="#155E75"></stop>
+            </linearGradient>
+            <linearGradient id="logo-window" x1="32" x2="66" y1="35" y2="74">
+              <stop stop-color="#FFFFFF"></stop><stop offset="1" stop-color="#EAF7FF"></stop>
+            </linearGradient>
+            <linearGradient id="logo-bar" x1="31" x2="67" y1="35" y2="49">
+              <stop stop-color="#60A5FA"></stop><stop offset="1" stop-color="#8B5CF6"></stop>
+            </linearGradient>
+          </defs>
+          <rect x="5" y="5" width="86" height="86" rx="26" fill="url(#logo-bg)"></rect>
+          <path d="M13 67C32 45 60 36 84 29" fill="none" stroke="#22D3EE" stroke-linecap="round" stroke-width="4" opacity="0.82"></path>
+          <path d="M17 73C35 59 61 49 86 43" fill="none" stroke="#A78BFA" stroke-linecap="round" stroke-width="3" opacity="0.55"></path>
+          <rect x="15" y="22" width="25" height="14" rx="6" fill="#F8FAFC" opacity="0.96"></rect>
+          <path d="M20 29h7M23.5 25.5v7" stroke="#312E81" stroke-linecap="round" stroke-width="2"></path>
+          <circle cx="32" cy="27" r="2" fill="#86EFAC"></circle><circle cx="36" cy="31" r="2" fill="#FB7185"></circle>
+          <rect x="61" y="20" width="20" height="20" rx="6" fill="#24195F" stroke="#C084FC" stroke-width="2"></rect>
+          <rect x="65" y="24" width="5" height="5" rx="1.2" fill="#F472B6"></rect><rect x="72" y="24" width="5" height="5" rx="1.2" fill="#86EFAC"></rect>
+          <rect x="65" y="31" width="5" height="5" rx="1.2" fill="#38BDF8"></rect><rect x="72" y="31" width="5" height="5" rx="1.2" fill="#FBBF24"></rect>
+          <rect x="31" y="35" width="36" height="39" rx="11" fill="url(#logo-window)"></rect>
+          <path d="M31 45a10 10 0 0 1 10-10h16a10 10 0 0 1 10 10v5H31z" fill="url(#logo-bar)"></path>
+          <circle cx="39" cy="44" r="2.7" fill="#F472B6"></circle><circle cx="48" cy="44" r="2.7" fill="#FBBF24"></circle><circle cx="57" cy="44" r="2.7" fill="#86EFAC"></circle>
+          <path d="M38 58q3-4 7 0M53 58q3-4 7 0" fill="none" stroke="#111827" stroke-linecap="round" stroke-width="3"></path>
+          <path d="M45 66q4 4 9 0" fill="#FB7185" stroke="#831843" stroke-linecap="round" stroke-width="1.6"></path>
+        </svg>
+        <span class="brand-name">PagePilot</span>
+      </a>
+      <div class="nav-links">
+        <a href="/#marketplace">应用商城</a>
+        <a class="active" href="/agents/">Agent 部署</a>
+      </div>
+    </div>
+    <div class="nav-actions">
+      <a class="nav-button nav-secondary" href="/deploy.html">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg>
+        <span>手动部署</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<main class="container">
+  <section class="hero">
+    <div class="hero-inner">
+      <div>
+        <div class="eyebrow">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#0284c7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>
+          <span>Agent 接入包</span>
+        </div>
+        <h1>让 Agent 直接发布到 PagePilot</h1>
+        <p class="lead">这页会按照后台的 Public Base URL 生成当前实例专用的 Skill 下载地址。把下面那句话交给 Agent，它就能下载、安装并连接到这台服务。</p>
+        <div class="hero-actions">
+          <a class="primary-cta" href="{{SKILL_ZIP_URL}}" download>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"></path><path d="m7 10 5 5 5-5"></path><path d="M2 21h20"></path></svg>
+            <span>下载 Skill</span>
+          </a>
+          <a class="secondary-cta" href="{{API_DOCS_URL}}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="M10 9H8"></path><path d="M16 13H8"></path><path d="M16 17H8"></path></svg>
+            <span>查看 API</span>
+          </a>
+          <a class="ghost-cta" href="/admin">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
+            <span>后台管理</span>
+          </a>
+        </div>
+        <div class="service-strip">
+          <div class="url-line"><span>Skill 下载地址</span><code>{{SKILL_ZIP_URL}}</code></div>
+          <div class="url-line"><span>服务 Base URL</span><code>{{BASE_URL}}</code></div>
+        </div>
+      </div>
+
+      <aside class="package-board" aria-label="Agent 安装指令">
+        <div class="bundle">
+          <div class="bundle-top">
+            <div class="bundle-mark" aria-hidden="true">
+              <svg width="31" height="31" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg>
+            </div>
+            <div class="bundle-title">
+              <strong>hostctl-deploy.zip</strong>
+              <span>{{SKILL_ZIP_URL}}</span>
+            </div>
+            <span class="bundle-pill">实时打包</span>
+          </div>
+          <div class="command-panel">
+            <div class="command-label">
+              <span>复制给 Agent</span>
+              <span>PagePilot Skill</span>
+            </div>
+            <textarea readonly id="agent-prompt">请从 {{SKILL_ZIP_URL}} 下载并安装 hostctl-deploy Skill。安装后使用 `hostctl_deploy.py --server {{BASE_URL}} doctor` 检查连接，然后用它把网页发布到 PagePilot。</textarea>
+            <div class="copy-row">
+              <button class="copy-button" id="copy-prompt" type="button">复制指令</button>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="steps">
+    <div class="step">
+      <span class="step-tag">01 Download</span>
+      <h2>下载当前实例的 Skill</h2>
+      <p>下载地址来自后台 Public Base URL，部署到公网后这里会自动展示公网域名。</p>
+    </div>
+    <div class="step">
+      <span class="step-tag">02 Connect</span>
+      <h2>让 Agent 检查连接</h2>
+      <p><code>hostctl_deploy.py --server {{BASE_URL}} doctor</code></p>
+    </div>
+    <div class="step">
+      <span class="step-tag">03 Publish</span>
+      <h2>交给 Agent 发布页面</h2>
+      <ul>
+        <li>匿名 session 有免费额度。</li>
+        <li>额度用完后，用户登录工作台生成绑定码或提供 token。</li>
+        <li>已登录用户和 token 发布的作品按归属隔离。</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <span>PagePilot Agent Center</span>
+  </footer>
+</main>
+
+<script>
+document.getElementById("copy-prompt").addEventListener("click", async () => {
+  const btn = document.getElementById("copy-prompt");
+  await navigator.clipboard.writeText(document.getElementById("agent-prompt").value);
+  btn.textContent = "已复制";
+  setTimeout(() => btn.textContent = "复制指令", 1300);
+});
+</script>
+</body>
+</html>

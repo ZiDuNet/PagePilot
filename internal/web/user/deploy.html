@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>&#25163;&#21160;&#37096;&#32626; - PagePilot</title>
+<meta name="description" content="直接上传 HTML 文件，或粘贴代码后即可部署。POST /api/deploy + application/json。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 'system-ui', 'sans-serif'] } } } };
+</script>
+<style>
+  body {
+    font-family: 'Noto Sans SC', system-ui, sans-serif;
+    background-image:
+      radial-gradient(circle at 14% 8%, rgba(125, 211, 252, 0.26), transparent 30%),
+      radial-gradient(circle at 86% 12%, rgba(196, 181, 253, 0.22), transparent 28%),
+      radial-gradient(circle at 50% 34%, rgba(224, 242, 254, 0.72), transparent 36%),
+      linear-gradient(rgb(232, 247, 255) 0%, rgb(243, 250, 255) 42%, rgb(255, 255, 255) 100%);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+  .toast {
+    position: fixed; bottom: 2rem; left: 50%;
+    transform: translateX(-50%) translateY(150%);
+    transition: transform 0.4s cubic-bezier(0.34,1.56,0.64,1); z-index: 60;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); }
+
+  .subpage-hero {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.86) !important;
+    border-radius: 2rem !important;
+    background: linear-gradient(145deg, rgba(255,255,255,0.78), rgba(224,242,254,0.72), rgba(238,242,255,0.76)) !important;
+    box-shadow: 0 28px 90px rgba(14,116,144,0.13) !important;
+    backdrop-filter: blur(18px);
+  }
+  .subpage-hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: .34;
+    background:
+      linear-gradient(90deg, rgba(14,116,144,0.08) 1px, transparent 1px),
+      linear-gradient(rgba(14,116,144,0.06) 1px, transparent 1px);
+    background-size: 52px 52px;
+    mask-image: linear-gradient(180deg, black, transparent 86%);
+  }
+  .subpage-hero > * { position: relative; z-index: 1; }
+  .subpage-title {
+    font-family: "Space Grotesk", "Noto Sans SC", system-ui, sans-serif !important;
+    letter-spacing: 0 !important;
+  }
+
+</style>
+</head>
+<body class="antialiased text-slate-800">
+
+<!-- 顶部导航 -->
+<nav class="sticky top-0 z-30 border-b border-sky-200/60 bg-sky-50/82 shadow-[0_10px_34px_rgba(14,116,144,0.10)] backdrop-blur-xl">
+  <div class="mx-auto flex min-h-16 max-w-[1200px] flex-wrap items-center justify-between gap-3 px-4 py-2 sm:px-6 lg:px-8">
+    <div class="flex items-center gap-4 md:gap-8">
+      <a href="/" class="group flex shrink-0 items-center transition-transform hover:scale-105" aria-label="PagePilot home">
+        <svg class="h-[42px] w-[42px]" viewBox="0 0 96 96" aria-hidden="true">
+          <defs>
+            <linearGradient id="logo-bg" x1="6" x2="88" y1="6" y2="90"><stop stop-color="#101348"></stop><stop offset="0.55" stop-color="#172D67"></stop><stop offset="1" stop-color="#155E75"></stop></linearGradient>
+            <linearGradient id="logo-window" x1="32" x2="66" y1="35" y2="74"><stop stop-color="#FFFFFF"></stop><stop offset="1" stop-color="#EAF7FF"></stop></linearGradient>
+            <linearGradient id="logo-bar" x1="31" x2="67" y1="35" y2="49"><stop stop-color="#60A5FA"></stop><stop offset="1" stop-color="#8B5CF6"></stop></linearGradient>
+          </defs>
+          <rect x="5" y="5" width="86" height="86" rx="26" fill="url(#logo-bg)"></rect>
+          <path d="M13 67C32 45 60 36 84 29" fill="none" stroke="#22D3EE" stroke-linecap="round" stroke-width="4" opacity="0.82"></path>
+          <path d="M17 73C35 59 61 49 86 43" fill="none" stroke="#A78BFA" stroke-linecap="round" stroke-width="3" opacity="0.55"></path>
+          <rect x="15" y="22" width="25" height="14" rx="6" fill="#F8FAFC" opacity="0.96"></rect>
+          <path d="M20 29h7M23.5 25.5v7" stroke="#312E81" stroke-linecap="round" stroke-width="2"></path>
+          <circle cx="32" cy="27" r="2" fill="#86EFAC"></circle><circle cx="36" cy="31" r="2" fill="#FB7185"></circle>
+          <rect x="61" y="20" width="20" height="20" rx="6" fill="#24195F" stroke="#C084FC" stroke-width="2"></rect>
+          <rect x="65" y="24" width="5" height="5" rx="1.2" fill="#F472B6"></rect><rect x="72" y="24" width="5" height="5" rx="1.2" fill="#86EFAC"></rect>
+          <rect x="65" y="31" width="5" height="5" rx="1.2" fill="#38BDF8"></rect><rect x="72" y="31" width="5" height="5" rx="1.2" fill="#FBBF24"></rect>
+          <rect x="31" y="35" width="36" height="39" rx="11" fill="url(#logo-window)"></rect>
+          <path d="M31 45a10 10 0 0 1 10-10h16a10 10 0 0 1 10 10v5H31z" fill="url(#logo-bar)"></path>
+          <circle cx="39" cy="44" r="2.7" fill="#F472B6"></circle><circle cx="48" cy="44" r="2.7" fill="#FBBF24"></circle><circle cx="57" cy="44" r="2.7" fill="#86EFAC"></circle>
+          <path d="M38 58q3-4 7 0M53 58q3-4 7 0" fill="none" stroke="#111827" stroke-linecap="round" stroke-width="3"></path>
+          <path d="M45 66q4 4 9 0" fill="#FB7185" stroke="#831843" stroke-linecap="round" stroke-width="1.6"></path>
+        </svg>
+        <span class="ml-2 font-['Space_Grotesk'] text-2xl font-bold tracking-normal text-slate-900">PagePilot</span>
+      </a>
+    </div>
+    <div class="flex flex-wrap items-center gap-3 text-sm font-semibold text-slate-600">
+      <a href="/" class="transition-colors hover:text-sky-700">&#39318;&#39029;</a>
+      <a href="/#marketplace" class="transition-colors hover:text-sky-700">&#24212;&#29992;&#21830;&#22478;</a>
+      <a href="/agents/" class="transition-colors hover:text-sky-700">Agent</a>
+      <a href="/deploy.html" class="text-sky-700">&#25163;&#21160;&#37096;&#32626;</a>
+      <a href="/api-docs.html" class="transition-colors hover:text-sky-700">API &#25991;&#26723;</a>
+      <a href="/admin?mode=login" class="transition-colors hover:text-sky-700">&#30331;&#24405;</a>
+      <a href="/admin?mode=register" class="transition-colors hover:text-sky-700">&#27880;&#20876;</a>
+    </div>
+  </div>
+</nav>
+
+<main class="mx-auto w-full max-w-[1200px] px-4 pb-10 pt-8 sm:px-6 lg:px-8">
+  <div class="space-y-6 pb-8">
+
+    <!-- 顶部卡片 -->
+    <div class="subpage-hero p-6">
+      <h1 class="text-2xl font-bold text-slate-900">手动部署</h1>
+      <p class="mt-1 text-sm text-slate-600">直接上传 HTML 文件，或粘贴代码后即可部署。POST /api/deploy + application/json</p>
+    </div>
+
+    <!-- 主体网格 -->
+    <div class="grid grid-cols-1 gap-6 xl:grid-cols-3">
+
+      <!-- 左：预览 -->
+      <div class="xl:col-span-2">
+        <div class="flex h-[600px] items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
+          <div class="max-w-md space-y-3">
+            <h3 class="text-2xl font-semibold text-slate-900">实时预览将在这里显示</h3>
+            <p class="text-slate-500">上传 HTML 文件或粘贴代码后，预览会即时更新，确认无误再一键上线。</p>
+            <div class="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700">
+              支持多文件：index.html + styles.css + script.js + 图片
+            </div>
+          </div>
+        </div>
+        <iframe id="live-preview" src="about:blank" title="预览" class="mt-4 hidden h-[600px] w-full rounded-2xl border border-slate-200 bg-white" sandbox="allow-scripts allow-same-origin"></iframe>
+      </div>
+
+      <!-- 右：表单 -->
+      <div class="space-y-6">
+
+        <!-- 模式切换 + 上传/输入 -->
+        <div class="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="inline-flex w-full rounded-lg bg-slate-100 p-1">
+            <button type="button" id="mode-single" class="mode-btn flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors bg-white text-sky-700 shadow-sm">单 HTML</button>
+            <button type="button" id="mode-multi" class="mode-btn flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors text-slate-600 hover:text-slate-900">多文件</button>
+          </div>
+
+          <!-- 单 HTML 模式 -->
+          <div id="single-mode" class="space-y-5">
+            <div class="space-y-2">
+              <label for="filename" class="block text-sm font-medium text-slate-700">部署文件名</label>
+              <input id="filename" type="text" placeholder="index.html" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none ring-sky-300 transition focus:border-sky-400 focus:ring-2">
+              <p class="text-xs text-slate-500">未填写 .html 后缀时，系统会自动补全。</p>
+            </div>
+
+            <div class="space-y-3">
+              <div class="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors border-slate-300 hover:border-sky-400">
+                <input type="file" accept=".html,.htm" class="hidden" id="file-upload">
+                <label for="file-upload" class="cursor-pointer flex flex-col items-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-12 h-12 mb-4 text-slate-400">
+                    <path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  </svg>
+                  <p class="text-lg font-medium text-slate-700">点击或拖拽上传 HTML 文件</p>
+                  <p class="text-sm text-slate-500 mt-2">支持 .html, .htm 格式</p>
+                </label>
+              </div>
+            </div>
+
+            <div class="space-y-2">
+              <label for="content" class="block text-sm font-medium text-slate-700">或直接粘贴 HTML 代码</label>
+              <textarea id="content" rows="6" placeholder="<!DOCTYPE html>..." class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs text-slate-900 outline-none ring-sky-300 transition focus:border-sky-400 focus:ring-2"></textarea>
+            </div>
+          </div>
+
+          <!-- 多文件模式 -->
+          <div id="multi-mode" class="hidden space-y-3">
+            <div class="flex items-center justify-between">
+              <label class="text-sm font-medium text-slate-700">文件列表</label>
+              <button id="add-file" type="button" class="inline-flex items-center rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1 h-3.5 w-3.5">
+                  <path d="M5 12h14"/><path d="M12 5v14"/>
+                </svg>
+                新增文件
+              </button>
+            </div>
+            <div id="files-list" class="space-y-3">
+              <!-- JS 动态填入 -->
+            </div>
+            <p class="text-xs text-slate-500">主入口默认 index.html。文件路径禁止 <code class="rounded bg-slate-100 px-1">..</code>、绝对路径；单文件 ≤1 MiB，site 总 ≤10 MiB，文件数 ≤100。</p>
+          </div>
+        </div>
+
+        <!-- 元信息 -->
+        <div class="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="space-y-2">
+            <label for="title" class="block text-sm font-medium text-slate-700">标题（可选）</label>
+            <input id="title" type="text" placeholder="Product X Launch" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none ring-sky-300 transition focus:border-sky-400 focus:ring-2">
+          </div>
+          <div class="space-y-2">
+            <label for="description" class="block text-sm font-medium text-slate-700">一句话描述 *</label>
+            <input id="description" type="text" maxlength="240" placeholder="一句话介绍这个 HTML 项目（必填，≤240 字符）" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none ring-sky-300 transition focus:border-sky-400 focus:ring-2">
+            <p class="text-xs text-slate-500">description 是 Agent 友好契约的必填字段，便于后续检索和迭代。</p>
+          </div>
+          <div class="space-y-2">
+            <label class="flex items-start gap-2 text-sm font-medium text-slate-700">
+              <input id="enable-custom" type="checkbox" class="mt-1 rounded border-slate-300 text-sky-600 focus:ring-sky-500">
+              <span>启用自定义短链后缀（适合稳定项目，便于分享）</span>
+            </label>
+            <input id="custom-code" type="text" placeholder="my-landing" pattern="[a-z0-9-]{3,32}" disabled class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none ring-sky-300 transition focus:border-sky-400 focus:ring-2 disabled:bg-slate-50 disabled:text-slate-400">
+            <p class="text-xs text-slate-500">短链已存在时，可勾选"追加版本"以新版本形式更新内容。</p>
+          </div>
+          <label class="flex items-start gap-2 text-sm font-medium text-slate-700">
+            <input id="create-version" type="checkbox" class="mt-1 rounded border-slate-300 text-sky-600 focus:ring-sky-500">
+            <span>追加新版本（短链已存在时使用）</span>
+          </label>
+        </div>
+
+        <!-- 内容信息 + 部署按钮 -->
+        <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h3 class="mb-4 text-lg font-semibold text-slate-900">内容信息</h3>
+          <div class="space-y-3 text-sm">
+            <div class="flex justify-between gap-3"><span class="text-slate-500">来源</span><span id="info-source" class="font-medium text-slate-900">手动输入</span></div>
+            <div class="flex justify-between gap-3"><span class="text-slate-500">文件名</span><span id="info-filename" class="max-w-[200px] truncate font-medium text-slate-900" title="index.html">index.html</span></div>
+            <div class="flex justify-between gap-3"><span class="text-slate-500">大小</span><span id="info-size" class="font-medium text-slate-900">0.00 KB</span></div>
+            <div class="flex justify-between gap-3"><span class="text-slate-500">状态</span><span id="info-status" class="font-medium text-slate-900">等待输入内容</span></div>
+          </div>
+          <div class="mt-8 space-y-3">
+            <button id="btn-deploy" type="button" disabled class="flex w-full items-center justify-center rounded-lg border border-transparent bg-sky-600 px-4 py-3 text-base font-medium text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="-ml-1 mr-2 h-5 w-5">
+                <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
+                <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
+                <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+              </svg>
+              立即部署
+            </button>
+            <button id="btn-clear" type="button" class="flex w-full items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-3 text-base font-medium text-slate-700 transition hover:bg-slate-50">清空内容</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 部署结果（成功后展开） -->
+    <div id="result-card" class="hidden rounded-3xl border border-emerald-200 bg-emerald-50/50 p-6 shadow-sm">
+      <div class="flex items-start gap-3">
+        <div class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-emerald-100 text-emerald-700">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 6 9 17l-5-5"/>
+          </svg>
+        </div>
+        <div class="min-w-0 flex-1">
+          <h3 class="text-lg font-semibold text-slate-900">部署成功</h3>
+          <p class="mt-1 text-sm text-slate-600">Agent 可以使用以下信息访问或分享该应用。</p>
+          <div id="result-content" class="mt-4 space-y-3 text-sm"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<div id="toast" class="toast rounded-xl border border-slate-200 bg-white/95 px-4 py-3 text-sm font-medium text-slate-700 shadow-lg backdrop-blur"></div>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const toast = $('toast');
+
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2000);
+  }
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function formatSize(b) {
+    if (!b) return '0.00 KB';
+    if (b < 1024) return b + ' B';
+    if (b < 1024*1024) return (b/1024).toFixed(2) + ' KB';
+    return (b/1024/1024).toFixed(2) + ' MB';
+  }
+
+  let mode = 'single';
+
+  // 模式切换
+  function switchMode(m) {
+    mode = m;
+    document.querySelectorAll('.mode-btn').forEach(b => {
+      b.classList.remove('bg-white', 'text-sky-700', 'shadow-sm');
+      b.classList.add('text-slate-600', 'hover:text-slate-900');
+    });
+    const active = m === 'single' ? $('mode-single') : $('mode-multi');
+    active.classList.add('bg-white', 'text-sky-700', 'shadow-sm');
+    active.classList.remove('text-slate-600', 'hover:text-slate-900');
+    $('single-mode').classList.toggle('hidden', m !== 'single');
+    $('multi-mode').classList.toggle('hidden', m !== 'multi');
+    updateInfo();
+  }
+  $('mode-single').addEventListener('click', () => switchMode('single'));
+  $('mode-multi').addEventListener('click', () => switchMode('multi'));
+
+  // 多文件管理
+  let files = [{ path: 'index.html', content: '' }];
+  function renderFiles() {
+    const list = $('files-list');
+    list.innerHTML = files.map((f, i) => `
+      <div class="rounded-lg border border-slate-200 p-3 space-y-2">
+        <div class="flex items-center gap-2">
+          <input data-i="${i}" data-k="path" type="text" value="${escapeHtml(f.path)}" placeholder="文件路径，如 styles.css" class="flex-1 rounded-md border border-slate-300 px-2 py-1 font-mono text-xs text-slate-900 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100">
+          <button data-del="${i}" type="button" class="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-500 hover:bg-rose-50 hover:text-rose-600" ${files.length === 1 ? 'disabled' : ''}>移除</button>
+        </div>
+        <textarea data-i="${i}" data-k="content" rows="4" placeholder="文件内容（文本）" class="w-full rounded-md border border-slate-300 px-2 py-1 font-mono text-xs text-slate-900 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100">${escapeHtml(f.content)}</textarea>
+      </div>
+    `).join('');
+    list.querySelectorAll('input[data-i], textarea[data-i]').forEach(el => {
+      el.addEventListener('input', () => {
+        const i = parseInt(el.dataset.i, 10);
+        files[i][el.dataset.k] = el.value;
+        updateInfo();
+      });
+    });
+    list.querySelectorAll('button[data-del]').forEach(b => {
+      b.addEventListener('click', () => {
+        const i = parseInt(b.dataset.del, 10);
+        files.splice(i, 1);
+        renderFiles();
+        updateInfo();
+      });
+    });
+  }
+  $('add-file').addEventListener('click', () => {
+    files.push({ path: '', content: '' });
+    renderFiles();
+    updateInfo();
+  });
+  renderFiles();
+
+  // 文件上传
+  $('file-upload').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      $('content').value = ev.target.result;
+      $('filename').value = file.name;
+      $('info-source').textContent = '文件上传';
+      updateInfo();
+    };
+    reader.readAsText(file);
+  });
+
+  // 文件名 / 描述 / 自定义短链
+  $('filename').addEventListener('input', updateInfo);
+  $('content').addEventListener('input', updateInfo);
+  $('description').addEventListener('input', updateInfo);
+  $('enable-custom').addEventListener('change', (e) => {
+    $('custom-code').disabled = !e.target.checked;
+    updateDeployBtn();
+  });
+  $('custom-code').addEventListener('input', updateDeployBtn);
+
+  function updateInfo() {
+    if (mode === 'single') {
+      const c = $('content').value || '';
+      const sz = new Blob([c]).size;
+      $('info-size').textContent = formatSize(sz);
+      $('info-filename').textContent = $('filename').value || 'index.html';
+      $('info-status').textContent = c.trim() ? '已就绪' : '等待输入内容';
+    } else {
+      const total = files.reduce((s, f) => s + new Blob([f.content || '']).size, 0);
+      $('info-size').textContent = formatSize(total);
+      $('info-filename').textContent = files.length + ' 个文件';
+      $('info-status').textContent = files.some(f => f.content && f.path) ? '已就绪' : '等待输入内容';
+    }
+    updateDeployBtn();
+  }
+
+  function updateDeployBtn() {
+    const desc = $('description').value.trim();
+    const enableCustom = $('enable-custom').checked;
+    const customCode = $('custom-code').value.trim();
+    let hasContent = false;
+    if (mode === 'single') hasContent = !!$('content').value.trim();
+    else hasContent = files.some(f => f.content && f.path);
+    const ok = desc && hasContent && (!enableCustom || customCode);
+    $('btn-deploy').disabled = !ok;
+  }
+
+  function buildPayload() {
+    const payload = {
+      description: $('description').value.trim(),
+      title: $('title').value.trim() || undefined,
+      enableCustomCode: $('enable-custom').checked,
+      customCode: $('custom-code').value.trim() || undefined,
+      createVersion: $('create-version').checked,
+    };
+    if (mode === 'single') {
+      payload.filename = $('filename').value.trim() || 'index.html';
+      payload.content = $('content').value;
+    } else {
+      const valid = files.filter(f => f.path);
+      payload.files = valid.map(f => ({ path: f.path, content: f.content || '' }));
+      // 服务端要求 filename 必填且必须是 .html/.htm —— 自动从已上传文件里挑主入口
+      const explicit = $('filename').value.trim();
+      const indexHtml = valid.find(f => f.path === 'index.html');
+      const firstHtml = valid.find(f => f.path.endsWith('.html') || f.path.endsWith('.htm'));
+      payload.filename = explicit || (indexHtml && indexHtml.path) || (firstHtml && firstHtml.path) || 'index.html';
+    }
+    return payload;
+  }
+
+  $('btn-deploy').addEventListener('click', async () => {
+    if ($('btn-deploy').disabled) return;
+    $('btn-deploy').disabled = true;
+    $('btn-deploy').innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="animate-spin mr-2 h-5 w-5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>部署中…';
+    try {
+      const r = await fetch('/api/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildPayload()),
+      });
+      const j = await r.json();
+      if (j.success) {
+        renderResult(j);
+        showToast('部署成功');
+      } else {
+        showToast('部署失败：' + (j.detail || j.errorCode || '未知错误'));
+      }
+    } catch (e) {
+      showToast('网络错误：' + e.message);
+    } finally {
+      $('btn-deploy').innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="-ml-1 mr-2 h-5 w-5"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>立即部署';
+      updateDeployBtn();
+    }
+  });
+
+  function renderResult(d) {
+    $('result-card').classList.remove('hidden');
+    const rows = [
+      ['短链 code', d.code],
+      ['访问 URL', d.url],
+      ['应用本体', d.detailUrl],
+      ['版本 URL', d.versionUrl],
+      ['版本号', 'v' + d.versionNumber],
+      ['大小', formatSize(d.size)],
+    ];
+    $('result-content').innerHTML = rows.map(([k, v]) => `
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="w-20 shrink-0 text-slate-500">${escapeHtml(k)}</span>
+        <code class="flex-1 rounded bg-white px-2 py-1 font-mono text-xs text-slate-900 ring-1 ring-slate-200 break-all">${escapeHtml(v || '—')}</code>
+        <button data-copy="${escapeHtml(v || '')}" type="button" class="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">复制</button>
+      </div>
+    `).join('') + `
+      <div class="flex flex-wrap gap-2 pt-3 border-t border-slate-200">
+        <a href="/agent/${escapeHtml(d.code)}" target="_blank" rel="noopener" class="inline-flex items-center rounded-lg bg-sky-600 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-700">打开应用</a>
+        <a href="/deploy/${escapeHtml(d.id || '')}" class="inline-flex items-center rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-50">查看详情</a>
+        <a href="${escapeHtml(d.url || '')}" download class="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">下载源码</a>
+      </div>
+    `;
+    $('result-content').querySelectorAll('button[data-copy]').forEach(b => {
+      b.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(b.dataset.copy); showToast('已复制'); }
+        catch (e) { showToast('复制失败'); }
+      });
+    });
+  }
+
+  $('btn-clear').addEventListener('click', () => {
+    $('content').value = '';
+    $('filename').value = '';
+    $('title').value = '';
+    $('description').value = '';
+    $('enable-custom').checked = false;
+    $('custom-code').value = '';
+    $('custom-code').disabled = true;
+    $('create-version').checked = false;
+    files = [{ path: 'index.html', content: '' }];
+    renderFiles();
+    $('result-card').classList.add('hidden');
+    $('info-source').textContent = '手动输入';
+    updateInfo();
+  });
+
+  updateInfo();
+})();
+</script>
+</body>
+</html>

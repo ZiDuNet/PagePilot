@@ -1,0 +1,7 @@
+interface:
+  display_name: "PagePilot Deploy"
+  short_description: "Publish static sites to PagePilot with versioned URLs."
+  brand_color: "#0284C7"
+  default_prompt: "Use $hostctl-deploy to publish this static site to PagePilot."
+policy:
+  allow_implicit_invocation: true

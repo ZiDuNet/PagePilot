@@ -1,0 +1,49 @@
+# hostctl 单容器编排示例
+#
+# 用法：
+#   1. 修改下面的 PUBLIC_BASE_URL 为你的对外可访问地址（含 http/https + 域名/端口）
+#   2. docker compose up -d --build
+#   3. 浏览器打开 http://<host>:8787/admin
+#   4. 在「Tokens」标签页创建第一个 admin token
+#   5. （可选）切到生产模式：环境 REQUIRE_AUTH=true 重启容器
+#
+# 持久化：把 /var/lib/hostctl 和 /var/www/hosted 挂出来。
+# 备份：定期 tar 这两个卷即可。
+
+services:
+  hostctl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hostctl:latest
+    container_name: hostctl
+    restart: unless-stopped
+
+    ports:
+      - "8787:8787"
+
+    environment:
+      # 对外公开 BaseURL —— 生成的访问链接、二维码、详情页 URL 都基于它拼接。
+      # 如果你前面挂了反代（Caddy/Nginx/Traefik），就填反代后的对外域名。
+      PUBLIC_BASE_URL: "http://localhost:8787"
+
+      # 部署冷却（秒）。10 秒是一个对 Agent 友好的默认。
+      COOLDOWN_SECONDS: "10"
+
+      # 是否要求 Bearer Token。dev=true（默认）方便引导；生产请改 true。
+      REQUIRE_AUTH: "false"
+
+    volumes:
+      - hostctl-data:/var/lib/hostctl
+      - hostctl-www:/var/www/hosted
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  hostctl-data:
+  hostctl-www:
