@@ -1384,7 +1384,12 @@ func (s *Server) handleStaticServe(w http.ResponseWriter, r *http.Request) {
 
 	base := filepath.Join(s.cfg.HostedDir, code, "current")
 	if sub == "" {
-		sub = "index.html"
+		var err error
+		sub, err = s.currentMainEntry(r.Context(), code)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	full := filepath.Join(base, sub)
 
@@ -2724,7 +2729,12 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 
 	base := filepath.Join(s.cfg.HostedDir, code, "current")
 	if sub == "" {
-		sub = "index.html"
+		var err error
+		sub, err = s.currentMainEntry(r.Context(), code)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	full := filepath.Join(base, sub)
 
@@ -2752,6 +2762,26 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeFile(w, r, absFull)
+}
+
+func (s *Server) currentMainEntry(ctx context.Context, code string) (string, error) {
+	content, apiErr := s.deployer.GetContent(ctx, code, nil)
+	if apiErr != nil {
+		return "", fmt.Errorf(apiErr.Detail)
+	}
+	mainEntry := strings.TrimSpace(content.MainEntry)
+	if mainEntry == "" {
+		mainEntry = "index.html"
+	}
+	if strings.HasPrefix(mainEntry, "/") || strings.Contains(mainEntry, `\`) {
+		return "", fmt.Errorf("invalid main entry")
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(mainEntry), "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", fmt.Errorf("invalid main entry")
+		}
+	}
+	return mainEntry, nil
 }
 
 // handleDetailUI 处理 GET /deploy/{uuid}（详情页 SPA）。
