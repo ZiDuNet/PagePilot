@@ -1653,7 +1653,7 @@ func (s *Server) handleAgentGuideUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
-	root := filepath.Join("skill", "hostctl-deploy")
+	root := skillRoot()
 	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {
 		http.NotFound(w, r)
@@ -1802,7 +1802,7 @@ func skillEditablePath(rel string) (string, string, *APIError) {
 	if !ok {
 		return "", "", NewError(CodeInvalidInput, "skill", "skill file is not editable")
 	}
-	return filepath.Join("skill", "hostctl-deploy", filepath.FromSlash(rel)), label, nil
+	return filepath.Join(skillRoot(), filepath.FromSlash(rel)), label, nil
 }
 
 func skillEditableFiles() []adminSkillFile {
@@ -1816,13 +1816,20 @@ func skillEditableFiles() []adminSkillFile {
 	files := make([]adminSkillFile, 0, len(paths))
 	for _, p := range paths {
 		item := adminSkillFile{Path: p.rel, Label: p.label}
-		if st, err := os.Stat(filepath.Join("skill", "hostctl-deploy", filepath.FromSlash(p.rel))); err == nil {
+		if st, err := os.Stat(filepath.Join(skillRoot(), filepath.FromSlash(p.rel))); err == nil {
 			item.Size = st.Size()
 			item.UpdatedAt = st.ModTime().Format(time.RFC3339)
 		}
 		files = append(files, item)
 	}
 	return files
+}
+
+func skillRoot() string {
+	if v := strings.TrimSpace(os.Getenv("HOSTCTL_SKILL_DIR")); v != "" {
+		return v
+	}
+	return filepath.Join("skill", "hostctl-deploy")
 }
 
 // handleAdminSession validates the admin UI bearer token or admin cookie.

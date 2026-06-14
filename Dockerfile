@@ -33,15 +33,15 @@ RUN apk add --no-cache ca-certificates tzdata curl
 
 RUN addgroup -S hostctl && adduser -S -G hostctl -h /var/lib/hostctl hostctl
 
-RUN mkdir -p /var/lib/hostctl/sql /var/www/hosted /var/log/hostctl && \
-    chown -R hostctl:hostctl /var/lib/hostctl /var/www/hosted /var/log/hostctl
+RUN mkdir -p /var/lib/hostctl/sql /var/www/hosted /var/log/hostctl /opt/pagepilot/skill && \
+    chown -R hostctl:hostctl /var/lib/hostctl /var/www/hosted /var/log/hostctl /opt/pagepilot
 
 COPY --from=builder /out/hostctl-server /usr/local/bin/hostctl-server
 COPY --from=builder /out/hostctl        /usr/local/bin/hostctl
 
 COPY deploy/Caddyfile              /etc/hostctl/Caddyfile.example
 COPY deploy/hostctl-server.service /etc/hostctl/hostctl-server.service.example
-COPY --from=builder --chown=hostctl:hostctl /src/skill/hostctl-deploy /var/lib/hostctl/skill/hostctl-deploy
+COPY --from=builder --chown=hostctl:hostctl /src/skill/hostctl-deploy /opt/pagepilot/skill/hostctl-deploy
 
 USER hostctl
 WORKDIR /var/lib/hostctl
@@ -51,6 +51,7 @@ ENV HOSTCTL_HTTP_ADDR=0.0.0.0:8787 \
     HOSTCTL_HOSTED_DIR=/var/www/hosted \
     HOSTCTL_DB_PATH=/var/lib/hostctl/hostctl.db \
     HOSTCTL_PUBLIC_BASE_URL=http://localhost:8787 \
+    HOSTCTL_SKILL_DIR=/opt/pagepilot/skill/hostctl-deploy \
     HOSTCTL_COOLDOWN_SECONDS=10 \
     REQUIRE_AUTH=true \
     HOSTCTL_ADMIN_USERNAME=admin \
