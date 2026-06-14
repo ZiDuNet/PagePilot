@@ -9,6 +9,11 @@ RUN apk add --no-cache git ca-certificates
 
 WORKDIR /src
 
+ARG GOPROXY=https://goproxy.cn,direct
+ARG GOSUMDB=sum.golang.google.cn
+ENV GOPROXY=${GOPROXY} \
+    GOSUMDB=${GOSUMDB}
+
 # Copy module files first to maximize layer cache reuse.
 COPY go.mod go.sum ./
 RUN go mod download
