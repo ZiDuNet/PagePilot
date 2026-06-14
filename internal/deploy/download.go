@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/yourorg/hostctl/internal/api"
 	"github.com/yourorg/hostctl/internal/store"
@@ -63,6 +64,9 @@ func (d *Deployer) StreamDownload(ctx context.Context, code string, versionPtr *
 	defer zw.Close()
 
 	for _, mf := range files {
+		if !zipPathSafe(mf.Path) {
+			return nil
+		}
 		full := filepath.Join(versionDir, mf.Path)
 		if err := ensureWithin(versionDir, full); err != nil {
 			// 已 write header，无法返回错误；只能 break
@@ -80,6 +84,19 @@ func (d *Deployer) StreamDownload(ctx context.Context, code string, versionPtr *
 		_ = f.Close()
 	}
 	return nil
+}
+
+func zipPathSafe(path string) bool {
+	if path == "" || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`) {
+		return false
+	}
+	path = filepath.ToSlash(path)
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // ensureWithin 校验 path 在 root 内（防穿越）。

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,6 +96,8 @@ type captchaChallenge struct {
 	Answer    string
 	ExpiresAt time.Time
 }
+
+var routeCodeRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{2,30}[a-z0-9])?$`)
 
 // New 构造 Server。
 // requireAuth: true 时所有写操作要求 Bearer token；dev 模式下传 false。
@@ -1350,7 +1353,7 @@ func (s *Server) handleStaticServe(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 	sub := r.PathValue("path")
 
-	if code == "" || strings.ContainsAny(code, "/\\") || strings.HasPrefix(code, ".") {
+	if !routeCodeRe.MatchString(code) {
 		http.NotFound(w, r)
 		return
 	}
@@ -2704,7 +2707,7 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 	sub := r.PathValue("path")
 
-	if code == "" || strings.ContainsAny(code, "/\\") || strings.HasPrefix(code, ".") {
+	if !routeCodeRe.MatchString(code) {
 		http.NotFound(w, r)
 		return
 	}
