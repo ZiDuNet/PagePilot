@@ -41,6 +41,7 @@ COPY --from=builder /out/hostctl        /usr/local/bin/hostctl
 
 COPY deploy/Caddyfile              /etc/hostctl/Caddyfile.example
 COPY deploy/hostctl-server.service /etc/hostctl/hostctl-server.service.example
+COPY --from=builder --chown=hostctl:hostctl /src/skill/hostctl-deploy /var/lib/hostctl/skill/hostctl-deploy
 
 USER hostctl
 WORKDIR /var/lib/hostctl
