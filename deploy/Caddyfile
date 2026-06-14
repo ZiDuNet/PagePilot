@@ -16,6 +16,8 @@ host.example.com {
 		path /openapi.json
 		path /api/*
 		path /admin*
+		path /agents*
+		path /skill/*
 		path /agent/*
 		path /deploy/*
 	}

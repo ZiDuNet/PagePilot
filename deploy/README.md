@@ -87,6 +87,8 @@ Caddy 需要把这些路径反向代理到 hostctl：
 
 - `/api/*`
 - `/admin*`
+- `/agents*`
+- `/skill/*`
 - `/agent/*`
 - `/deploy/*`
 - `/openapi.json`
