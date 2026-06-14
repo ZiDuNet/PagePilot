@@ -166,11 +166,6 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	}
 
 	if isNewSite {
-		var expiresAt *time.Time
-		if strings.HasPrefix(ownerTokenID, "anon:") {
-			t := now.Add(7 * 24 * time.Hour)
-			expiresAt = &t
-		}
 		accessHash := ""
 		if strings.TrimSpace(req.AccessPassword) != "" {
 			if strings.HasPrefix(ownerTokenID, "anon:") {
@@ -190,7 +185,6 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			OwnerTokenID:           ownerTokenID,
 			PrimaryVersionStrategy: string(api.StrategyLikes),
 			AccessPasswordHash:     accessHash,
-			ExpiresAt:              expiresAt,
 			CreatedAt:              now,
 			Source:                 normalizeSource(req.Source),
 		}); err != nil {
@@ -262,7 +256,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	preserveHint := ""
 	agentGuideURL := ""
 	if isNewSite {
-		preserveHint = "Lock this version to prevent automatic cleanup. Use createVersion=true with the same code to publish updates."
+		preserveHint = "Use createVersion=true with the same code to publish updates."
 		agentGuideURL = fmt.Sprintf("%s/api-docs.html", base)
 	}
 	return &api.DeployResponse{
