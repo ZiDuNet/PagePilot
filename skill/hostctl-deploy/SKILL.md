@@ -39,6 +39,8 @@ Binding sends the same `agentId` and stores a user-owned token plus Agent identi
 - For multi-file deploys, paths must be clean relative paths using `/`. Reject absolute paths, drive letters, backslashes, `..`, `.`, empty path segments, symlinks, or files outside the selected source directory.
 - Keep the main entry as `index.html` whenever possible. If the site uses a different HTML entry, pass it explicitly with `--filename` and keep the same entry stable across appended versions.
 - Before deploying a directory, make sure it contains exactly one intended HTML entry or a clear `index.html`. If several plausible HTML entries exist and the intended entry is unclear, ask the user before publishing.
+- For multi-page HTML sites, preserve normal navigation: use relative links such as `href="settings.html"` or `href="./settings.html"` and do not call `preventDefault()` on those links unless the handler explicitly changes `window.location` to the same target.
+- Do not generate root-relative asset or page links such as `/settings.html` for hosted apps, because apps run under `/agent/{code}/`.
 - Inspect versions before switching, locking, unlocking, overwriting, or deleting versions.
 - Do not overwrite or delete locked versions. Append a new version instead.
 - Confirm before deleting a whole site.
