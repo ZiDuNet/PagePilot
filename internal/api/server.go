@@ -1353,6 +1353,10 @@ func (s *Server) handleStaticServe(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 	sub := r.PathValue("path")
 
+	if s.redirectRootRelativeHostedPath(w, r) {
+		return
+	}
+
 	if !routeCodeRe.MatchString(code) {
 		http.NotFound(w, r)
 		return
@@ -1418,7 +1422,7 @@ func (s *Server) handleStaticServe(w http.ResponseWriter, r *http.Request) {
 		}(code)
 	}
 
-	http.ServeFile(w, r, absFull)
+	s.serveHostedFile(w, r, code, sub, absFull)
 }
 func (s *Server) authenticate(r *http.Request) (string, *APIError) {
 	tok, authErr := s.authenticateToken(r)
@@ -2761,7 +2765,108 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 		}(code)
 	}
 
-	http.ServeFile(w, r, absFull)
+	s.serveHostedFile(w, r, code, sub, absFull)
+}
+
+func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code, sub, absFull string) {
+	lowerSub := strings.ToLower(sub)
+	if !strings.HasSuffix(lowerSub, ".html") && !strings.HasSuffix(lowerSub, ".htm") {
+		http.ServeFile(w, r, absFull)
+		return
+	}
+	body, err := os.ReadFile(absFull)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, filepath.Base(absFull), fileModTime(absFull), strings.NewReader(injectHostedHTMLCompat(body, code)))
+}
+
+func fileModTime(path string) time.Time {
+	st, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return st.ModTime()
+}
+
+func injectHostedHTMLCompat(body []byte, code string) string {
+	htmlText := string(body)
+	script := hostedHTMLCompatScript(code)
+	lower := strings.ToLower(htmlText)
+	if i := strings.LastIndex(lower, "</body>"); i >= 0 {
+		return htmlText[:i] + script + htmlText[i:]
+	}
+	return htmlText + script
+}
+
+func hostedHTMLCompatScript(code string) string {
+	codeJSON, _ := json.Marshal(code)
+	return "\n<script data-pagepilot-compat>\n(function(){\n" +
+		"var code=" + string(codeJSON) + ";\n" +
+		"var prefix='/agent/'+code+'/';\n" +
+		"function isPlainClick(e){return e.button===0&&!e.metaKey&&!e.ctrlKey&&!e.shiftKey&&!e.altKey;}\n" +
+		"function shouldHandle(e,a){\n" +
+		" if(!a||!isPlainClick(e)) return false;\n" +
+		" var href=a.getAttribute('href')||'';\n" +
+		" if(!href||href==='#'||href.indexOf('javascript:')===0||href.indexOf('mailto:')===0||href.indexOf('tel:')===0) return false;\n" +
+		" try{var u=new URL(href,location.href); if(u.origin!==location.origin) return false; return /\\.html?$/i.test(u.pathname) && (u.pathname.indexOf(prefix)===0 || (u.pathname.indexOf('/')===0 && u.pathname.indexOf(prefix)!==0));}catch(_){return false;}\n" +
+		"}\n" +
+		"function targetURL(a){\n" +
+		" var u=new URL(a.getAttribute('href'),location.href);\n" +
+		" if(u.pathname.indexOf(prefix)!==0) u.pathname=prefix+u.pathname.replace(/^\\/+/, '');\n" +
+		" return u.href;\n" +
+		"}\n" +
+		"document.addEventListener('click',function(e){\n" +
+		" var a=e.target&&e.target.closest&&e.target.closest('a[href]');\n" +
+		" if(!shouldHandle(e,a)) return;\n" +
+		" setTimeout(function(){\n" +
+		"  if(e.defaultPrevented) location.href=targetURL(a);\n" +
+		" },0);\n" +
+		"},true);\n" +
+		"})();\n</script>\n"
+}
+
+func (s *Server) redirectRootRelativeHostedPath(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if !isHostedCompatPath(r.URL.Path) {
+		return false
+	}
+	ref := r.Referer()
+	if ref == "" {
+		return false
+	}
+	code := extractCodeFromURL(ref)
+	if !routeCodeRe.MatchString(code) {
+		return false
+	}
+	site, err := s.deployer.GetSite(r.Context(), code)
+	if err != nil || site.Code == "" {
+		return false
+	}
+	target := *r.URL
+	target.Path = "/agent/" + code + r.URL.Path
+	http.Redirect(w, r, target.String(), http.StatusTemporaryRedirect)
+	return true
+}
+
+func isHostedCompatPath(path string) bool {
+	path = strings.ToLower(strings.TrimSpace(path))
+	if path == "" || !strings.HasPrefix(path, "/") {
+		return false
+	}
+	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/admin") || strings.HasPrefix(path, "/agent/") || strings.HasPrefix(path, "/skill/") || strings.HasPrefix(path, "/deploy/") {
+		return false
+	}
+	switch filepath.Ext(path) {
+	case ".html", ".htm", ".css", ".js", ".mjs", ".json", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".avif", ".woff", ".woff2", ".ttf", ".otf", ".map", ".txt", ".xml", ".webmanifest":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) currentMainEntry(ctx context.Context, code string) (string, error) {
