@@ -69,7 +69,7 @@ type resolvedFile struct {
 //   - 单 HTML：req.Content（filename 必填，必须 .html/.htm）
 //   - 多文件：req.Files（filename 必填，必须 .html/.htm，作为主入口）
 //
-// 严格对齐 htmlcode.fun OpenAPI 3.1。
+// 严格对齐项目 OpenAPI 3.1。
 // ownerTokenID 用于按 token 维度限流；clientIP 用于按 IP 维度限流。
 func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerTokenID, clientIP string) (*api.DeployResponse, *api.APIError) {
 	// 0. 冷却检查（必须最先；任何字段错误都不应该消耗冷却）

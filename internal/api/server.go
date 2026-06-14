@@ -126,7 +126,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/session", s.handleAnonymousSession)
 	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 
-	// 应用商城（公开 API，对标 htmlcode.fun /api/deploys）
+	// 应用商城（公开 API：/api/deploys）
 	s.mux.HandleFunc("GET /api/deploys", s.handleListMarketplace)
 	s.mux.HandleFunc("GET /api/deploys/{publicId}", s.handleGetMarketplaceDeploy)
 	s.mux.HandleFunc("POST /api/deploys/{code}/like", s.handleLikeDeploy)
@@ -291,7 +291,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 强制 application/json（对标 htmlcode.fun：禁用 multipart）
+	// 强制 application/json，禁用 multipart。
 	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if !strings.HasPrefix(ct, "application/json") {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "content_type",
@@ -531,10 +531,10 @@ func randomHex(n int) string {
 // 让 errors 在 import 中可见（Day 3+ 会用 errors.Is）
 var _ = errors.Is
 
-// ===== 应用商城（公开 API，对标 htmlcode.fun /api/deploys） =====
+// ===== 应用商城（公开 API：/api/deploys） =====
 
 // marketplaceDeployResponse 是 GET /api/deploys 列表里单条记录的 JSON 形态，
-// 字段命名对齐 htmlcode.fun 让前端 1:1 复刻。
+// 字段命名保持稳定，便于前端和 Agent 复用。
 type marketplaceDeployResponse struct {
 	ID                     string  `json:"id"`
 	Code                   string  `json:"code"`
@@ -2021,13 +2021,6 @@ func (s *Server) handleAdminSetup(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "admin account already exists"), reqID))
 		return
-	}
-	if s.requireAuth {
-		if strings.TrimSpace(s.cfg.BootstrapAdminUsername) == "" || strings.TrimSpace(s.cfg.BootstrapAdminPassword) == "" {
-			writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth",
-				"first admin must be bootstrapped with HOSTCTL_ADMIN_USERNAME and HOSTCTL_ADMIN_PASSWORD in production"), reqID))
-			return
-		}
 	}
 	var req AdminSetupRequest
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {

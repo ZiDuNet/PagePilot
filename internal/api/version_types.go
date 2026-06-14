@@ -75,7 +75,7 @@ type ContentFile struct {
 }
 
 // OverwriteRequest 是 PATCH /api/deploys/{code}/versions/{version} 的覆盖模式请求体。
-// 对齐 htmlcode.fun OpenAPI VersionUpdateRequest：传 content 时 description 必填。
+// 对齐项目 OpenAPI VersionUpdateRequest：传 content 时 description 必填。
 type OverwriteRequest struct {
 	Description string       `json:"description"` // content 模式必填
 	Title       string       `json:"title,omitempty"`

@@ -1,10 +1,44 @@
 # 生产环境部署
 
-本目录包含在 VPS 上运行 hostctl 所需的 Caddy 模板和 systemd unit 文件。
+本目录包含 PagePilot / hostctl 在 VPS 上运行所需的 Caddy 与 systemd 模板。
+
+## Docker 部署
+
+推荐先用 Docker 验证生产配置：
+
+```bash
+docker compose up -d --build
+```
+
+部署前请在 `docker-compose.yml` 中把 `HOSTCTL_PUBLIC_BASE_URL` 改成真实对外地址，例如：
+
+```yaml
+HOSTCTL_PUBLIC_BASE_URL: "https://pagepilot.example.com"
+```
+
+首次启动没有默认用户名和密码。打开 `https://pagepilot.example.com/admin` 后，如果数据库里还没有管理员，页面会引导创建第一个管理员账号。
+
+如果你需要无人值守部署，可以在环境变量中预置首个管理员：
+
+```yaml
+HOSTCTL_ADMIN_USERNAME: "admin"
+HOSTCTL_ADMIN_PASSWORD: "change-this-password"
+```
+
+设置这两个变量后，服务启动时会在没有任何用户的情况下自动创建管理员；如果已经有用户，不会覆盖现有账号。
+
+Docker 默认把这些目录挂载到宿主机的 `./data/docker/` 下：
+
+| 宿主机路径 | 容器路径 | 用途 |
+|---|---|---|
+| `./data/docker/hostctl` | `/var/lib/hostctl` | SQLite 数据库与运行数据 |
+| `./data/docker/sql` | `/var/lib/hostctl/sql` | 人工维护、备份或迁移用的 SQL 文件 |
+| `./data/docker/hosted` | `/var/www/hosted` | 已发布的静态站点文件 |
+| `./data/docker/logs` | `/var/log/hostctl` | 服务日志目录 |
 
 ## 1. 准备服务器
 
-Ubuntu 22.04 / Debian 12：
+Ubuntu 22.04 / Debian 12:
 
 ```bash
 sudo apt update
@@ -15,11 +49,11 @@ sudo mkdir -p /var/www/hosted /var/lib/hostctl /var/log/hostctl /backup
 sudo chown -R hostctl:hostctl /var/www/hosted /var/lib/hostctl /var/log/hostctl
 ```
 
-把你的域名 A / AAAA 记录指向该 VPS。Caddy 会自动申请并续签 TLS 证书。
+把域名 A / AAAA 记录指向这台 VPS，Caddy 会自动申请并续签 TLS 证书。
 
 ## 2. 构建并上传二进制
 
-在你的开发机上：
+在开发机上执行：
 
 ```bash
 make build-linux
@@ -30,7 +64,7 @@ ssh root@vps 'chmod +x /usr/local/bin/hostctl-server /usr/local/bin/hostctl'
 
 ## 3. 安装 systemd
 
-编辑 `deploy/hostctl-server.service`，把 `https://host.example.com` 替换为真实的对外 URL。
+编辑 `deploy/hostctl-server.service`，把 `https://host.example.com` 替换成真实对外 URL。
 
 ```bash
 sudo cp deploy/hostctl-server.service /etc/systemd/system/
@@ -39,7 +73,7 @@ sudo systemctl enable --now hostctl-server
 sudo systemctl status hostctl-server
 ```
 
-该 unit 把 API 跑在 `127.0.0.1:8787`，SQLite 存放在 `/var/lib/hostctl/hostctl.db`，静态字节从 `/var/www/hosted` 对外提供，并开启 `--require-auth`。
+该 unit 默认把 API 跑在 `127.0.0.1:8787`，SQLite 存放在 `/var/lib/hostctl/hostctl.db`，静态站点存放在 `/var/www/hosted`，并开启 `--require-auth`。
 
 ## 4. 安装 Caddy
 
@@ -51,7 +85,7 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Caddy 必须把以下路由反向代理到 hostctl：
+Caddy 需要把这些路径反向代理到 hostctl：
 
 - `/api/*`
 - `/admin*`
@@ -59,54 +93,36 @@ Caddy 必须把以下路由反向代理到 hostctl：
 - `/deploy/*`
 - `/openapi.json`
 
-其余路径可以由静态文件服务器处理短代码路径。
+其余短链路径可以由静态文件服务处理。
 
-## 5. 创建首个管理员令牌
+## 5. 创建首个管理员
 
-生产服务启动时已开启认证，所以需要在 VPS 上本地做一次短暂维护运行，以创建首个管理员令牌：
+没有默认管理员账号，也没有默认密码。
 
-```bash
-sudo systemctl stop hostctl-server
+推荐方式：服务启动后直接打开 `https://host.example.com/admin`，按页面引导创建第一个管理员。这个入口只在数据库里没有管理员时开放；创建成功后会自动关闭。
 
-sudo -u hostctl /usr/local/bin/hostctl-server \
-  --addr 127.0.0.1:8787 \
-  --hosted-dir /var/www/hosted \
-  --db /var/lib/hostctl/hostctl.db \
-  --public-url https://host.example.com &
+无人值守方式：在 systemd unit 中添加环境变量，再启动服务：
 
-curl -s -X POST http://127.0.0.1:8787/api/token \
-  -H 'Content-Type: application/json' \
-  -d '{"label":"bootstrap-admin","isAdmin":true}'
-
-sudo pkill -u hostctl hostctl-server
-sudo systemctl start hostctl-server
+```ini
+Environment=HOSTCTL_ADMIN_USERNAME=admin
+Environment=HOSTCTL_ADMIN_PASSWORD=change-this-password
 ```
 
-请立即保存返回的 `token`。它只显示一次。然后打开 `https://host.example.com/admin`，用它登录。
-
-之后可从管理员 UI、CLI 或技能中创建用户或管理员令牌：
-
-```bash
-hostctl --server https://host.example.com --token <admin-token> token create ci-bot
-hostctl --server https://host.example.com --token <admin-token> token create ops-admin --admin
-```
+这两个变量只会在数据库里没有任何用户时创建首个管理员，不会覆盖已有账号。
 
 ## 6. 验证
 
 ```bash
 curl -s https://host.example.com/api/health
 curl -s https://host.example.com/openapi.json | jq '.info.title'
-curl -s https://host.example.com/api/admin/session \
-  -H "Authorization: Bearer <admin-token>"
 ```
 
-也可以运行：
+登录后台后，也可以在 Agent 技能里执行：
 
 ```bash
 python skill/hostctl-deploy/scripts/hostctl_deploy.py \
   --server https://host.example.com \
-  --token <admin-token> \
-  doctor --require-admin
+  doctor
 ```
 
 ## 备份
@@ -119,7 +135,7 @@ sudo tar -czf /backup/hostctl-$(date +%F).tar.gz /var/lib/hostctl /var/www/hoste
 sudo systemctl start hostctl-server
 ```
 
-若要降低停机时间，可使用 SQLite 备份工具，再归档 `/var/www/hosted`。
+如果要降低停机时间，可以使用 SQLite 备份工具导出数据库，再归档 `/var/www/hosted`。
 
 ## 监控
 
@@ -129,8 +145,7 @@ journalctl -u caddy -f
 df -h /var/www/hosted /var/lib/hostctl
 ```
 
-推荐的外部检查项：
+推荐外部检查项：
 
 - `GET /api/health`
 - `GET /openapi.json`
-- 用一个专用的监控管理员令牌做管理员会话校验（如果你的安全策略允许）。

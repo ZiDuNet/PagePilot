@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -743,7 +743,7 @@
     <section id="tab-config" class="tab-panel hidden">
       <div class="panel" style="max-width:760px">
         <div class="panel-head"><div><h2 class="panel-title">运行设置</h2><p class="panel-subtitle">调整对外 URL 和查看当前限制。</p></div></div>
-        <div class="field"><label>Public Base URL</label><input id="config-base-url" class="input mono" placeholder="https://www.htmlcode.fun"></div>
+        <div class="field"><label>Public Base URL</label><input id="config-base-url" class="input mono" placeholder="https://pagepilot.example.com"></div>
         <div class="field"><label>匿名免费部署额度</label><input id="config-anon-limit" class="input" type="number" min="0" placeholder="5"></div>
         <div class="field"><label>部署冷却时间（秒）</label><input id="config-cooldown" class="input" type="number" min="0" max="3600" placeholder="10"></div>
         <div class="grid-2" style="grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
@@ -751,7 +751,7 @@
           <div class="field"><label>整站上限（MB）</label><input id="config-total-mb" class="input" type="number" min="0.1" step="0.1" placeholder="10"></div>
           <div class="field"><label>文件数上限</label><input id="config-max-files" class="input" type="number" min="1" step="1" placeholder="100"></div>
         </div>
-        <div class="field"><label>CORS 允许来源</label><textarea id="config-cors" class="textarea mono" placeholder="* 或 https://www.htmlcode.fun, https://admin.example.com"></textarea><div class="hint">控制哪些网页可以在浏览器里跨域调用 API。Agent/CLI 不受浏览器 CORS 限制。</div></div>
+        <div class="field"><label>CORS 允许来源</label><textarea id="config-cors" class="textarea mono" placeholder="* 或 https://pagepilot.example.com, https://admin.example.com"></textarea><div class="hint">控制哪些网页可以在浏览器里跨域调用 API。Agent/CLI 不受浏览器 CORS 限制。</div></div>
         <div id="config-limits" class="stats-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:16px"></div>
         <button id="config-save" class="btn btn-primary" type="button">保存设置</button>
       </div>

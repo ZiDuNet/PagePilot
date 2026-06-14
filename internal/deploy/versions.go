@@ -112,7 +112,7 @@ func (d *Deployer) SwitchCurrent(ctx context.Context, code string, version int64
 	}, nil
 }
 
-// SwitchCurrentByUUID 同上但用 versions.id（Day 3 扩展，对标 htmlcode.fun）。
+// SwitchCurrentByUUID 同上但用 versions.id。
 func (d *Deployer) SwitchCurrentByUUID(ctx context.Context, code, versionID string) (*api.SetCurrentResponse, *api.APIError) {
 	v, err := d.store.GetVersionByUUID(ctx, versionID)
 	if err != nil {

@@ -1,41 +1,51 @@
-# hostctl 单容器编排示例
+# PagePilot single-container deployment example.
 #
-# 用法：
-#   1. 修改下面的 PUBLIC_BASE_URL 为你的对外可访问地址（含 http/https + 域名/端口）
-#   2. docker compose up -d --build
-#   3. 浏览器打开 http://<host>:8787/admin
-#   4. 在「Tokens」标签页创建第一个 admin token
-#   5. （可选）切到生产模式：环境 REQUIRE_AUTH=true 重启容器
+# Usage:
+#   1. Change HOSTCTL_PUBLIC_BASE_URL to the public URL users and agents will visit.
+#   2. Run: docker compose up -d --build
+#   3. Open: http://<host>:8787/admin
+#   4. If the database has no admin, the admin page guides you to create the first admin.
 #
-# 持久化：把 /var/lib/hostctl 和 /var/www/hosted 挂出来。
-# 备份：定期 tar 这两个卷即可。
+# Persistent bind mounts:
+#   ./data/docker/hostctl  -> /var/lib/hostctl      SQLite database and app metadata
+#   ./data/docker/sql      -> /var/lib/hostctl/sql  SQL files for maintenance/backups/migrations
+#   ./data/docker/hosted   -> /var/www/hosted       deployed static sites
+#   ./data/docker/logs     -> /var/log/hostctl      service logs, if file logging is enabled later
+#
+# There is no default username or password.
+# For unattended bootstrap, uncomment HOSTCTL_ADMIN_USERNAME / HOSTCTL_ADMIN_PASSWORD.
 
 services:
   hostctl:
     build:
       context: .
       dockerfile: Dockerfile
-    image: hostctl:latest
-    container_name: hostctl
+    image: pagepilot:latest
+    container_name: pagepilot
     restart: unless-stopped
 
     ports:
       - "8787:8787"
 
     environment:
-      # 对外公开 BaseURL —— 生成的访问链接、二维码、详情页 URL 都基于它拼接。
-      # 如果你前面挂了反代（Caddy/Nginx/Traefik），就填反代后的对外域名。
-      PUBLIC_BASE_URL: "http://localhost:8787"
+      # Public URL used for generated links, QR codes, agent skill download links, and share pages.
+      HOSTCTL_PUBLIC_BASE_URL: "http://localhost:8787"
 
-      # 部署冷却（秒）。10 秒是一个对 Agent 友好的默认。
-      COOLDOWN_SECONDS: "10"
+      # Production mode: login is required after the first admin account exists.
+      REQUIRE_AUTH: "true"
 
-      # 是否要求 Bearer Token。dev=true（默认）方便引导；生产请改 true。
-      REQUIRE_AUTH: "false"
+      # A short deploy cooldown keeps accidental repeated agent calls under control.
+      HOSTCTL_COOLDOWN_SECONDS: "10"
+
+      # Optional unattended first-admin bootstrap:
+      # HOSTCTL_ADMIN_USERNAME: "admin"
+      # HOSTCTL_ADMIN_PASSWORD: "change-this-password"
 
     volumes:
-      - hostctl-data:/var/lib/hostctl
-      - hostctl-www:/var/www/hosted
+      - ./data/docker/hostctl:/var/lib/hostctl
+      - ./data/docker/sql:/var/lib/hostctl/sql
+      - ./data/docker/hosted:/var/www/hosted
+      - ./data/docker/logs:/var/log/hostctl
 
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/api/health"]
@@ -43,7 +53,3 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
-
-volumes:
-  hostctl-data:
-  hostctl-www:

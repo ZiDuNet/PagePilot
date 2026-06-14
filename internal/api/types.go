@@ -13,7 +13,7 @@ const (
 )
 
 // DeployRequest 是 POST /api/deploy 的请求体。
-// 严格对齐 htmlcode.fun OpenAPI 3.1：
+// 严格对齐项目 OpenAPI 3.1：
 //   - filename 必填且必须 `\.html?$`（主入口文件名）
 //   - description 必填，≤240 字符
 //   - code pattern: ^[a-z0-9](?:[a-z0-9-]{2,30}[a-z0-9])?$
@@ -60,7 +60,7 @@ type DeployFile struct {
 }
 
 // DeployResponse 是 POST /api/deploy 成功响应。
-// 对齐 htmlcode.fun OpenAPI 3.1 DeployResponse 全部字段。
+// 对齐项目 OpenAPI 3.1 DeployResponse 全部字段。
 type DeployResponse struct {
 	Success bool `json:"success"`
 
@@ -119,15 +119,15 @@ type DeployResponse struct {
 // VersionCreatedResponse 是 PATCH /api/deploy/content（兼容追加）的成功响应。
 // 对齐 OpenAPI 中的 VersionCreatedResponse schema。
 type VersionCreatedResponse struct {
-	Success               bool                   `json:"success"`
-	Code                  string                 `json:"code"`
-	VersionID             string                 `json:"versionId"`
-	VersionNumber         int                    `json:"versionNumber"`
-	URL                   string                 `json:"url"`
-	DetailURL             string                 `json:"detailUrl"`
-	VersionURL            string                 `json:"versionUrl"`
-	CurrentVersionID      string                 `json:"currentVersionId"`
-	PreserveHint          string                 `json:"preserveHint,omitempty"`
+	Success                bool                   `json:"success"`
+	Code                   string                 `json:"code"`
+	VersionID              string                 `json:"versionId"`
+	VersionNumber          int                    `json:"versionNumber"`
+	URL                    string                 `json:"url"`
+	DetailURL              string                 `json:"detailUrl"`
+	VersionURL             string                 `json:"versionUrl"`
+	CurrentVersionID       string                 `json:"currentVersionId"`
+	PreserveHint           string                 `json:"preserveHint,omitempty"`
 	PrimaryVersionStrategy PrimaryVersionStrategy `json:"primaryVersionStrategy"`
 }
 
@@ -148,12 +148,12 @@ type PrimaryStrategyRequest struct {
 
 // PrimaryStrategyResponse 是 GET/PATCH primary-strategy 的响应。
 type PrimaryStrategyResponse struct {
-	Success               bool                   `json:"success"`
-	Code                  string                 `json:"code"`
+	Success                bool                   `json:"success"`
+	Code                   string                 `json:"code"`
 	PrimaryVersionStrategy PrimaryVersionStrategy `json:"primaryVersionStrategy"`
-	PrimaryVersionID      string                 `json:"primaryVersionId"`
-	PrimaryVersionNumber  int64                  `json:"primaryVersionNumber"`
-	CurrentVersionID      string                 `json:"currentVersionId"`
+	PrimaryVersionID       string                 `json:"primaryVersionId"`
+	PrimaryVersionNumber   int64                  `json:"primaryVersionNumber"`
+	CurrentVersionID       string                 `json:"currentVersionId"`
 }
 
 // VersionUpdatedResponse 是 PATCH /api/deploys/{code}/versions/{version} 成功响应。
@@ -175,10 +175,10 @@ type VersionUpdatedResponse struct {
 
 // VersionDeletedResponse 是 DELETE /api/deploys/{code}/versions/{version} 成功响应。
 type VersionDeletedResponse struct {
-	Success           bool   `json:"success"`
-	Code              string `json:"code"`
-	ID                string `json:"id"`
-	DeletedVersionID  string `json:"deletedVersionId"`
-	DeletedVersionNumber int `json:"deletedVersionNumber"`
-	CurrentVersionID  string `json:"currentVersionId"`
+	Success              bool   `json:"success"`
+	Code                 string `json:"code"`
+	ID                   string `json:"id"`
+	DeletedVersionID     string `json:"deletedVersionId"`
+	DeletedVersionNumber int    `json:"deletedVersionNumber"`
+	CurrentVersionID     string `json:"currentVersionId"`
 }

@@ -1,10 +1,14 @@
 # hostctl
 
-hostctl 是一个对 Agent 友好的静态站点控制平面，灵感来自 htmlcode.fun。它让人和 AI Agent 都能发布单文件 HTML 应用或多文件静态站点，然后通过一个小巧的 Go 服务统一管理版本、锁定、回滚、令牌、管理员操作和市场浏览。
+hostctl 是 PagePilot 的静态站点控制平面。它让用户和 AI Agent 都能发布单文件 HTML 应用或多文件静态站点，并通过一个小巧的 Go 服务统一管理版本、加密访问、锁定、回滚、令牌、管理员操作和市场浏览。
+
+![PagePilot 首页](docs/screenshots/home.png)
+
+![PagePilot 后台](docs/screenshots/admin.png)
 
 ## 包含内容
 
-- 公共首页和市场位于 `/`，视觉风格与 htmlcode.fun 保持一致。
+- 公共首页和市场位于 `/`，展示可搜索、可点赞、可访问密码保护的作品。
 - 首页支持全屏弹幕动画。
 - 手动部署页面，支持粘贴 / 上传流程。
 - 管理员控制台位于 `/admin`，包含登录、仪表盘、部署、站点、令牌、配置和版本控制。

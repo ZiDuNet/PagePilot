@@ -10,23 +10,23 @@ import (
 type ErrorCode string
 
 const (
-	CodeInvalidInput        ErrorCode = "INVALID_INPUT"
-	CodeInvalidDescription  ErrorCode = "INVALID_DESCRIPTION"
-	CodeInvalidCustomCode   ErrorCode = "INVALID_CUSTOM_CODE"
-	CodeInvalidFilePath     ErrorCode = "INVALID_FILE_PATH"
-	CodeContentTooLarge     ErrorCode = "CONTENT_TOO_LARGE"
-	CodeRateLimited         ErrorCode = "RATE_LIMITED"
-	CodeNotFound            ErrorCode = "NOT_FOUND"
-	CodeVersionLocked       ErrorCode = "VERSION_LOCKED"
-	CodeForbidden           ErrorCode = "FORBIDDEN"
-	CodeConflict            ErrorCode = "CONFLICT"
-	CodeUnauthorized        ErrorCode = "UNAUTHORIZED"
-	CodeMethodNotAllowed    ErrorCode = "METHOD_NOT_ALLOWED"
-	CodeInternal            ErrorCode = "INTERNAL"
+	CodeInvalidInput       ErrorCode = "INVALID_INPUT"
+	CodeInvalidDescription ErrorCode = "INVALID_DESCRIPTION"
+	CodeInvalidCustomCode  ErrorCode = "INVALID_CUSTOM_CODE"
+	CodeInvalidFilePath    ErrorCode = "INVALID_FILE_PATH"
+	CodeContentTooLarge    ErrorCode = "CONTENT_TOO_LARGE"
+	CodeRateLimited        ErrorCode = "RATE_LIMITED"
+	CodeNotFound           ErrorCode = "NOT_FOUND"
+	CodeVersionLocked      ErrorCode = "VERSION_LOCKED"
+	CodeForbidden          ErrorCode = "FORBIDDEN"
+	CodeConflict           ErrorCode = "CONFLICT"
+	CodeUnauthorized       ErrorCode = "UNAUTHORIZED"
+	CodeMethodNotAllowed   ErrorCode = "METHOD_NOT_ALLOWED"
+	CodeInternal           ErrorCode = "INTERNAL"
 )
 
 // httpStatus 把 ErrorCode 映射到 HTTP 状态码。
-// 对齐 htmlcode.fun OpenAPI 3.1：VERSION_LOCKED 走 423 Locked。
+// 对齐项目 OpenAPI 3.1：VERSION_LOCKED 走 423 Locked。
 func (c ErrorCode) httpStatus() int {
 	switch c {
 	case CodeInvalidInput, CodeInvalidDescription, CodeInvalidCustomCode, CodeInvalidFilePath:

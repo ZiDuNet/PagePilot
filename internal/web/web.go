@@ -1,5 +1,5 @@
 // Package web 提供 hostctl 内置的 Web 资源：
-//   - user/：用户端站点（参考 htmlcode.fun UI 风格，自实现）
+//   - user/：用户端站点
 //   - admin/：管理后台单页 + 子资源（独立简约风格）
 //
 // 所有内容通过 go:embed 打进二进制，避免运行时磁盘依赖。
@@ -18,7 +18,7 @@ var adminFS embed.FS
 var userFS embed.FS
 
 var (
-	adminHTMLOnce sync.Once
+	adminHTMLOnce  sync.Once
 	adminHTMLBytes []byte
 	adminHTMLErr   error
 )
