@@ -30,14 +30,20 @@ Binding sends the same `agentId` and stores a user-owned token plus Agent identi
 
 - Use the script for deploy, append, inspect, access, token, and admin work.
 - Never deploy secrets: `.env`, API keys, bearer tokens, private credentials, or local config files.
+- Do not deploy hidden, system, dependency, cache, log, database, or build-artifact folders/files such as `.git`, `.DS_Store`, `node_modules`, `__pycache__`, `*.log`, `*.db`, `dist.zip`, or local package archives unless the user explicitly asks and it is safe.
 - Always provide `--description`; keep it concise and under 240 characters.
 - For a new stable project, prefer a readable `--code`.
+- Keep custom codes stable and route-safe: use lowercase letters, numbers, and hyphens; avoid reserved names such as `admin`, `api`, `skill`, `agent`, `agents`, `deploy`, `login`, and `register`.
 - For an update, reuse the existing code and append a new version. If the original code or URL is unknown, ask before deploying.
 - Do not append to a code unless it belongs to the current user/token/session.
+- For multi-file deploys, paths must be clean relative paths using `/`. Reject absolute paths, drive letters, backslashes, `..`, `.`, empty path segments, symlinks, or files outside the selected source directory.
+- Keep the main entry as `index.html` whenever possible. If the site uses a different HTML entry, pass it explicitly with `--filename` and keep the same entry stable across appended versions.
+- Before deploying a directory, make sure it contains exactly one intended HTML entry or a clear `index.html`. If several plausible HTML entries exist and the intended entry is unclear, ask the user before publishing.
 - Inspect versions before switching, locking, unlocking, overwriting, or deleting versions.
 - Do not overwrite or delete locked versions. Append a new version instead.
 - Confirm before deleting a whole site.
 - For private work, set or clear access with the `access` command. Do not expose protected content in summaries.
+- After deploying or appending, verify the returned App URL, Short URL, and Version URL. If any URL returns 404, inspect `mainEntry`, current version, and the uploaded file list before reporting success.
 
 ## Workflows
 
