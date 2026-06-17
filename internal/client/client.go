@@ -346,10 +346,19 @@ func (c *Client) Download(ctx context.Context, code string, version *int64) (io.
 }
 
 // CreateToken 调用 POST /api/token。
-func (c *Client) CreateToken(ctx context.Context, label string, isAdmin bool) (*api.TokenCreateResponse, error) {
+func (c *Client) CreateToken(ctx context.Context, label string, isAdmin bool, expiresAt string, ttlSeconds *int64) (*api.TokenCreateResponse, error) {
 	var resp api.TokenCreateResponse
 	if err := c.doPost(ctx, "/api/token",
-		api.TokenCreateRequest{Label: label, IsAdmin: isAdmin}, &resp); err != nil {
+		api.TokenCreateRequest{Label: label, IsAdmin: isAdmin, ExpiresAt: expiresAt, TTLSeconds: ttlSeconds}, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) ClaimAnonymousSession(ctx context.Context, sessionID string) (*api.SessionClaimResponse, error) {
+	var resp api.SessionClaimResponse
+	if err := c.doPost(ctx, "/api/session/claim",
+		api.SessionClaimRequest{SessionID: sessionID}, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

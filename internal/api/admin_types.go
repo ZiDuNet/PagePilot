@@ -140,15 +140,17 @@ type AnonymousSessionResponse struct {
 }
 
 type AnonymousSessionListItem struct {
-	ID          string    `json:"id"`
-	AgentID     string    `json:"agentId,omitempty"`
-	AgentLabel  string    `json:"agentLabel,omitempty"`
-	DeviceIP    string    `json:"deviceIp,omitempty"`
-	UserAgent   string    `json:"userAgent,omitempty"`
-	DeployCount int       `json:"deployCount"`
-	Remaining   int       `json:"remaining"`
-	CreatedAt   time.Time `json:"createdAt"`
-	LastUsedAt  time.Time `json:"lastUsedAt"`
+	ID              string     `json:"id"`
+	AgentID         string     `json:"agentId,omitempty"`
+	AgentLabel      string     `json:"agentLabel,omitempty"`
+	DeviceIP        string     `json:"deviceIp,omitempty"`
+	UserAgent       string     `json:"userAgent,omitempty"`
+	DeployCount     int        `json:"deployCount"`
+	Remaining       int        `json:"remaining"`
+	ClaimedByUserID string     `json:"claimedByUserId,omitempty"`
+	ClaimedAt       *time.Time `json:"claimedAt,omitempty"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	LastUsedAt      time.Time  `json:"lastUsedAt"`
 }
 
 type AnonymousSessionListResponse struct {

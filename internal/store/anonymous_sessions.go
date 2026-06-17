@@ -17,9 +17,9 @@ func (s *SQLiteStore) CreateAnonymousSession(ctx context.Context, session Anonym
 		session.LastUsedAt = session.CreatedAt
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO anonymous_sessions (id, agent_id, agent_label, device_ip, user_agent, deploy_count, created_at, last_used_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, session.ID, nullString(session.AgentID), nullString(session.AgentLabel), nullString(session.DeviceIP), nullString(session.UserAgent), session.DeployCount, session.CreatedAt.UTC(), session.LastUsedAt.UTC())
+		INSERT INTO anonymous_sessions (id, agent_id, agent_label, device_ip, user_agent, deploy_count, claimed_by_user_id, claimed_at, created_at, last_used_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, session.ID, nullString(session.AgentID), nullString(session.AgentLabel), nullString(session.DeviceIP), nullString(session.UserAgent), session.DeployCount, nullString(session.ClaimedByUserID), nullableTime(session.ClaimedAt), session.CreatedAt.UTC(), session.LastUsedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("create anonymous session: %w", err)
 	}
@@ -32,10 +32,12 @@ func (s *SQLiteStore) GetAnonymousSession(ctx context.Context, id string) (Anony
 	var agentLabel sql.NullString
 	var deviceIP sql.NullString
 	var userAgent sql.NullString
+	var claimedByUserID sql.NullString
+	var claimedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, agent_id, agent_label, device_ip, user_agent, deploy_count, created_at, last_used_at
+		SELECT id, agent_id, agent_label, device_ip, user_agent, deploy_count, claimed_by_user_id, claimed_at, created_at, last_used_at
 		FROM anonymous_sessions WHERE id = ?
-	`, id).Scan(&out.ID, &agentID, &agentLabel, &deviceIP, &userAgent, &out.DeployCount, &out.CreatedAt, &out.LastUsedAt)
+	`, id).Scan(&out.ID, &agentID, &agentLabel, &deviceIP, &userAgent, &out.DeployCount, &claimedByUserID, &claimedAt, &out.CreatedAt, &out.LastUsedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AnonymousSession{}, ErrNotFound
 	}
@@ -53,6 +55,13 @@ func (s *SQLiteStore) GetAnonymousSession(ctx context.Context, id string) (Anony
 	}
 	if userAgent.Valid {
 		out.UserAgent = userAgent.String
+	}
+	if claimedByUserID.Valid {
+		out.ClaimedByUserID = claimedByUserID.String
+	}
+	if claimedAt.Valid {
+		ca := claimedAt.Time
+		out.ClaimedAt = &ca
 	}
 	out.CreatedAt = out.CreatedAt.Local()
 	out.LastUsedAt = out.LastUsedAt.Local()
@@ -84,7 +93,7 @@ func (s *SQLiteStore) IncrementAnonymousSessionDeployCount(ctx context.Context, 
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE anonymous_sessions
 		SET deploy_count = deploy_count + 1, last_used_at = ?
-		WHERE id = ?
+		WHERE id = ? AND claimed_by_user_id IS NULL
 	`, now, id)
 	if err != nil {
 		return AnonymousSession{}, fmt.Errorf("increment anonymous session deploy count: %w", err)
@@ -96,14 +105,82 @@ func (s *SQLiteStore) IncrementAnonymousSessionDeployCount(ctx context.Context, 
 	return s.GetAnonymousSession(ctx, id)
 }
 
+func (s *SQLiteStore) ClaimAnonymousSession(ctx context.Context, id, userID string) (AnonymousSessionClaimResult, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AnonymousSessionClaimResult{}, fmt.Errorf("begin claim anonymous session: %w", err)
+	}
+	defer tx.Rollback()
+
+	var sess AnonymousSession
+	var claimedByUserID sql.NullString
+	var deployCount int
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, deploy_count, claimed_by_user_id
+		FROM anonymous_sessions WHERE id = ?
+	`, id).Scan(&sess.ID, &deployCount, &claimedByUserID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AnonymousSessionClaimResult{}, ErrNotFound
+	}
+	if err != nil {
+		return AnonymousSessionClaimResult{}, fmt.Errorf("load anonymous session for claim: %w", err)
+	}
+
+	result := AnonymousSessionClaimResult{
+		SessionID:      id,
+		UserID:         userID,
+		DeployCount:    deployCount,
+		AlreadyClaimed: claimedByUserID.Valid && claimedByUserID.String == userID,
+	}
+	if claimedByUserID.Valid && claimedByUserID.String != "" && claimedByUserID.String != userID {
+		return AnonymousSessionClaimResult{}, fmt.Errorf("anonymous session already claimed")
+	}
+
+	ownerAnon := "anon:" + id
+	ownerUser := "user:" + userID
+	res, err := tx.ExecContext(ctx, `
+		UPDATE sites SET owner_token_id = ? WHERE owner_token_id = ?
+	`, ownerUser, ownerAnon)
+	if err != nil {
+		return AnonymousSessionClaimResult{}, fmt.Errorf("claim anonymous sites: %w", err)
+	}
+	siteCount, _ := res.RowsAffected()
+	result.SiteCount = int(siteCount)
+
+	now := time.Now().UTC()
+	_, err = tx.ExecContext(ctx, `
+		UPDATE anonymous_sessions
+		SET claimed_by_user_id = ?, claimed_at = COALESCE(claimed_at, ?), last_used_at = ?
+		WHERE id = ?
+	`, userID, now, now, id)
+	if err != nil {
+		return AnonymousSessionClaimResult{}, fmt.Errorf("mark anonymous session claimed: %w", err)
+	}
+	if !result.AlreadyClaimed && deployCount > 0 {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE admin_users SET deploy_count = deploy_count + ? WHERE id = ?
+		`, deployCount, userID)
+		if err != nil {
+			return AnonymousSessionClaimResult{}, fmt.Errorf("carry anonymous deploy count: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return AnonymousSessionClaimResult{}, fmt.Errorf("commit anonymous claim: %w", err)
+	}
+	return result, nil
+}
+
 func (s *SQLiteStore) ListAnonymousSessions(ctx context.Context, limit int) ([]AnonymousSession, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, agent_id, agent_label, device_ip, user_agent, deploy_count, created_at, last_used_at
-		FROM anonymous_sessions
-		ORDER BY last_used_at DESC
+		SELECT a.id, a.agent_id, a.agent_label, a.device_ip, a.user_agent,
+		       a.deploy_count, a.claimed_by_user_id, a.claimed_at, a.created_at, a.last_used_at
+		FROM anonymous_sessions a
+		WHERE a.deploy_count > 0
+		   OR EXISTS (SELECT 1 FROM sites s WHERE s.owner_token_id = 'anon:' || a.id)
+		ORDER BY a.last_used_at DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {
@@ -117,7 +194,9 @@ func (s *SQLiteStore) ListAnonymousSessions(ctx context.Context, limit int) ([]A
 		var agentLabel sql.NullString
 		var deviceIP sql.NullString
 		var userAgent sql.NullString
-		if err := rows.Scan(&item.ID, &agentID, &agentLabel, &deviceIP, &userAgent, &item.DeployCount, &item.CreatedAt, &item.LastUsedAt); err != nil {
+		var claimedByUserID sql.NullString
+		var claimedAt sql.NullTime
+		if err := rows.Scan(&item.ID, &agentID, &agentLabel, &deviceIP, &userAgent, &item.DeployCount, &claimedByUserID, &claimedAt, &item.CreatedAt, &item.LastUsedAt); err != nil {
 			return nil, fmt.Errorf("scan anonymous session: %w", err)
 		}
 		if agentID.Valid {
@@ -132,9 +211,23 @@ func (s *SQLiteStore) ListAnonymousSessions(ctx context.Context, limit int) ([]A
 		if userAgent.Valid {
 			item.UserAgent = userAgent.String
 		}
+		if claimedByUserID.Valid {
+			item.ClaimedByUserID = claimedByUserID.String
+		}
+		if claimedAt.Valid {
+			ca := claimedAt.Time
+			item.ClaimedAt = &ca
+		}
 		item.CreatedAt = item.CreatedAt.Local()
 		item.LastUsedAt = item.LastUsedAt.Local()
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func nullableTime(t *time.Time) any {
+	if t == nil || t.IsZero() {
+		return nil
+	}
+	return t.UTC()
 }

@@ -47,7 +47,7 @@ type DeployRequest struct {
 	// Source 标记本次部署来源，仅用于审计。默认 "api"。
 	Source string `json:"source,omitempty"`
 
-	// accessPassword 设置站点访问密码。仅注册用户 / 绑定 Agent 可用，匿名部署不允许。
+	// accessPassword 设置新站点访问密码。匿名会话和用户 Token 均可设置。
 	AccessPassword string `json:"accessPassword,omitempty"`
 }
 

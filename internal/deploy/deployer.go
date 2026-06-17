@@ -168,11 +168,6 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	if isNewSite {
 		accessHash := ""
 		if strings.TrimSpace(req.AccessPassword) != "" {
-			if strings.HasPrefix(ownerTokenID, "anon:") {
-				_ = os.RemoveAll(d.versionDir(code, versionNumber))
-				return nil, api.NewError(api.CodeForbidden, "access_password",
-					"anonymous deployments cannot set an access password").WithHint("Sign in or bind this Agent to a user before creating protected sites.")
-			}
 			hash, herr := auth.HashPassword(req.AccessPassword)
 			if herr != nil {
 				_ = os.RemoveAll(d.versionDir(code, versionNumber))
@@ -776,6 +771,10 @@ func (d *Deployer) UpdateAnonymousSessionMeta(ctx context.Context, id, agentID, 
 
 func (d *Deployer) IncrementAnonymousSessionDeployCount(ctx context.Context, id string) (store.AnonymousSession, error) {
 	return d.store.IncrementAnonymousSessionDeployCount(ctx, id)
+}
+
+func (d *Deployer) ClaimAnonymousSession(ctx context.Context, id, userID string) (store.AnonymousSessionClaimResult, error) {
+	return d.store.ClaimAnonymousSession(ctx, id, userID)
 }
 
 func (d *Deployer) ListAnonymousSessions(ctx context.Context, limit int) ([]store.AnonymousSession, error) {

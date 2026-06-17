@@ -168,9 +168,20 @@ func toolList() []toolDef {
 					"title":           {Type: "string", Description: "可选站点标题"},
 					"custom_code":     {Type: "string", Description: "自定义短码，^[a-z0-9-]{3,32}$；留空自动生成"},
 					"create_version":  {Type: "boolean", Description: "custom_code 已存在时，true 追加版本；false/省略 报 CONFLICT"},
-					"access_password": {Type: "string", Description: "Optional visit password for a new user-owned site. Empty means public."},
+					"access_password": {Type: "string", Description: "Optional visit password for a new site. Empty means public."},
 				},
 				Required: []string{"source", "description"},
+			},
+		},
+		{
+			Name:        "claim_anonymous_session",
+			Description: "Claim deployments created by an anonymous session for the current HOSTCTL_TOKEN owner.",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"session_id": {Type: "string", Description: "Anonymous session id, usually from X-Hostctl-Session or ~/.hostctl/session.json"},
+				},
+				Required: []string{"session_id"},
 			},
 		},
 		{
@@ -324,6 +335,8 @@ func handleToolCall(ctx context.Context, c *client.Client, params json.RawMessag
 	switch p.Name {
 	case "deploy_site":
 		resultText, callErr = toolDeploySite(ctx, c, p.Arguments)
+	case "claim_anonymous_session":
+		resultText, callErr = toolClaimAnonymousSession(ctx, c, p.Arguments)
 	case "set_site_access_password":
 		resultText, callErr = toolSetSiteAccessPassword(ctx, c, p.Arguments)
 	case "get_site_content":
@@ -422,6 +435,19 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 	if url != "" {
 		return fmt.Sprintf("部署成功！访问 URL: %s\n\n%s", url, string(pretty)), nil
 	}
+	return string(pretty), nil
+}
+
+func toolClaimAnonymousSession(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	sessionID, _ := args["session_id"].(string)
+	if strings.TrimSpace(sessionID) == "" {
+		return "", fmt.Errorf("session_id is required")
+	}
+	resp, err := c.ClaimAnonymousSession(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
 	return string(pretty), nil
 }
 

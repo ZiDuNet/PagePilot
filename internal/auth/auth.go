@@ -52,6 +52,7 @@ type GeneratedToken struct {
 	Label       string
 	IsAdmin     bool
 	OwnerUserID string
+	ExpiresAt   *time.Time
 	CreatedAt   time.Time
 }
 
@@ -61,15 +62,20 @@ type LoginResult struct {
 	Plaintext string
 }
 
-type AgentBindingResult struct {
-	Code     store.AgentBindingCode
-	Token    *GeneratedToken
-	Username string
-}
-
 // Generate 创建一个新 token 并写库。返回明文（仅一次可见）。
-func (a *Service) Generate(ctx context.Context, label string, isAdmin bool, ownerUserID string) (*GeneratedToken, error) {
+func (a *Service) Generate(ctx context.Context, label string, isAdmin bool, ownerUserID string, expiresAt *time.Time) (*GeneratedToken, error) {
 	// 32 字节随机 → base64url ≈ 43 字符
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	if ownerUserID == "" {
+		return nil, ErrInvalid
+	}
+	if expiresAt != nil {
+		ea := expiresAt.UTC()
+		if !ea.After(time.Now().UTC()) {
+			return nil, ErrExpired
+		}
+		expiresAt = &ea
+	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return nil, fmt.Errorf("generate token randomness: %w", err)
@@ -88,7 +94,8 @@ func (a *Service) Generate(ctx context.Context, label string, isAdmin bool, owne
 		Label:       label,
 		IsAdmin:     isAdmin,
 		IsRevoked:   false,
-		OwnerUserID: strings.TrimSpace(ownerUserID),
+		OwnerUserID: ownerUserID,
+		ExpiresAt:   expiresAt,
 		CreatedAt:   now,
 	}); err != nil {
 		return nil, fmt.Errorf("store token: %w", err)
@@ -99,7 +106,8 @@ func (a *Service) Generate(ctx context.Context, label string, isAdmin bool, owne
 		Plaintext:   plaintext,
 		Label:       label,
 		IsAdmin:     isAdmin,
-		OwnerUserID: strings.TrimSpace(ownerUserID),
+		OwnerUserID: ownerUserID,
+		ExpiresAt:   expiresAt,
 		CreatedAt:   now,
 	}, nil
 }
@@ -336,59 +344,6 @@ func (a *Service) IncrementUserDeployCount(ctx context.Context, id string) (stor
 	return a.store.IncrementAdminUserDeployCount(ctx, id)
 }
 
-func (a *Service) CreateAgentBindingCode(ctx context.Context, userID, label string, ttl time.Duration) (store.AgentBindingCode, error) {
-	user, err := a.store.GetAdminUserByID(ctx, userID)
-	if err != nil {
-		return store.AgentBindingCode{}, err
-	}
-	if !user.IsActive {
-		return store.AgentBindingCode{}, ErrRevoked
-	}
-	code, err := randomBase64(18)
-	if err != nil {
-		return store.AgentBindingCode{}, err
-	}
-	now := time.Now().UTC()
-	b := store.AgentBindingCode{
-		Code:      strings.ToUpper(strings.ReplaceAll(code, "_", "X")),
-		UserID:    userID,
-		Label:     strings.TrimSpace(label),
-		CreatedAt: now,
-		ExpiresAt: now.Add(ttl),
-	}
-	if err := a.store.CreateAgentBindingCode(ctx, b); err != nil {
-		return store.AgentBindingCode{}, err
-	}
-	return b, nil
-}
-
-func (a *Service) ListAgentBindingCodes(ctx context.Context, userID string, limit int) ([]store.AgentBindingCode, error) {
-	return a.store.ListAgentBindingCodes(ctx, userID, limit)
-}
-
-func (a *Service) BindAgent(ctx context.Context, code, agentLabel string) (*AgentBindingResult, error) {
-	agentLabel = strings.TrimSpace(agentLabel)
-	if agentLabel == "" {
-		agentLabel = "agent"
-	}
-	b, err := a.store.ConsumeAgentBindingCode(ctx, strings.TrimSpace(code), agentLabel)
-	if err != nil {
-		return nil, err
-	}
-	user, err := a.store.GetAdminUserByID(ctx, b.UserID)
-	if err != nil {
-		return nil, err
-	}
-	if !user.IsActive {
-		return nil, ErrRevoked
-	}
-	token, err := a.Generate(ctx, "agent:"+agentLabel, false, user.ID)
-	if err != nil {
-		return nil, err
-	}
-	return &AgentBindingResult{Code: b, Token: token, Username: user.Username}, nil
-}
-
 // VerifyToken validates a Bearer header and returns the token record.
 func (a *Service) VerifyToken(ctx context.Context, bearerHeader string) (store.Token, error) {
 	if bearerHeader == "" {
@@ -414,6 +369,12 @@ func (a *Service) VerifyToken(ctx context.Context, bearerHeader string) (store.T
 	if tok.IsRevoked {
 		return store.Token{}, ErrRevoked
 	}
+	if strings.TrimSpace(tok.OwnerUserID) == "" {
+		return store.Token{}, ErrUnknown
+	}
+	if tok.ExpiresAt != nil && !tok.ExpiresAt.After(time.Now()) {
+		return store.Token{}, ErrExpired
+	}
 	// constant-time compare（虽然 DB lookup 已经唯一，但加一道）
 	if subtle.ConstantTimeCompare([]byte(tok.TokenHash), []byte(hash)) != 1 {
 		return store.Token{}, ErrUnknown
@@ -432,7 +393,7 @@ func (a *Service) Verify(ctx context.Context, bearerHeader string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	return tok.ID, nil
+	return "user:" + strings.TrimSpace(tok.OwnerUserID), nil
 }
 
 // HashToken 计算 token 的 SHA-256 hash。

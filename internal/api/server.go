@@ -65,6 +65,7 @@ type DeployerPort interface {
 	GetAnonymousSession(ctx context.Context, id string) (store.AnonymousSession, error)
 	UpdateAnonymousSessionMeta(ctx context.Context, id, agentID, agentLabel, deviceIP, userAgent string) error
 	IncrementAnonymousSessionDeployCount(ctx context.Context, id string) (store.AnonymousSession, error)
+	ClaimAnonymousSession(ctx context.Context, id, userID string) (store.AnonymousSessionClaimResult, error)
 	ListAnonymousSessions(ctx context.Context, limit int) ([]store.AnonymousSession, error)
 
 	// ===== 应用商城（marketplace） =====
@@ -127,6 +128,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/deploy", s.handleDeploy)
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/session", s.handleAnonymousSession)
+	s.mux.HandleFunc("POST /api/session/claim", s.handleClaimAnonymousSession)
 	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 
 	// 应用商城（公开 API：/api/deploys）
@@ -156,9 +158,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/token", s.handleCreateToken)
 	s.mux.HandleFunc("GET /api/tokens", s.handleListTokens)
 	s.mux.HandleFunc("DELETE /api/tokens/{id}", s.handleRevokeToken)
-	s.mux.HandleFunc("POST /api/agent-binding-codes", s.handleCreateAgentBindingCode)
-	s.mux.HandleFunc("GET /api/agent-binding-codes", s.handleListAgentBindingCodes)
-	s.mux.HandleFunc("POST /api/agent/bind", s.handleBindAgent)
 
 	// 配置 + 站点列表（admin / 内部）
 	s.mux.HandleFunc("GET /api/admin/session", s.handleAdminSession)
@@ -259,7 +258,7 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Hostctl-Session")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Hostctl-Session, X-Hostctl-Agent-Id, X-Hostctl-Agent-Label")
 }
 
 func originAllowed(origin, allowed string) bool {
@@ -356,7 +355,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.AnonymousDeployLimit >= 0 && sess.DeployCount >= s.cfg.AnonymousDeployLimit {
 			writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "anonymous_quota",
 				fmt.Sprintf("anonymous deploy limit reached (%d/%d)", sess.DeployCount, s.cfg.AnonymousDeployLimit)).
-				WithHint("Ask the user to register or sign in, generate an Agent binding code, then bind this Agent to continue with a user token."), reqID))
+				WithHint("Ask the user to register or sign in, create a user token, then claim this anonymous session."), reqID))
 			return
 		}
 		anonymousSessionID = sess.ID
@@ -407,16 +406,73 @@ func (s *Server) handleAnonymousSession(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, s.toAnonymousSessionResponse(sess))
 }
 
-func (s *Server) ensureAnonymousSession(w http.ResponseWriter, r *http.Request) (store.AnonymousSession, *APIError) {
-	id := strings.TrimSpace(r.Header.Get("X-Hostctl-Session"))
-	if id == "" {
-		if c, err := r.Cookie("hostctl_anon_session"); err == nil {
-			id = strings.TrimSpace(c.Value)
-		}
+func (s *Server) handleClaimAnonymousSession(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	userID, authErr := s.claimActorUserID(r)
+	if authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
 	}
+	var req SessionClaimRequest
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		sessionID = anonymousSessionIDFromRequest(r)
+	}
+	if sessionID == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "anonymous_session", "sessionId is required"), reqID))
+		return
+	}
+	result, err := s.deployer.ClaimAnonymousSession(r.Context(), sessionID, userID)
+	if err != nil {
+		code := CodeInvalidInput
+		if errors.Is(err, store.ErrNotFound) {
+			code = CodeNotFound
+		}
+		writeError(w, apiErrWithReqID(NewError(code, "anonymous_session", err.Error()), reqID))
+		return
+	}
+	writeJSON(w, http.StatusOK, SessionClaimResponse{
+		Success:        true,
+		SessionID:      result.SessionID,
+		UserID:         result.UserID,
+		SiteCount:      result.SiteCount,
+		DeployCount:    result.DeployCount,
+		AlreadyClaimed: result.AlreadyClaimed,
+	})
+}
+
+func (s *Server) claimActorUserID(r *http.Request) (string, *APIError) {
+	if user, ok := s.adminUserFromCookie(r); ok {
+		if !user.IsActive {
+			return "", NewError(CodeForbidden, "auth", "user is inactive")
+		}
+		return user.ID, nil
+	}
+	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+		return "", NewError(CodeUnauthorized, "auth", "login or bearer token required")
+	}
+	tok, authErr := s.authenticateToken(r)
+	if authErr != nil {
+		return "", authErr
+	}
+	user, err := s.auth.GetUser(r.Context(), tok.OwnerUserID)
+	if err != nil || !user.IsActive {
+		return "", NewError(CodeForbidden, "user", "token owner is inactive or missing")
+	}
+	return user.ID, nil
+}
+
+func (s *Server) ensureAnonymousSession(w http.ResponseWriter, r *http.Request) (store.AnonymousSession, *APIError) {
+	id := anonymousSessionIDFromRequest(r)
 	if id != "" {
 		sess, err := s.deployer.GetAnonymousSession(r.Context(), id)
 		if err == nil {
+			if strings.TrimSpace(sess.ClaimedByUserID) != "" {
+				return store.AnonymousSession{}, NewError(CodeUnauthorized, "anonymous_session", "anonymous session has been claimed")
+			}
 			s.updateAnonymousSessionMeta(r, sess.ID)
 			sess, _ = s.deployer.GetAnonymousSession(r.Context(), sess.ID)
 			setAnonymousSessionCookie(w, sess.ID)
@@ -541,6 +597,7 @@ var _ = errors.Is
 type marketplaceDeployResponse struct {
 	ID                     string  `json:"id"`
 	Code                   string  `json:"code"`
+	Owned                  bool    `json:"owned,omitempty"`
 	CurrentVersionID       *string `json:"currentVersionId,omitempty"`
 	PrimaryVersionStrategy string  `json:"primaryVersionStrategy"`
 	Title                  string  `json:"title"`
@@ -575,9 +632,10 @@ func (s *Server) handleListMarketplace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actor, isAdmin := s.marketplaceActor(r)
 	out := make([]marketplaceDeployResponse, 0, len(deploys))
 	for _, d := range deploys {
-		out = append(out, s.toMarketplaceResponse(d))
+		out = append(out, s.toMarketplaceResponse(d, actor, isAdmin))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -613,7 +671,8 @@ func (s *Server) handleGetMarketplaceDeploy(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	writeJSON(w, http.StatusOK, s.toMarketplaceResponse(d))
+	actor, isAdmin := s.marketplaceActor(r)
+	writeJSON(w, http.StatusOK, s.toMarketplaceResponse(d, actor, isAdmin))
 }
 
 // handleLikeDeploy 处理 POST /api/deploys/{code}/like —— 公开点赞。
@@ -651,7 +710,15 @@ func (s *Server) handleLikeDeploy(w http.ResponseWriter, r *http.Request) {
 
 // toMarketplaceResponse 把 store.MarketplaceDeploy 转成对外的 JSON 形态。
 // 拼接好 filePath / qrCodePath（绝对 URL）方便前端直接用。
-func (s *Server) toMarketplaceResponse(d store.MarketplaceDeploy) marketplaceDeployResponse {
+func (s *Server) marketplaceActor(r *http.Request) (string, bool) {
+	actor, isAdmin, err := s.optionalActor(r)
+	if err != nil {
+		return "", false
+	}
+	return actor, isAdmin
+}
+
+func (s *Server) toMarketplaceResponse(d store.MarketplaceDeploy, actor string, isAdmin bool) marketplaceDeployResponse {
 	base := strings.TrimRight(s.deployer.PublicBaseURL(), "/")
 	var currentVerID, primaryVerID *string
 	if d.CurrentVersionID != "" {
@@ -669,9 +736,11 @@ func (s *Server) toMarketplaceResponse(d store.MarketplaceDeploy) marketplaceDep
 		t := d.ExpiresAt.UTC().Format(time.RFC3339Nano)
 		expiresAt = &t
 	}
+	owned := isAdmin || (actor != "" && d.OwnerTokenID == actor)
 	return marketplaceDeployResponse{
 		ID:                     d.ID,
 		Code:                   d.Code,
+		Owned:                  owned,
 		CurrentVersionID:       currentVerID,
 		PrimaryVersionStrategy: d.PrimaryVersionStrategy,
 		Title:                  d.Title,
@@ -1110,9 +1179,11 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ownerUserID := strings.TrimSpace(req.OwnerUserID)
+	requesterUserID := ""
 	isRequesterAdmin := !s.requireAuth
 	if user, ok := s.adminUserFromCookie(r); ok {
 		isRequesterAdmin = user.IsAdmin
+		requesterUserID = user.ID
 		if ownerUserID == "" {
 			ownerUserID = user.ID
 		}
@@ -1123,6 +1194,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		isRequesterAdmin = tok.IsAdmin
+		requesterUserID = tok.OwnerUserID
 		if ownerUserID == "" {
 			ownerUserID = tok.OwnerUserID
 		}
@@ -1139,6 +1211,10 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 			writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "token must belong to your user account"), reqID))
 			return
 		}
+		if ownerUserID != requesterUserID {
+			writeError(w, apiErrWithReqID(NewError(CodeForbidden, "owner", "you can only create tokens for your own user account"), reqID))
+			return
+		}
 	}
 	if ownerUserID != "" {
 		if user, err := s.auth.GetUser(r.Context(), ownerUserID); err != nil || !user.IsActive {
@@ -1146,10 +1222,19 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if ownerUserID == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "owner", "token must belong to a user"), reqID))
+		return
+	}
+	expiresAt, parseErr := parseTokenExpiresAt(req)
+	if parseErr != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "expiresAt", parseErr.Error()), reqID))
+		return
+	}
 
-	gen, err := s.auth.Generate(r.Context(), strings.TrimSpace(req.Label), req.IsAdmin, ownerUserID)
+	gen, err := s.auth.Generate(r.Context(), strings.TrimSpace(req.Label), req.IsAdmin, ownerUserID, expiresAt)
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "create_token",
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "create_token",
 			fmt.Sprintf("failed to create token: %v", err)), reqID))
 		return
 	}
@@ -1160,8 +1245,30 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		Label:       gen.Label,
 		IsAdmin:     gen.IsAdmin,
 		OwnerUserID: gen.OwnerUserID,
+		ExpiresAt:   gen.ExpiresAt,
 		CreatedAt:   gen.CreatedAt,
 	})
+}
+
+func parseTokenExpiresAt(req TokenCreateRequest) (*time.Time, error) {
+	if req.ExpiresAt != "" {
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(req.ExpiresAt))
+		if err != nil {
+			return nil, fmt.Errorf("expiresAt must be RFC3339")
+		}
+		if !t.After(time.Now()) {
+			return nil, fmt.Errorf("expiresAt must be in the future")
+		}
+		return &t, nil
+	}
+	if req.TTLSeconds != nil {
+		if *req.TTLSeconds <= 0 {
+			return nil, fmt.Errorf("ttlSeconds must be positive")
+		}
+		t := time.Now().UTC().Add(time.Duration(*req.TTLSeconds) * time.Second)
+		return &t, nil
+	}
+	return nil, nil
 }
 
 // handleListTokens 处理 GET /api/tokens。
@@ -1200,6 +1307,9 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, t := range toks {
+		if strings.TrimSpace(t.OwnerUserID) == "" {
+			continue
+		}
 		if !isAdmin && t.OwnerUserID != actorUserID {
 			continue
 		}
@@ -1210,6 +1320,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 			IsRevoked:     t.IsRevoked,
 			OwnerUserID:   t.OwnerUserID,
 			OwnerUsername: usernames[t.OwnerUserID],
+			ExpiresAt:     t.ExpiresAt,
 			CreatedAt:     t.CreatedAt,
 			LastUsedAt:    t.LastUsedAt,
 		})
@@ -1256,88 +1367,6 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, TokenRevokeResponse{Success: true, ID: id})
-}
-
-func (s *Server) handleCreateAgentBindingCode(w http.ResponseWriter, r *http.Request) {
-	reqID := requestIDFromContext(r.Context())
-	user, ok := s.adminUserFromCookie(r)
-	if !ok {
-		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "login required"), reqID))
-		return
-	}
-	var req AgentBindingCreateRequest
-	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
-		return
-	}
-	b, err := s.auth.CreateAgentBindingCode(r.Context(), user.ID, req.Label, 15*time.Minute)
-	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "agent_binding", err.Error()), reqID))
-		return
-	}
-	writeJSON(w, http.StatusOK, AgentBindingCreateResponse{
-		Success:   true,
-		Binding:   toAgentBindingCodeItem(b, true),
-		ExpiresAt: b.ExpiresAt,
-	})
-}
-
-func (s *Server) handleListAgentBindingCodes(w http.ResponseWriter, r *http.Request) {
-	reqID := requestIDFromContext(r.Context())
-	user, ok := s.adminUserFromCookie(r)
-	if !ok {
-		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "login required"), reqID))
-		return
-	}
-	bindings, err := s.auth.ListAgentBindingCodes(r.Context(), user.ID, 20)
-	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "agent_binding", err.Error()), reqID))
-		return
-	}
-	items := make([]AgentBindingCodeItem, 0, len(bindings))
-	for _, b := range bindings {
-		items = append(items, toAgentBindingCodeItem(b, false))
-	}
-	writeJSON(w, http.StatusOK, AgentBindingListResponse{Success: true, Bindings: items})
-}
-
-func (s *Server) handleBindAgent(w http.ResponseWriter, r *http.Request) {
-	reqID := requestIDFromContext(r.Context())
-	var req AgentBindRequest
-	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
-		return
-	}
-	label := strings.TrimSpace(req.AgentLabel)
-	if label == "" && strings.TrimSpace(req.AgentID) != "" {
-		label = strings.TrimSpace(req.AgentID)
-	}
-	result, err := s.auth.BindAgent(r.Context(), req.Code, label)
-	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "agent_binding", "binding code is invalid, expired, or already used"), reqID))
-		return
-	}
-	writeJSON(w, http.StatusOK, AgentBindResponse{
-		Success:   true,
-		Token:     result.Token.Plaintext,
-		TokenID:   result.Token.ID,
-		Username:  result.Username,
-		AgentID:   strings.TrimSpace(req.AgentID),
-		CreatedAt: result.Token.CreatedAt,
-	})
-}
-
-func toAgentBindingCodeItem(b store.AgentBindingCode, includeCode bool) AgentBindingCodeItem {
-	code := ""
-	if includeCode {
-		code = b.Code
-	}
-	return AgentBindingCodeItem{
-		Code:       code,
-		Label:      b.Label,
-		CreatedAt:  b.CreatedAt,
-		ExpiresAt:  b.ExpiresAt,
-		ConsumedAt: b.ConsumedAt,
-		ConsumedBy: b.ConsumedBy,
-	}
 }
 
 // handleStaticServe 处理 dev 模式下的 GET /{code}/{path...}。
@@ -1445,10 +1474,22 @@ func (s *Server) authenticateToken(r *http.Request) (store.Token, *APIError) {
 			return store.Token{}, NewError(CodeUnauthorized, "auth", "token not recognized")
 		case errors.Is(err, auth.ErrRevoked):
 			return store.Token{}, NewError(CodeForbidden, "auth", "token has been revoked")
+		case errors.Is(err, auth.ErrExpired):
+			return store.Token{}, NewError(CodeUnauthorized, "auth", "token has expired")
 		}
 		return store.Token{}, NewError(CodeUnauthorized, "auth", err.Error())
 	}
 	return tok, nil
+}
+
+func anonymousSessionIDFromRequest(r *http.Request) string {
+	id := strings.TrimSpace(r.Header.Get("X-Hostctl-Session"))
+	if id == "" {
+		if c, err := r.Cookie("hostctl_anon_session"); err == nil {
+			id = strings.TrimSpace(c.Value)
+		}
+	}
+	return id
 }
 
 func (s *Server) authenticateAdmin(r *http.Request) (store.Token, *APIError) {
@@ -1561,7 +1602,14 @@ func (s *Server) authenticateActor(r *http.Request) (string, bool, *APIError) {
 		return "user:" + user.ID, user.IsAdmin, nil
 	}
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
-		return "", false, NewError(CodeUnauthorized, "auth", "Authorization header or admin session required")
+		actor, ok, err := s.anonymousActor(r)
+		if err != nil {
+			return "", false, err
+		}
+		if ok {
+			return actor, false, nil
+		}
+		return "", false, NewError(CodeUnauthorized, "auth", "Authorization header, admin session, or anonymous session required")
 	}
 	tok, authErr := s.authenticateToken(r)
 	if authErr != nil {
@@ -1575,6 +1623,13 @@ func (s *Server) optionalActor(r *http.Request) (string, bool, *APIError) {
 		return "user:" + user.ID, user.IsAdmin, nil
 	}
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+		actor, ok, err := s.anonymousActor(r)
+		if err != nil {
+			return "", false, err
+		}
+		if ok {
+			return actor, false, nil
+		}
 		return "", false, nil
 	}
 	tok, authErr := s.authenticateToken(r)
@@ -1585,10 +1640,25 @@ func (s *Server) optionalActor(r *http.Request) (string, bool, *APIError) {
 }
 
 func ownerForToken(tok store.Token) string {
-	if strings.TrimSpace(tok.OwnerUserID) != "" {
-		return "user:" + strings.TrimSpace(tok.OwnerUserID)
+	return "user:" + strings.TrimSpace(tok.OwnerUserID)
+}
+
+func (s *Server) anonymousActor(r *http.Request) (string, bool, *APIError) {
+	id := anonymousSessionIDFromRequest(r)
+	if id == "" {
+		return "", false, nil
 	}
-	return tok.ID
+	sess, err := s.deployer.GetAnonymousSession(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", false, NewError(CodeUnauthorized, "anonymous_session", "anonymous session not found")
+		}
+		return "", false, NewError(CodeInternal, "anonymous_session", err.Error())
+	}
+	if strings.TrimSpace(sess.ClaimedByUserID) != "" {
+		return "", false, NewError(CodeUnauthorized, "anonymous_session", "anonymous session has been claimed")
+	}
+	return "anon:" + id, true, nil
 }
 
 func (s *Server) authorizeSiteWrite(r *http.Request, code string) *APIError {
@@ -1893,6 +1963,8 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 			apiErr = NewError(CodeUnauthorized, "auth", "token not recognized")
 		case errors.Is(err, auth.ErrRevoked):
 			apiErr = NewError(CodeForbidden, "auth", "token has been revoked")
+		case errors.Is(err, auth.ErrExpired):
+			apiErr = NewError(CodeUnauthorized, "auth", "token has expired")
 		}
 		writeError(w, apiErrWithReqID(apiErr, requestIDFromContext(r.Context())))
 		return
@@ -1907,6 +1979,7 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 		Success:     true,
 		Mode:        mode,
 		TokenID:     tok.ID,
+		UserID:      tok.OwnerUserID,
 		Label:       tok.Label,
 		IsAdmin:     tok.IsAdmin,
 		LoginMethod: "token",
@@ -1985,6 +2058,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "register", "username already exists or password is invalid"), reqID))
 		return
 	}
+	s.claimCurrentAnonymousSession(r, user.ID)
 	writeJSON(w, http.StatusOK, RegisterResponse{Success: true, UserID: user.ID, Username: user.Username})
 }
 
@@ -2025,6 +2099,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "username or password is incorrect"), reqID))
 		return
 	}
+	s.claimCurrentAnonymousSession(r, res.User.ID)
 	setAdminSessionCookie(w, res.Plaintext, int((7 * 24 * time.Hour).Seconds()))
 	mode := "prod"
 	if !s.requireAuth {
@@ -2037,6 +2112,16 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		Username: res.User.Username,
 		IsAdmin:  res.User.IsAdmin,
 	})
+}
+
+func (s *Server) claimCurrentAnonymousSession(r *http.Request, userID string) {
+	sessionID := anonymousSessionIDFromRequest(r)
+	if sessionID == "" {
+		return
+	}
+	if _, err := s.deployer.ClaimAnonymousSession(r.Context(), sessionID, userID); err != nil {
+		s.logger.Printf("failed to claim anonymous session %s for user %s: %v", sessionID, userID, err)
+	}
 }
 
 func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
@@ -2123,15 +2208,17 @@ func (s *Server) handleAdminAnonymousSessions(w http.ResponseWriter, r *http.Req
 			remaining = 0
 		}
 		items = append(items, AnonymousSessionListItem{
-			ID:          sess.ID,
-			AgentID:     sess.AgentID,
-			AgentLabel:  sess.AgentLabel,
-			DeviceIP:    sess.DeviceIP,
-			UserAgent:   sess.UserAgent,
-			DeployCount: sess.DeployCount,
-			Remaining:   remaining,
-			CreatedAt:   sess.CreatedAt,
-			LastUsedAt:  sess.LastUsedAt,
+			ID:              sess.ID,
+			AgentID:         sess.AgentID,
+			AgentLabel:      sess.AgentLabel,
+			DeviceIP:        sess.DeviceIP,
+			UserAgent:       sess.UserAgent,
+			DeployCount:     sess.DeployCount,
+			Remaining:       remaining,
+			ClaimedByUserID: sess.ClaimedByUserID,
+			ClaimedAt:       sess.ClaimedAt,
+			CreatedAt:       sess.CreatedAt,
+			LastUsedAt:      sess.LastUsedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, AnonymousSessionListResponse{
@@ -2593,6 +2680,11 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 			"either 'code' or 'url' is required"), reqID))
 		return
 	}
+	actor, isActorAdmin, actorErr := s.authenticateActor(r)
+	if actorErr != nil {
+		writeError(w, apiErrWithReqID(actorErr, reqID))
+		return
+	}
 	if apiErr := s.authorizeSiteWrite(r, code); apiErr != nil {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
@@ -2632,7 +2724,11 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 			userID = user.ID
 		}
 	} else {
-		ownerTokenID = "dev-owner"
+		if isActorAdmin {
+			ownerTokenID = "dev-owner"
+		} else {
+			ownerTokenID = actor
+		}
 	}
 	clientIP := clientIPFromRequest(r)
 

@@ -35,6 +35,18 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					},
 				},
 			},
+			"/api/session/claim": map[string]any{
+				"post": map[string]any{
+					"summary":     "Claim an anonymous session into the current user",
+					"description": "Bearer token or login cookie required. Moves sites owned by anon:{sessionId} to user:{userId}.",
+					"requestBody": jsonBodyRef("SessionClaimRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Session claimed", "content": jsonSchemaRef("SessionClaimResponse")},
+						"401": errorResponse(),
+						"403": errorResponse(),
+					},
+				},
+			},
 			"/api/config": map[string]any{
 				"get": map[string]any{
 					"summary":  "Read runtime configuration",
@@ -284,6 +296,7 @@ func openAPISchemas() map[string]any {
 			"filename": str, "description": str, "title": str, "content": str,
 			"files":            map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/DeployFile"}},
 			"enableCustomCode": boolSchema, "customCode": str, "createVersion": boolSchema, "source": str,
+			"accessPassword": str,
 		}},
 		"DeployResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "id": str, "code": str, "url": str, "detailUrl": str, "versionUrl": str,
@@ -327,10 +340,16 @@ func openAPISchemas() map[string]any {
 		"AnonymousSessionResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "sessionId": str, "agentId": str, "agentLabel": str, "deployCount": intSchema, "deployLimit": intSchema, "remaining": intSchema,
 		}},
+		"SessionClaimRequest": map[string]any{"type": "object", "properties": map[string]any{
+			"sessionId": str,
+		}},
+		"SessionClaimResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "sessionId": str, "userId": str, "siteCount": intSchema, "deployCount": intSchema, "alreadyClaimed": boolSchema,
+		}},
 		"AnonymousSessionListResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "deployLimit": intSchema,
 			"sessions": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
-				"id": str, "agentId": str, "agentLabel": str, "deviceIp": str, "userAgent": str, "deployCount": intSchema, "remaining": intSchema, "createdAt": timeSchema, "lastUsedAt": timeSchema,
+				"id": str, "agentId": str, "agentLabel": str, "deviceIp": str, "userAgent": str, "deployCount": intSchema, "remaining": intSchema, "claimedByUserId": str, "claimedAt": timeSchema, "createdAt": timeSchema, "lastUsedAt": timeSchema,
 			}}},
 		}},
 		"ConfigUpdateRequest": map[string]any{"type": "object", "properties": map[string]any{
@@ -341,10 +360,10 @@ func openAPISchemas() map[string]any {
 			"success": boolSchema, "publicBaseURL": str, "corsAllowOrigins": str, "cooldownSeconds": intSchema,
 			"limits": map[string]any{"$ref": "#/components/schemas/Limits"}, "anonymousPolicy": map[string]any{"$ref": "#/components/schemas/AnonymousPolicy"},
 		}},
-		"AdminSessionResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "mode": str, "tokenId": str, "label": str, "isAdmin": boolSchema}},
+		"AdminSessionResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "mode": str, "tokenId": str, "label": str, "userId": str, "username": str, "isAdmin": boolSchema}},
 		"SiteListResponse":     map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "sites": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
-		"TokenCreateRequest":   map[string]any{"type": "object", "properties": map[string]any{"label": str, "isAdmin": boolSchema}},
-		"TokenCreateResponse":  map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "id": str, "token": str, "label": str, "isAdmin": boolSchema, "createdAt": timeSchema}},
+		"TokenCreateRequest":   map[string]any{"type": "object", "properties": map[string]any{"label": str, "ownerUserId": str, "isAdmin": boolSchema, "expiresAt": timeSchema, "ttlSeconds": intSchema}},
+		"TokenCreateResponse":  map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "id": str, "token": str, "label": str, "ownerUserId": str, "isAdmin": boolSchema, "expiresAt": timeSchema, "createdAt": timeSchema}},
 		"TokenListResponse":    map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "tokens": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
 	}
 }

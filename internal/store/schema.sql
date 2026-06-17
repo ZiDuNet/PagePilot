@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS tokens (
     is_revoked      BOOLEAN NOT NULL DEFAULT 0,
     owner_user_id   TEXT,                       -- 归属用户；为空表示兼容旧 token
     created_at      DATETIME NOT NULL,
+    expires_at      DATETIME,
     last_used_at    DATETIME
 );
 
@@ -89,6 +90,8 @@ CREATE TABLE IF NOT EXISTS anonymous_sessions (
     device_ip     TEXT,
     user_agent    TEXT,
     deploy_count  INTEGER NOT NULL DEFAULT 0,
+    claimed_by_user_id TEXT,
+    claimed_at    DATETIME,
     created_at    DATETIME NOT NULL,
     last_used_at  DATETIME NOT NULL
 );
@@ -120,15 +123,3 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_hash ON admin_sessions(session_hash);
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at);
-
-CREATE TABLE IF NOT EXISTS agent_binding_codes (
-    code          TEXT PRIMARY KEY,
-    user_id       TEXT NOT NULL REFERENCES admin_users(id),
-    label         TEXT,
-    created_at    DATETIME NOT NULL,
-    expires_at    DATETIME NOT NULL,
-    consumed_at   DATETIME,
-    consumed_by   TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_binding_codes_user ON agent_binding_codes(user_id, created_at);

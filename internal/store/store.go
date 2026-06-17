@@ -28,6 +28,7 @@ type Site struct {
 type MarketplaceDeploy struct {
 	ID                     string // site.public_id
 	Code                   string // site.code
+	OwnerTokenID           string
 	CurrentVersion         *int64
 	CurrentVersionID       string
 	Title                  string
@@ -87,19 +88,30 @@ type Token struct {
 	IsAdmin     bool
 	IsRevoked   bool
 	OwnerUserID string
+	ExpiresAt   *time.Time
 	CreatedAt   time.Time
 	LastUsedAt  *time.Time
 }
 
 type AnonymousSession struct {
-	ID          string
-	AgentID     string
-	AgentLabel  string
-	DeviceIP    string
-	UserAgent   string
-	DeployCount int
-	CreatedAt   time.Time
-	LastUsedAt  time.Time
+	ID              string
+	AgentID         string
+	AgentLabel      string
+	DeviceIP        string
+	UserAgent       string
+	DeployCount     int
+	ClaimedByUserID string
+	ClaimedAt       *time.Time
+	CreatedAt       time.Time
+	LastUsedAt      time.Time
+}
+
+type AnonymousSessionClaimResult struct {
+	SessionID      string
+	UserID         string
+	SiteCount      int
+	DeployCount    int
+	AlreadyClaimed bool
 }
 
 type AdminUser struct {
@@ -123,16 +135,6 @@ type AdminSession struct {
 	LastUsedAt  time.Time
 	ExpiresAt   time.Time
 	RevokedAt   *time.Time
-}
-
-type AgentBindingCode struct {
-	Code       string
-	UserID     string
-	Label      string
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
-	ConsumedAt *time.Time
-	ConsumedBy string
 }
 
 // SiteWithMeta 用于 admin UI 列表：site 主表 + 版本统计聚合。
@@ -221,6 +223,7 @@ type Store interface {
 	GetAnonymousSession(ctx context.Context, id string) (AnonymousSession, error)
 	UpdateAnonymousSessionMeta(ctx context.Context, id, agentID, agentLabel, deviceIP, userAgent string) error
 	IncrementAnonymousSessionDeployCount(ctx context.Context, id string) (AnonymousSession, error)
+	ClaimAnonymousSession(ctx context.Context, id, userID string) (AnonymousSessionClaimResult, error)
 	ListAnonymousSessions(ctx context.Context, limit int) ([]AnonymousSession, error)
 
 	CountAdminUsers(ctx context.Context) (int, error)
@@ -237,10 +240,6 @@ type Store interface {
 	GetAdminSessionByHash(ctx context.Context, hash string) (AdminSession, error)
 	TouchAdminSessionLastUsed(ctx context.Context, id string) error
 	RevokeAdminSession(ctx context.Context, id string) error
-
-	CreateAgentBindingCode(ctx context.Context, code AgentBindingCode) error
-	ConsumeAgentBindingCode(ctx context.Context, code, consumedBy string) (AgentBindingCode, error)
-	ListAgentBindingCodes(ctx context.Context, userID string, limit int) ([]AgentBindingCode, error)
 
 	// ===== 设置（Day 7：管理后台可写 baseURL） =====
 

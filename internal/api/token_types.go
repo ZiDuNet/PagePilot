@@ -4,24 +4,26 @@ import "time"
 
 // TokenCreateRequest 是 POST /api/token 请求体。
 type TokenCreateRequest struct {
-	Label       string `json:"label,omitempty"`       // 可选标签
-	IsAdmin     bool   `json:"isAdmin,omitempty"`     // 是否管理员
-	OwnerUserID string `json:"ownerUserId,omitempty"` // 归属用户；管理员可指定
+	Label       string `json:"label,omitempty"`
+	IsAdmin     bool   `json:"isAdmin,omitempty"`
+	OwnerUserID string `json:"ownerUserId,omitempty"`
+	ExpiresAt   string `json:"expiresAt,omitempty"`
+	TTLSeconds  *int64 `json:"ttlSeconds,omitempty"`
 }
 
 // TokenCreateResponse 是 POST /api/token 响应。Plaintext 仅此一次返回。
 type TokenCreateResponse struct {
-	Success     bool      `json:"success"`
-	ID          string    `json:"id"`
-	Token       string    `json:"token"` // 明文 token，仅此一次可见
-	Label       string    `json:"label,omitempty"`
-	IsAdmin     bool      `json:"isAdmin"`
-	OwnerUserID string    `json:"ownerUserId,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
+	Success     bool       `json:"success"`
+	ID          string     `json:"id"`
+	Token       string     `json:"token"`
+	Label       string     `json:"label,omitempty"`
+	IsAdmin     bool       `json:"isAdmin"`
+	OwnerUserID string     `json:"ownerUserId,omitempty"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
 }
 
-// TokenListItem 是 GET /api/tokens 响应里的一项。
-// 不包含明文（只存 hash）。
+// TokenListItem 是 GET /api/tokens 响应里的一项，不包含明文 token。
 type TokenListItem struct {
 	ID            string     `json:"id"`
 	Label         string     `json:"label,omitempty"`
@@ -29,6 +31,7 @@ type TokenListItem struct {
 	IsRevoked     bool       `json:"isRevoked"`
 	OwnerUserID   string     `json:"ownerUserId,omitempty"`
 	OwnerUsername string     `json:"ownerUsername,omitempty"`
+	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
 	CreatedAt     time.Time  `json:"createdAt"`
 	LastUsedAt    *time.Time `json:"lastUsedAt,omitempty"`
 }
@@ -105,6 +108,19 @@ type AdminSetupResponse struct {
 	Username string `json:"username"`
 }
 
+type SessionClaimRequest struct {
+	SessionID string `json:"sessionId,omitempty"`
+}
+
+type SessionClaimResponse struct {
+	Success        bool   `json:"success"`
+	SessionID      string `json:"sessionId"`
+	UserID         string `json:"userId"`
+	SiteCount      int    `json:"siteCount"`
+	DeployCount    int    `json:"deployCount"`
+	AlreadyClaimed bool   `json:"alreadyClaimed"`
+}
+
 // AdminSessionResponse is returned by GET /api/admin/session.
 type AdminSessionResponse struct {
 	Success     bool   `json:"success"`
@@ -116,43 +132,4 @@ type AdminSessionResponse struct {
 	IsAdmin     bool   `json:"isAdmin,omitempty"`
 	NeedsSetup  bool   `json:"needsSetup,omitempty"`
 	LoginMethod string `json:"loginMethod,omitempty"`
-}
-
-type AgentBindingCreateRequest struct {
-	Label string `json:"label,omitempty"`
-}
-
-type AgentBindingCodeItem struct {
-	Code       string     `json:"code,omitempty"`
-	Label      string     `json:"label,omitempty"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	ExpiresAt  time.Time  `json:"expiresAt"`
-	ConsumedAt *time.Time `json:"consumedAt,omitempty"`
-	ConsumedBy string     `json:"consumedBy,omitempty"`
-}
-
-type AgentBindingCreateResponse struct {
-	Success   bool                 `json:"success"`
-	Binding   AgentBindingCodeItem `json:"binding"`
-	ExpiresAt time.Time            `json:"expiresAt"`
-}
-
-type AgentBindingListResponse struct {
-	Success  bool                   `json:"success"`
-	Bindings []AgentBindingCodeItem `json:"bindings"`
-}
-
-type AgentBindRequest struct {
-	Code       string `json:"code"`
-	AgentLabel string `json:"agentLabel,omitempty"`
-	AgentID    string `json:"agentId,omitempty"`
-}
-
-type AgentBindResponse struct {
-	Success   bool      `json:"success"`
-	Token     string    `json:"token"`
-	TokenID   string    `json:"tokenId"`
-	Username  string    `json:"username"`
-	AgentID   string    `json:"agentId,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
 }

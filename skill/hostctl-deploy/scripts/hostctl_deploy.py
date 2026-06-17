@@ -193,8 +193,8 @@ def request_json(base: str, token: str, path: str, method: str = "GET",
 def print_result(status: int, data: dict) -> int:
     print(json.dumps({"httpStatus": status, **data}, ensure_ascii=False, indent=2))
     if data.get("stage") == "anonymous_quota":
-        print("Anonymous free quota is used up. Register or sign in on the Hostctl web UI, generate an Agent binding code in Admin -> Tokens, then run:", file=sys.stderr)
-        print("  hostctl_deploy.py bind <binding-code> --agent-label <this-agent-name>", file=sys.stderr)
+        print("Anonymous free quota is used up. Register or sign in, create/use a user token, then run:", file=sys.stderr)
+        print("  hostctl_deploy.py claim-session", file=sys.stderr)
     if status == 429 and data.get("retryAfterSeconds"):
         print(f"Retry after {data['retryAfterSeconds']} seconds.", file=sys.stderr)
     if data.get("preserveHint"):
@@ -317,16 +317,13 @@ def cmd_session(args) -> int:
     return print_result(status, data)
 
 
-def cmd_bind(args) -> int:
+def cmd_claim_session(args) -> int:
     base = server_url(args)
-    agent = load_agent_identity(args.agent_label or "")
-    payload = {"code": args.code, "agentLabel": agent["agentLabel"], "agentId": agent["agentId"]}
-    status, data = request_json(base, "", "/api/agent/bind", "POST", payload, agent=agent)
-    if 200 <= status < 300 and data.get("token"):
-        save_bound_token(base, data["token"], data.get("username", ""), data.get("tokenId", ""), agent)
-        data = {k: v for k, v in data.items() if k != "token"}
-        print(json.dumps({"httpStatus": status, **data, "saved": str(CONFIG_FILE)}, ensure_ascii=False, indent=2))
-        return 0
+    sid = args.session_id or load_session_id(base)
+    if not sid:
+        die("No anonymous session found. Pass --session-id or deploy anonymously once first.")
+    payload = {"sessionId": sid}
+    status, data = request_json(base, auth_token(args), "/api/session/claim", "POST", payload)
     return print_result(status, data)
 
 
@@ -524,6 +521,10 @@ def cmd_access(args) -> int:
 
 def cmd_token_create(args) -> int:
     payload = {"label": args.label or "", "isAdmin": args.admin}
+    if args.expires_at:
+        payload["expiresAt"] = args.expires_at
+    if args.ttl_seconds is not None:
+        payload["ttlSeconds"] = args.ttl_seconds
     status, data = request_json(server_url(args), auth_token(args), "/api/token", "POST", payload)
     return print_result(status, data)
 
@@ -573,10 +574,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("session", help="Validate current token against /api/admin/session")
     p.set_defaults(func=cmd_session)
 
-    p = sub.add_parser("bind", help="Bind this Agent with a user-provided binding code")
-    p.add_argument("code", help="Binding code generated in the web admin")
-    p.add_argument("--agent-label", default="", help="Name for this Agent/device")
-    p.set_defaults(func=cmd_bind)
+    p = sub.add_parser("claim-session", help="Claim anonymous-session deployments for the current token/user")
+    p.add_argument("--session-id", default="", help="Anonymous session id. Defaults to ~/.hostctl/session.json")
+    p.set_defaults(func=cmd_claim_session)
 
     def add_common_deploy_flags(p, *, with_code: bool, with_create_version: bool):
         p.add_argument("source", help="Path to an HTML file or a site directory")
@@ -588,7 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--update", action="store_true", help="Require updating an existing remembered/explicit code; refuse to create a new link.")
         if with_create_version:
             p.add_argument("--create-version", action="store_true", help="Deprecated: deploy now appends automatically when --code is present")
-        p.add_argument("--access-password", help="Optional visit password for a new user-owned site. Anonymous deploys cannot use it.")
+        p.add_argument("--access-password", help="Optional visit password for a new site.")
 
     p = sub.add_parser("deploy", help="Deploy a new site from a file or directory")
     add_common_deploy_flags(p, with_code=True, with_create_version=True)
@@ -670,6 +670,8 @@ def build_parser() -> argparse.ArgumentParser:
     pt = token_sub.add_parser("create", help="Create a token")
     pt.add_argument("--label", default="")
     pt.add_argument("--admin", action="store_true")
+    pt.add_argument("--expires-at", default="", help="RFC3339 expiry timestamp. Omit for permanent.")
+    pt.add_argument("--ttl-seconds", type=int, help="Temporary token lifetime in seconds. Omit for permanent.")
     pt.set_defaults(func=cmd_token_create)
     pt = token_sub.add_parser("list", help="List tokens")
     pt.set_defaults(func=cmd_token_list)

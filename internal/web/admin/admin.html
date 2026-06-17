@@ -665,6 +665,7 @@
           <div class="panel-head"><div><h2 class="panel-title">创建 Token</h2><p class="panel-subtitle" id="token-create-subtitle">为用户或管理员创建 Agent/API 访问令牌，明文只显示一次。</p></div></div>
           <div class="field"><label>标签</label><input id="token-label" class="input" placeholder="ci-bot / admin"></div>
           <div class="field" data-admin-only="true"><label>归属用户</label><select id="token-owner" class="select"></select><div class="hint">Agent 用这个 Token 部署时，会占用该用户额度，也只能修改该用户自己的站点。</div></div>
+          <div class="field"><label>有效期</label><select id="token-ttl" class="select"><option value="">永久</option><option value="1800">30 分钟</option><option value="86400">1 天</option><option value="604800">7 天</option><option value="2592000">30 天</option></select><div class="hint">默认永久；临时 Token 到期后会自动失效。</div></div>
           <div class="field" data-admin-only="true"><label><input id="token-admin" type="checkbox"> 管理员 Token</label><div class="hint">管理员 Token 只用于全站管理；普通用户会自动创建自己的 Token。</div></div>
           <button id="token-create" class="btn btn-primary" type="button">创建 Token</button>
           <div id="token-created" class="token-created hidden" style="margin-top:14px"></div>
@@ -672,13 +673,6 @@
         <div class="panel">
           <div class="panel-head"><div><h2 class="panel-title">Token 列表</h2><p class="panel-subtitle" id="token-list-subtitle">按归属用户和权限区分，可吊销已泄露或不用的 Token。</p></div></div>
           <div id="tokens-list"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><div><h2 class="panel-title">Agent 绑定码</h2><p class="panel-subtitle">给每个 Agent 单独生成绑定码，15 分钟内使用。</p></div></div>
-          <div class="field"><label>Agent 名称</label><input id="binding-label" class="input" placeholder="laptop-codex / ci-runner"></div>
-          <button id="binding-create" class="btn btn-primary" type="button">生成绑定码</button>
-          <div id="binding-created" class="token-created hidden" style="margin-top:14px"></div>
-          <div id="bindings-list" style="margin-top:14px"></div>
         </div>
       </div>
     </section>
@@ -789,17 +783,16 @@
     sites: [],
     users: [],
     tokens: [],
-    bindings: [],
     selectedFiles: new Map()
   };
 
   const titles = {
     overview: ["工作台总览", "查看你可管理的发布资源和常用操作。"],
-    account: ["账号设置", "管理你的登录信息和 Agent 绑定入口。"],
+    account: ["账号设置", "管理你的登录信息和 Agent 接入入口。"],
     deploy: ["发布应用", "上传 HTML 或多文件静态站点，生成可访问短链。"],
     sites: ["我的站点", "查看、打开、加密、下架和管理版本。"],
     users: ["用户管理", "管理账号、角色、启用状态和部署额度。"],
-    tokens: ["Agent Token", "创建绑定码和访问令牌，管理 Agent 接入。"],
+    tokens: ["Agent Token", "创建永久或临时访问令牌，管理 Agent 接入。"],
     anonymous: ["匿名 Agent", "查看未登录 Agent 的设备、IP 和免登录额度。"],
     skill: ["Skill 编辑", "维护 Agent 下载包里的说明和脚本。"],
     config: ["运行设置", "查看生产参数并调整公网 Base URL。"]
@@ -1030,7 +1023,7 @@
     document.querySelectorAll("[data-admin-only]").forEach(el => el.classList.toggle("hidden", !admin));
     titles.sites = admin ? ["站点管理", "管理全站应用、归属、状态和版本历史。"] : ["我的站点", "管理你发布的应用、访问密码和版本。"];
     titles.overview = admin ? ["管理总览", "查看全站发布、用户和 Agent 接入状态。"] : ["我的工作台", "查看你的发布、Token 和常用操作。"];
-    titles.tokens = admin ? ["Agent Token", "为用户或管理员创建 Agent/API 访问令牌。"] : ["我的 Agent", "生成绑定码和个人 Token，让 Agent 代表你部署。"];
+    titles.tokens = admin ? ["Agent Token", "为用户或管理员创建永久或临时 Agent/API 访问令牌。"] : ["我的 Agent", "创建个人 Token，让 Agent 代表你部署。"];
     if ($("page-title") && !admin && ["users", "anonymous", "skill", "config"].includes(document.querySelector(".nav-item.active")?.dataset.tab || "")) {
       switchTab("overview");
     }
@@ -1049,7 +1042,7 @@
     const items = [
       ["发布应用", "上传新站点或追加版本", "deploy"],
       ["管理站点", "打开、加密、下架、版本", "sites"],
-      ["Agent 接入", "生成绑定码或 Token", "tokens"],
+      ["Agent 接入", "创建或吊销 Token", "tokens"],
       ["账号设置", "修改密码和查看权限", "account"]
     ];
     if (isAdminSession()) {
@@ -1127,18 +1120,8 @@
       const data = await api("/api/tokens");
       state.tokens = data.tokens || [];
       renderTokens();
-      await loadBindings();
     } catch (err) {
       $("tokens-list").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
-    }
-  }
-  async function loadBindings() {
-    try {
-      const data = await api("/api/agent-binding-codes");
-      state.bindings = data.bindings || [];
-      renderBindings();
-    } catch (err) {
-      if ($("bindings-list")) $("bindings-list").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
     }
   }
   async function loadUsers() {
@@ -1293,7 +1276,7 @@
       const id = btn.dataset.userDelete;
       const name = btn.dataset.userName || id;
       if (state.session?.userId === id) return toast("不能删除当前登录账号", "error");
-      if (!confirm(`确定删除用户 ${name}？\n\n会吊销该用户 Token 和登录态，删除绑定码；已发布站点会保留。`)) return;
+      if (!confirm(`确定删除用户 ${name}？\n\n会吊销该用户 Token 和登录态；已发布站点会保留。`)) return;
       try {
         await api(`/api/admin/users/${encodeURIComponent(id)}`, { method: "DELETE" });
         toast("用户已删除", "success");
@@ -1313,10 +1296,11 @@
       return;
     }
     const current = $("token-owner").value;
-    $("token-owner").innerHTML = `<option value="">系统级旧 Token（不建议）</option>` + state.users.map(u =>
+    $("token-owner").innerHTML = state.users.map(u =>
       `<option value="${escapeHtml(u.id)}">${escapeHtml(u.username)}${u.isAdmin ? " · admin" : ""}</option>`
     ).join("");
     if (current) $("token-owner").value = current;
+    else if (state.session?.userId) $("token-owner").value = state.session.userId;
   }
   function renderAnonymous() {
     const limit = state.config?.anonymousPolicy?.deployLimit ?? 5;
@@ -1539,33 +1523,19 @@
     const label = $("token-label").value.trim();
     if (!label) return toast("请填写标签", "error");
     try {
-      const res = await api("/api/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label, isAdmin: $("token-admin").checked, ownerUserId: $("token-owner").value || undefined }) });
+      const payload = { label, isAdmin: $("token-admin").checked, ownerUserId: $("token-owner").value || undefined };
+      const ttl = $("token-ttl") ? Number($("token-ttl").value || 0) : 0;
+      if (ttl > 0) payload.ttlSeconds = ttl;
+      const res = await api("/api/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       $("token-created").classList.remove("hidden");
       $("token-created").innerHTML = `<strong>Token 已创建，只显示一次：</strong><div class="file-row" style="margin-top:8px"><code style="word-break:break-all">${escapeHtml(res.token)}</code><button class="btn btn-light" id="copy-token">复制</button></div>`;
       $("copy-token").addEventListener("click", () => navigator.clipboard.writeText(res.token).then(() => toast("Token 已复制", "success")));
       $("token-label").value = "";
       $("token-admin").checked = false;
+      if ($("token-ttl")) $("token-ttl").value = "";
       await loadTokens();
     } catch (err) { toast("创建失败：" + err.message, "error"); }
   });
-  $("binding-create").addEventListener("click", async () => {
-    const label = $("binding-label").value.trim();
-    try {
-      const res = await api("/api/agent-binding-codes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label }) });
-      $("binding-created").classList.remove("hidden");
-      $("binding-created").innerHTML = `<strong>绑定码 15 分钟内有效：</strong><div class="file-row" style="margin-top:8px"><code style="word-break:break-all">${escapeHtml(res.binding.code)}</code><button class="btn btn-light" id="copy-binding">复制</button></div>`;
-      $("copy-binding").addEventListener("click", () => navigator.clipboard.writeText(res.binding.code).then(() => toast("绑定码已复制", "success")));
-      $("binding-label").value = "";
-      await loadBindings();
-    } catch (err) { toast("生成失败：" + err.message, "error"); }
-  });
-  function renderBindings() {
-    if (!$("bindings-list")) return;
-    $("bindings-list").innerHTML = state.bindings.length ? state.bindings.map(b => `
-      <div class="file-row">
-        <span><strong>${escapeHtml(b.label || "agent")}</strong><br><small>过期 ${fmtTime(b.expiresAt)} · ${b.consumedAt ? "已绑定 " + escapeHtml(b.consumedBy || "") : "未使用"}</small></span>
-      </div>`).join("") : `<div class="empty">还没有绑定码。</div>`;
-  }
   function renderTokens() {
     if (!state.tokens.length) {
       $("tokens-list").innerHTML = `<div class="empty">还没有 Token。</div>`;
@@ -1573,16 +1543,21 @@
     }
     const groups = new Map();
     for (const t of state.tokens) {
-      const key = t.ownerUsername || t.ownerUserId || "系统级旧 Token";
+      const key = t.ownerUsername || t.ownerUserId || "未归属 Token";
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(t);
     }
+    const tokenStatus = (t) => {
+      if (t.isRevoked) return '<span class="badge badge-rose">已吊销</span>';
+      if (t.expiresAt && new Date(t.expiresAt).getTime() <= Date.now()) return '<span class="badge badge-rose">已过期</span>';
+      return '<span class="badge badge-green">有效</span>';
+    };
     $("tokens-list").innerHTML = Array.from(groups.entries()).map(([owner, tokens]) => `
       <div class="empty" style="text-align:left;margin:0 0 10px;padding:10px 12px"><span class="badge badge-slate">${escapeHtml(owner)}</span><span style="margin-left:8px;color:#64748b">${tokens.length} 个 Token</span></div>
       ${tokens.map(t => `
         <div class="file-row" style="display:grid;grid-template-columns:minmax(0,1fr) 118px 74px;align-items:center">
-          <span><strong>${escapeHtml(t.label || "(未命名)")}</strong> ${t.isAdmin ? '<span class="badge badge-violet">管理员 Token</span>' : '<span class="badge badge-slate">用户 Token</span>'} ${t.isRevoked ? '<span class="badge badge-rose">已吊销</span>' : '<span class="badge badge-green">有效</span>'}<br><small>${escapeHtml(t.id)} · 创建 ${fmtTime(t.createdAt)} · 最近 ${fmtTime(t.lastUsedAt)}</small></span>
-          <span><small>${escapeHtml(t.ownerUserId || "legacy")}</small></span>
+          <span><strong>${escapeHtml(t.label || "(未命名)")}</strong> ${t.isAdmin ? '<span class="badge badge-violet">管理员 Token</span>' : '<span class="badge badge-slate">用户 Token</span>'} ${tokenStatus(t)}<br><small>${escapeHtml(t.id)} · 创建 ${fmtTime(t.createdAt)} · 到期 ${t.expiresAt ? fmtTime(t.expiresAt) : "永久"} · 最近 ${fmtTime(t.lastUsedAt)}</small></span>
+          <span><small>${escapeHtml(t.ownerUserId || "-")}</small></span>
           <button class="btn btn-danger" data-token="${escapeHtml(t.id)}" ${t.isRevoked ? "disabled" : ""}>吊销</button>
         </div>`).join("")}
     `).join("");

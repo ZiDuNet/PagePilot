@@ -50,6 +50,10 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrateDropLegacyAgentBindingCodes(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("drop legacy agent binding codes: %w", err)
+	}
 
 	// 兼容老库：补齐 marketplace 相关字段（CREATE TABLE IF NOT EXISTS 不会改老表）
 	if err := migrateSitesAddMarketplaceColumns(db); err != nil {
@@ -63,6 +67,14 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if err := migrateTokensAddOwnerUserColumn(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate tokens owner user: %w", err)
+	}
+	if err := migrateDeleteUnownedTokens(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("delete unowned tokens: %w", err)
+	}
+	if err := migrateTokensAddExpiresAtColumn(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate tokens expires at: %w", err)
 	}
 	if err := migrateAnonymousSessionsAddAgentColumns(db); err != nil {
 		_ = db.Close()
@@ -78,6 +90,21 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	return &SQLiteStore{db: db}, nil
 }
 
+func migrateDropLegacyAgentBindingCodes(db *sql.DB) error {
+	if _, err := db.Exec(`DROP TABLE IF EXISTS agent_binding_codes`); err != nil {
+		return fmt.Errorf("drop legacy agent binding codes: %w", err)
+	}
+	return nil
+}
+
+func migrateDeleteUnownedTokens(db *sql.DB) error {
+	_, err := db.Exec(`DELETE FROM tokens WHERE owner_user_id IS NULL OR owner_user_id = ''`)
+	if err != nil && !contains(err.Error(), "no such table") && !contains(err.Error(), "no such column") {
+		return fmt.Errorf("delete unowned tokens: %w", err)
+	}
+	return nil
+}
+
 func migrateAnonymousSessionsAddAgentColumns(db *sql.DB) error {
 	cols := []struct {
 		name string
@@ -87,6 +114,8 @@ func migrateAnonymousSessionsAddAgentColumns(db *sql.DB) error {
 		{"agent_label", "TEXT"},
 		{"device_ip", "TEXT"},
 		{"user_agent", "TEXT"},
+		{"claimed_by_user_id", "TEXT"},
+		{"claimed_at", "DATETIME"},
 	}
 	for _, c := range cols {
 		_, err := db.Exec(fmt.Sprintf(`ALTER TABLE anonymous_sessions ADD COLUMN %s %s`, c.name, c.ddl))
@@ -101,6 +130,14 @@ func migrateTokensAddOwnerUserColumn(db *sql.DB) error {
 	_, err := db.Exec(`ALTER TABLE tokens ADD COLUMN owner_user_id TEXT`)
 	if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
 		return fmt.Errorf("alter tokens add owner_user_id: %w", err)
+	}
+	return nil
+}
+
+func migrateTokensAddExpiresAtColumn(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE tokens ADD COLUMN expires_at DATETIME`)
+	if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
+		return fmt.Errorf("alter tokens add expires_at: %w", err)
 	}
 	return nil
 }
@@ -596,10 +633,14 @@ func (s *SQLiteStore) CreateToken(ctx context.Context, t Token) error {
 	if t.LastUsedAt != nil {
 		lastUsed = (*t.LastUsedAt).UTC()
 	}
+	var expiresAt any
+	if t.ExpiresAt != nil {
+		expiresAt = (*t.ExpiresAt).UTC()
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO tokens (id, token_hash, label, is_admin, is_revoked, owner_user_id, created_at, last_used_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, t.ID, t.TokenHash, nullString(t.Label), t.IsAdmin, t.IsRevoked, nullString(t.OwnerUserID), t.CreatedAt.UTC(), lastUsed)
+		INSERT INTO tokens (id, token_hash, label, is_admin, is_revoked, owner_user_id, expires_at, created_at, last_used_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, t.ID, t.TokenHash, nullString(t.Label), t.IsAdmin, t.IsRevoked, nullString(t.OwnerUserID), expiresAt, t.CreatedAt.UTC(), lastUsed)
 	if err != nil {
 		return fmt.Errorf("insert token: %w", err)
 	}
@@ -609,14 +650,14 @@ func (s *SQLiteStore) CreateToken(ctx context.Context, t Token) error {
 // GetTokenByHash 按 token_hash 取 token。
 func (s *SQLiteStore) GetTokenByHash(ctx context.Context, hash string) (Token, error) {
 	return s.scanToken(s.db.QueryRowContext(ctx, `
-		SELECT id, token_hash, label, is_admin, is_revoked, owner_user_id, created_at, last_used_at
+		SELECT id, token_hash, label, is_admin, is_revoked, owner_user_id, expires_at, created_at, last_used_at
 		FROM tokens WHERE token_hash = ?
 	`, hash))
 }
 
 func (s *SQLiteStore) GetTokenByID(ctx context.Context, id string) (Token, error) {
 	return s.scanToken(s.db.QueryRowContext(ctx, `
-		SELECT id, token_hash, label, is_admin, is_revoked, owner_user_id, created_at, last_used_at
+		SELECT id, token_hash, label, is_admin, is_revoked, owner_user_id, expires_at, created_at, last_used_at
 		FROM tokens WHERE id = ?
 	`, id))
 }
@@ -625,8 +666,9 @@ func (s *SQLiteStore) scanToken(sc scanner) (Token, error) {
 	var t Token
 	var label sql.NullString
 	var ownerUserID sql.NullString
+	var expiresAt sql.NullTime
 	var lastUsed sql.NullTime
-	err := sc.Scan(&t.ID, &t.TokenHash, &label, &t.IsAdmin, &t.IsRevoked, &ownerUserID, &t.CreatedAt, &lastUsed)
+	err := sc.Scan(&t.ID, &t.TokenHash, &label, &t.IsAdmin, &t.IsRevoked, &ownerUserID, &expiresAt, &t.CreatedAt, &lastUsed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Token{}, ErrNotFound
 	}
@@ -639,6 +681,10 @@ func (s *SQLiteStore) scanToken(sc scanner) (Token, error) {
 	if ownerUserID.Valid {
 		t.OwnerUserID = ownerUserID.String
 	}
+	if expiresAt.Valid {
+		ea := expiresAt.Time
+		t.ExpiresAt = &ea
+	}
 	if lastUsed.Valid {
 		lu := lastUsed.Time
 		t.LastUsedAt = &lu
@@ -650,7 +696,7 @@ func (s *SQLiteStore) scanToken(sc scanner) (Token, error) {
 // ListTokens 列出所有未吊销的 token，按创建时间升序。
 func (s *SQLiteStore) ListTokens(ctx context.Context) ([]Token, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, token_hash, label, is_admin, is_revoked, owner_user_id, created_at, last_used_at
+		SELECT id, token_hash, label, is_admin, is_revoked, owner_user_id, expires_at, created_at, last_used_at
 		FROM tokens ORDER BY created_at ASC
 	`)
 	if err != nil {
@@ -662,8 +708,9 @@ func (s *SQLiteStore) ListTokens(ctx context.Context) ([]Token, error) {
 		var t Token
 		var label sql.NullString
 		var ownerUserID sql.NullString
+		var expiresAt sql.NullTime
 		var lastUsed sql.NullTime
-		if err := rows.Scan(&t.ID, &t.TokenHash, &label, &t.IsAdmin, &t.IsRevoked, &ownerUserID, &t.CreatedAt, &lastUsed); err != nil {
+		if err := rows.Scan(&t.ID, &t.TokenHash, &label, &t.IsAdmin, &t.IsRevoked, &ownerUserID, &expiresAt, &t.CreatedAt, &lastUsed); err != nil {
 			return nil, fmt.Errorf("scan token: %w", err)
 		}
 		if label.Valid {
@@ -671,6 +718,10 @@ func (s *SQLiteStore) ListTokens(ctx context.Context) ([]Token, error) {
 		}
 		if ownerUserID.Valid {
 			t.OwnerUserID = ownerUserID.String
+		}
+		if expiresAt.Valid {
+			ea := expiresAt.Time
+			t.ExpiresAt = &ea
 		}
 		if lastUsed.Valid {
 			lu := lastUsed.Time
@@ -887,6 +938,7 @@ func (s *SQLiteStore) DeleteSite(ctx context.Context, code string) error {
 const marketplaceSelectCols = `
 	s.public_id              AS id,
 	s.code                   AS code,
+	s.owner_token_id         AS owner_token_id,
 	s.current_version        AS current_version,
 	cv.id                    AS current_version_id,
 	cv.title                 AS title,
@@ -928,7 +980,7 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	var status sql.NullString
 	var accessProtected int
 	if err := sc.Scan(
-		&d.ID, &d.Code, &curVer, &curVerID, &title, &desc, &mainEntry, &fileSize,
+		&d.ID, &d.Code, &d.OwnerTokenID, &curVer, &curVerID, &title, &desc, &mainEntry, &fileSize,
 		&strategy, &d.ViewCount, &d.LikeCount, &status, &accessProtected, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
 	); err != nil {
 		return d, err

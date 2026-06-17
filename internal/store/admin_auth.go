@@ -75,9 +75,6 @@ func (s *SQLiteStore) DeleteAdminUser(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, time.Now().UTC(), id); err != nil {
 		return fmt.Errorf("revoke user sessions: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_binding_codes WHERE user_id = ?`, id); err != nil {
-		return fmt.Errorf("delete user binding codes: %w", err)
-	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM admin_users WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete admin user: %w", err)

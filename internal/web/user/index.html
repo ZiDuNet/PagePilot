@@ -745,6 +745,22 @@
     background: #f0f9ff;
     transform: translateY(-1px);
   }
+  .icon-btn.danger {
+    color: #be123c;
+  }
+  .icon-btn.danger:hover {
+    color: #fff;
+    border-color: #fb7185;
+    background: #e11d48;
+  }
+  .owner-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-left: 4px;
+    padding-left: 8px;
+    border-left: 1px solid #e2e8f0;
+  }
   .like-count {
     height: 32px;
     display: inline-flex;
@@ -1213,9 +1229,9 @@
     const label = $("home-auth-label");
     if (!link || !label) return;
     try {
-      const r = await fetch("/api/admin/session", { credentials: "same-origin" });
+      const r = await fetch("/api/admin/session", { credentials: "same-origin", headers: authHeaders() });
       const data = await r.json().catch(() => ({}));
-      if (r.ok && data.success && data.loginMethod === "password") {
+      if (r.ok && data.success && (data.loginMethod === "password" || data.loginMethod === "token")) {
         link.href = "/admin";
         link.title = "管理";
         label.textContent = "管理";
@@ -1290,12 +1306,49 @@
     sort: "newest",
     status: "",
     loading: false,
-    debounce: null
+    debounce: null,
+    actor: "",
+    sessionId: ""
   };
 
   function t(key, ...args) {
     const value = strings[state.lang][key] || strings.zh[key] || key;
     return typeof value === "function" ? value(...args) : value;
+  }
+
+  function inlineText(zh, en) {
+    return state.lang === "en" ? en : zh;
+  }
+
+  function authHeaders(extra = {}) {
+    const headers = { ...extra };
+    const token = localStorage.getItem("hostctl-admin-token") || localStorage.getItem("hostctl-token") || "";
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (state.sessionId && !headers.Authorization) headers["X-Hostctl-Session"] = state.sessionId;
+    return headers;
+  }
+
+  function isOwnedDeploy(d) {
+    return d?.owned === true;
+  }
+
+  async function initActor() {
+    try {
+      const sessionResp = await fetch("/api/admin/session", { credentials: "same-origin", headers: authHeaders() });
+      const sessionData = await sessionResp.json().catch(() => ({}));
+      if (sessionResp.ok && sessionData.success && sessionData.userId) {
+        state.actor = `user:${sessionData.userId}`;
+        return;
+      }
+    } catch {}
+    try {
+      const anonResp = await fetch("/api/session", { credentials: "same-origin" });
+      const anonData = await anonResp.json().catch(() => ({}));
+      if (anonResp.ok && anonData.sessionId) {
+        state.sessionId = anonData.sessionId;
+        state.actor = `anon:${anonData.sessionId}`;
+      }
+    } catch {}
   }
 
   function showToast(msg) {
@@ -1387,8 +1440,10 @@
       layers: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"></path><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"></path><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"></path></svg>',
       download: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"></path><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="m7 10 5 5 5-5"></path></svg>',
       copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>',
-      code: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg>'
-      , lock: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>'
+      code: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg>',
+      lock: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>',
+      unlock: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 9.9-1"></path></svg>',
+      trash: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>'
     };
     return icons[name] || "";
   }
@@ -1464,6 +1519,14 @@
     const badgeClass = d.status === "inactive" ? "inactive" : "active";
     const badgeText = d.accessProtected ? "加密" : (d.status === "inactive" ? t("inactive") : t("active"));
     const description = d.description || t("noDesc");
+    const owned = isOwnedDeploy(d);
+    const protectTitle = d.accessProtected ? inlineText("取消访问密码", "Remove password") : inlineText("设置访问密码", "Set password");
+    const ownerActions = owned ? `
+      <span class="owner-actions">
+        <button class="icon-btn" type="button" data-action="password" data-code="${escapeHtml(code)}" data-protected="${d.accessProtected ? "1" : "0"}" title="${protectTitle}">${icon(d.accessProtected ? "unlock" : "lock")}</button>
+        <button class="icon-btn danger" type="button" data-action="delete-site" data-code="${escapeHtml(code)}" title="${inlineText("删除", "Delete")}">${icon("trash")}</button>
+      </span>
+    ` : "";
     return `
       <article class="app-card">
         <div class="preview">
@@ -1503,6 +1566,7 @@
             <div class="action-row">
               ${d.accessProtected ? "" : `<a class="icon-btn" href="/api/deploy/content?code=${encodeURIComponent(code)}&download=1" title="${t("download")}">${icon("download")}</a>`}
               ${d.accessProtected ? "" : `<button class="icon-btn" type="button" data-action="source" data-code="${escapeHtml(code)}" title="${t("source")}">${icon("code")}</button>`}
+              ${ownerActions}
             </div>
           </div>
         </div>
@@ -1559,6 +1623,62 @@
         } catch (e) {
           codeFiles.innerHTML = "";
           codeBody.textContent = t("networkFail", e.message);
+        }
+      });
+    });
+
+    grid.querySelectorAll('[data-action="password"]').forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const code = btn.getAttribute("data-code");
+        const protectedNow = btn.getAttribute("data-protected") === "1";
+        let password = "";
+        if (!protectedNow) {
+          password = prompt(inlineText("请输入访问密码，至少 4 位", "Enter an access password, at least 4 chars")) || "";
+          if (!password) return;
+          if (password.length < 4) {
+            showToast(inlineText("访问密码至少 4 位", "Password must be at least 4 chars"));
+            return;
+          }
+        } else if (!confirm(inlineText("确定取消这个应用的访问密码？", "Remove the access password for this app?"))) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/deploys/${encodeURIComponent(code)}/access`, {
+            method: "PATCH",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ password })
+          });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || j.success === false) throw new Error(j.detail || j.message || j.errorCode || r.statusText);
+          showToast(protectedNow ? inlineText("已取消加密", "Password removed") : inlineText("已设置访问密码", "Password set"));
+          loadDeploys();
+        } catch (e) {
+          showToast(e.message || inlineText("操作失败", "Action failed"));
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+
+    grid.querySelectorAll('[data-action="delete-site"]').forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const code = btn.getAttribute("data-code");
+        if (!confirm(inlineText("确定删除这个应用？", "Delete this app?"))) return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/admin/sites/${encodeURIComponent(code)}`, {
+            method: "DELETE",
+            headers: authHeaders()
+          });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || j.success === false) throw new Error(j.detail || j.message || j.errorCode || r.statusText);
+          showToast(inlineText("已删除", "Deleted"));
+          loadDeploys();
+        } catch (e) {
+          showToast(e.message || inlineText("删除失败", "Delete failed"));
+        } finally {
+          btn.disabled = false;
         }
       });
     });
@@ -1624,7 +1744,10 @@
     if (state.status) params.set("status", state.status);
 
     try {
-      const r = await fetch(`/api/deploys?${params.toString()}`, { cache: "no-store" });
+      const r = await fetch(`/api/deploys?${params.toString()}`, {
+        cache: "no-store",
+        headers: authHeaders()
+      });
       const j = await r.json();
       const deploys = Array.isArray(j.deploys) ? j.deploys : [];
       state.total = Number(j.total || deploys.length || 0);
@@ -1661,11 +1784,16 @@
     });
   });
 
-  renderBarrage();
-  applyLanguage();
-  refreshHomeAuthLink();
-  loadRuntimeConfig();
-  probeCors();
+  async function boot() {
+    renderBarrage();
+    await initActor();
+    applyLanguage();
+    refreshHomeAuthLink();
+    loadRuntimeConfig();
+    probeCors();
+  }
+
+  boot();
 })();
 </script>
 </body>

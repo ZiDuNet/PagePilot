@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yourorg/hostctl/internal/api"
@@ -126,6 +127,7 @@ func main() {
 		cmdLike(),
 		cmdStrategy(),
 		cmdAccess(),
+		cmdClaimSession(),
 		cmdToken(),
 		cmdConfig(),
 	)
@@ -744,6 +746,8 @@ func cmdToken() *cobra.Command {
 
 	// token create
 	var isAdmin bool
+	var ttl string
+	var expiresAt string
 	createC := &cobra.Command{
 		Use:   "create [label]",
 		Short: "Create a new token (plaintext is shown only once)",
@@ -755,7 +759,11 @@ func cmdToken() *cobra.Command {
 			}
 			ctx, cancel := withSignalCancel()
 			defer cancel()
-			resp, err := buildClient().CreateToken(ctx, label, isAdmin)
+			ttlSeconds, err := parseTTLSeconds(ttl)
+			if err != nil {
+				return err
+			}
+			resp, err := buildClient().CreateToken(ctx, label, isAdmin, expiresAt, ttlSeconds)
 			if err != nil {
 				printErr(err)
 				return errSilent
@@ -769,6 +777,11 @@ func cmdToken() *cobra.Command {
 			fmt.Printf("  ID:     %s\n", resp.ID)
 			fmt.Printf("  Label:  %s\n", resp.Label)
 			fmt.Printf("  Token:  %s\n", resp.Token)
+			if resp.ExpiresAt != nil {
+				fmt.Printf("  Expires:%s\n", resp.ExpiresAt.Format(time.RFC3339))
+			} else {
+				fmt.Printf("  Expires: permanent\n")
+			}
 			if resp.IsAdmin {
 				fmt.Printf("  Admin:  yes\n")
 			}
@@ -776,6 +789,8 @@ func cmdToken() *cobra.Command {
 		},
 	}
 	createC.Flags().BoolVar(&isAdmin, "admin", false, "create an admin token")
+	createC.Flags().StringVar(&ttl, "ttl", "", "temporary token lifetime, for example 24h or 30m")
+	createC.Flags().StringVar(&expiresAt, "expires-at", "", "absolute expiry time in RFC3339 format")
 
 	// token list
 	listC := &cobra.Command{
@@ -794,7 +809,7 @@ func cmdToken() *cobra.Command {
 				_ = json.NewEncoder(os.Stdout).Encode(resp)
 				return nil
 			}
-			fmt.Printf("%-36s %-8s %-7s %-9s %s\n", "ID", "ADMIN", "REVOKED", "LABEL", "CREATED")
+			fmt.Printf("%-36s %-8s %-7s %-9s %-20s %s\n", "ID", "ADMIN", "REVOKED", "LABEL", "EXPIRES", "CREATED")
 			for _, t := range resp.Tokens {
 				admin := "no"
 				if t.IsAdmin {
@@ -804,8 +819,12 @@ func cmdToken() *cobra.Command {
 				if t.IsRevoked {
 					revoked = "YES"
 				}
-				fmt.Printf("%-36s %-8s %-7s %-9s %s\n",
-					t.ID, admin, revoked, t.Label,
+				expires := "permanent"
+				if t.ExpiresAt != nil {
+					expires = t.ExpiresAt.Format("2006-01-02 15:04")
+				}
+				fmt.Printf("%-36s %-8s %-7s %-9s %-20s %s\n",
+					t.ID, admin, revoked, t.Label, expires,
 					t.CreatedAt.Format("2006-01-02"))
 			}
 			return nil
@@ -839,6 +858,49 @@ func cmdToken() *cobra.Command {
 }
 
 // ===== 子命令：config =====
+
+func parseTTLSeconds(value string) (*int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return nil, fmt.Errorf("--ttl must be a Go duration such as 30m, 24h, or 168h: %w", err)
+	}
+	if d <= 0 {
+		return nil, fmt.Errorf("--ttl must be positive")
+	}
+	seconds := int64(d.Seconds())
+	if seconds <= 0 {
+		seconds = 1
+	}
+	return &seconds, nil
+}
+
+func cmdClaimSession() *cobra.Command {
+	return &cobra.Command{
+		Use:   "claim-session <session-id>",
+		Short: "Claim anonymous-session deployments for the current token/user",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := withSignalCancel()
+			defer cancel()
+			resp, err := buildClient().ClaimAnonymousSession(ctx, args[0])
+			if err != nil {
+				printErr(err)
+				return errSilent
+			}
+			if flagJSON {
+				_ = json.NewEncoder(os.Stdout).Encode(resp)
+				return nil
+			}
+			fmt.Printf("Claimed session %s for user %s: %d sites, %d deploys\n",
+				resp.SessionID, resp.UserID, resp.SiteCount, resp.DeployCount)
+			return nil
+		},
+	}
+}
 
 func cmdConfig() *cobra.Command {
 	root := &cobra.Command{
