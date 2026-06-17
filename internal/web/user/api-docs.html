@@ -164,6 +164,8 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
         <li>周期性内容不要每天创建 <code class="inline">ai-daily-0507</code> 这类新短链；请使用稳定 code，例如 <code class="inline">ai-daily</code>，并在 title/description/filename 标注日期</li>
         <li>如果新部署与已有项目高度相似，优先读取版本历史并追加新版本；例如日报使用 <code class="inline">customCode=ai-daily</code> + <code class="inline">createVersion=true</code></li>
         <li>主域名策略默认是 <code class="inline">likes</code>（最高赞版本对外）；日更项目可用 <code class="inline">PATCH /api/deploys/:code/primary-strategy</code> 切到 <code class="inline">latest</code>（最新版本对外）</li>
+        <li>访问密码只保护前台查看入口；匿名访客也可以输入密码。验证成功后浏览器获得 5 分钟签名访问票据，站点改密码后旧票据立即失效</li>
+        <li><code class="inline">/deploy.html</code> 与 <code class="inline">/api-docs.html</code> 是内置页面，应由 PagePilot 服务直接返回；反向代理只需完整转发路径</li>
         <li>成功部署后会启动 10 秒全局冷却；冷却中返回 <code class="inline">429</code> + <code class="inline">retryAfterSeconds</code></li>
       </ul>
     </section>
@@ -196,6 +198,8 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
       <div class="space-y-2 text-sm">
         <div class="flex flex-wrap items-center gap-2"><span class="method method-POST">POST</span><code class="inline">/api/deploy</code><span class="text-slate-500">— 部署新应用 / 追加版本（<code class="inline">content</code> 或 <code class="inline">files</code>）</span></div>
         <div class="flex flex-wrap items-center gap-2"><span class="method method-GET">GET</span><code class="inline">/api/deploy/content</code><span class="text-slate-500">— 读取 / 下载应用内容（<code class="inline">?code=&version=&download=1</code>）</span></div>
+        <div class="flex flex-wrap items-center gap-2"><span class="method method-POST">POST</span><code class="inline">/api/deploys/{code}/access</code><span class="text-slate-500">— 匿名访客输入访问密码，获得 5 分钟查看票据</span></div>
+        <div class="flex flex-wrap items-center gap-2"><span class="method method-PATCH">PATCH</span><code class="inline">/api/deploys/{code}/access</code><span class="text-slate-500">— owner 或管理员设置 / 清除访问密码</span></div>
         <div class="flex flex-wrap items-center gap-2"><span class="method method-GET">GET</span><code class="inline">/api/deploys</code><span class="text-slate-500">— 应用市场列表（<code class="inline">?q=&sort=&page=&pageSize=</code>）</span></div>
         <div class="flex flex-wrap items-center gap-2"><span class="method method-GET">GET</span><code class="inline">/api/deploys/{publicId}</code><span class="text-slate-500">— 详情（<code class="inline">publicId</code> 是 UUID 或 code）</span></div>
         <div class="flex flex-wrap items-center gap-2"><span class="method method-POST">POST</span><code class="inline">/api/deploys/{code}/like</code><span class="text-slate-500">— 公开点赞（SHA-256 指纹去重）</span></div>

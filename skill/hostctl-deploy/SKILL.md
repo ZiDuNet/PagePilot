@@ -45,7 +45,9 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - Do not overwrite or delete locked versions. Append a new version instead.
 - Confirm before deleting a whole site.
 - For private work, set or clear access with the `access` command. Do not expose protected content in summaries.
+- Access passwords protect browser viewing only. Anonymous visitors can enter the password; a successful check grants a signed 5-minute browser cookie, and changing the site password invalidates old cookies.
 - After deploying or appending, verify the returned App URL, Short URL, and Version URL. If any URL returns 404, inspect `mainEntry`, current version, and the uploaded file list before reporting success.
+- Built-in PagePilot pages such as `/deploy.html`, `/api-docs.html`, and `/agents/` should be served by the hostctl server. If these return 404, ask the operator to deploy the latest server build and check reverse proxy forwarding.
 
 ## Workflows
 

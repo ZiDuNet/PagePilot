@@ -1,14 +1,16 @@
 # 生产环境部署
 
-本目录包含 PagePilot / hostctl 在 VPS 上运行所需的 Caddy 与 systemd 模板。
+本目录包含 PagePilot / hostctl 在生产环境运行所需的 Docker、Caddy 与 systemd 模板。
 
 ## Docker 部署
 
-推荐先用 Docker 验证生产配置：
+推荐先用 Docker 验证生产配置，或直接用于单机部署：
 
 ```bash
 docker compose up -d --build
 ```
+
+完整 Docker 部署、升级、备份、反向代理和排障说明请见 [deploy/DOCKER.md](DOCKER.md)。
 
 部署前请在 `docker-compose.yml` 中把 `HOSTCTL_PUBLIC_BASE_URL` 改成真实对外地址，例如：
 
@@ -33,6 +35,8 @@ Docker 默认把这些目录挂载到宿主机的 `./data/docker/` 下：
 | `./data/docker/sql` | `/var/lib/hostctl/sql` | 人工维护、备份或迁移用的 SQL 文件 |
 | `./data/docker/hosted` | `/var/www/hosted` | 已发布的静态站点文件 |
 | `./data/docker/logs` | `/var/log/hostctl` | 服务日志目录 |
+
+如果外层使用 Nginx、Caddy、宝塔或云厂商负载均衡，只需要把整个站点反向代理到容器端口。`/deploy.html`、`/api-docs.html`、`/agents/`、`/api/*`、`/agent/*` 和短链都由 PagePilot 自己处理，不要在反向代理里维护路径白名单。
 
 ## 1. 准备服务器
 
@@ -108,6 +112,8 @@ Environment=HOSTCTL_ADMIN_PASSWORD=123456
 ```bash
 curl -s https://host.example.com/api/health
 curl -s https://host.example.com/openapi.json | jq '.info.title'
+curl -fsS https://host.example.com/deploy.html >/dev/null
+curl -fsS https://host.example.com/api-docs.html >/dev/null
 ```
 
 登录后台后，也可以在 Agent 技能里执行：
@@ -142,3 +148,5 @@ df -h /var/www/hosted /var/lib/hostctl
 
 - `GET /api/health`
 - `GET /openapi.json`
+- `GET /deploy.html`
+- `GET /api-docs.html`

@@ -134,6 +134,30 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"responses":  map[string]any{"200": map[string]any{"description": "Like count updated"}},
 				},
 			},
+			"/api/deploys/{code}/access": map[string]any{
+				"post": map[string]any{
+					"summary":     "Verify a site access password",
+					"description": "Public endpoint. Anonymous visitors can submit the password. On success, the browser receives a signed 5-minute HttpOnly cookie for viewing this protected site.",
+					"security":    []any{},
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteAccessRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Access granted"},
+						"401": errorResponse(),
+					},
+				},
+				"patch": map[string]any{
+					"summary":     "Set or clear a site access password",
+					"description": "Site owner or admin required. Changing the password invalidates previously issued browser access cookies.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteAccessRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Access password updated"},
+						"401": errorResponse(),
+						"403": errorResponse(),
+					},
+				},
+			},
 			"/api/deploys/{code}/versions": map[string]any{
 				"get": map[string]any{
 					"summary":    "List versions for a code",
@@ -296,7 +320,10 @@ func openAPISchemas() map[string]any {
 			"filename": str, "description": str, "title": str, "content": str,
 			"files":            map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/DeployFile"}},
 			"enableCustomCode": boolSchema, "customCode": str, "createVersion": boolSchema, "source": str,
-			"accessPassword": str,
+			"accessPassword": map[string]any{
+				"type":        "string",
+				"description": "Optional visit password for the new site. Anonymous visitors can enter it later to receive a signed 5-minute browser access cookie.",
+			},
 		}},
 		"DeployResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "id": str, "code": str, "url": str, "detailUrl": str, "versionUrl": str,
@@ -345,6 +372,9 @@ func openAPISchemas() map[string]any {
 		}},
 		"SessionClaimResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "sessionId": str, "userId": str, "siteCount": intSchema, "deployCount": intSchema, "alreadyClaimed": boolSchema,
+		}},
+		"SiteAccessRequest": map[string]any{"type": "object", "properties": map[string]any{
+			"password": str,
 		}},
 		"AnonymousSessionListResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "deployLimit": intSchema,

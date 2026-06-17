@@ -4,6 +4,7 @@ package api
 import (
 	"archive/zip"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -791,6 +792,8 @@ type siteAccessUpdateRequest struct {
 	Password string `json:"password"`
 }
 
+const siteAccessCookieTTL = 5 * time.Minute
+
 func (s *Server) handleSiteAccessLogin(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	code := strings.TrimSpace(r.PathValue("code"))
@@ -803,8 +806,12 @@ func (s *Server) handleSiteAccessLogin(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
-	if site.AccessPasswordHash == "" || auth.VerifyPassword(req.Password, site.AccessPasswordHash) {
-		setSiteAccessCookie(w, code)
+	if site.AccessPasswordHash == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"success": true})
+		return
+	}
+	if auth.VerifyPassword(req.Password, site.AccessPasswordHash) {
+		setSiteAccessCookie(w, code, site.AccessPasswordHash)
 		writeJSON(w, http.StatusOK, map[string]any{"success": true})
 		return
 	}
@@ -834,15 +841,46 @@ func (s *Server) handleSetSiteAccessPassword(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "code": code, "accessProtected": password != ""})
 }
 
-func setSiteAccessCookie(w http.ResponseWriter, code string) {
+func setSiteAccessCookie(w http.ResponseWriter, code, passwordHash string) {
+	expiresAt := time.Now().UTC().Add(siteAccessCookieTTL)
 	http.SetCookie(w, &http.Cookie{
-		Name:     "pagepilot_access_" + code,
-		Value:    "1",
+		Name:     siteAccessCookieName(code),
+		Value:    siteAccessCookieValue(code, passwordHash, expiresAt),
 		Path:     "/",
-		MaxAge:   60 * 60 * 12,
+		MaxAge:   int(siteAccessCookieTTL.Seconds()),
 		SameSite: http.SameSiteLaxMode,
 		HttpOnly: true,
 	})
+}
+
+func siteAccessCookieName(code string) string {
+	return "pagepilot_access_" + code
+}
+
+func siteAccessCookieValue(code, passwordHash string, expiresAt time.Time) string {
+	expiresUnix := strconv.FormatInt(expiresAt.Unix(), 10)
+	return expiresUnix + "." + siteAccessCookieSignature(code, passwordHash, expiresUnix)
+}
+
+func siteAccessCookieSignature(code, passwordHash, expiresUnix string) string {
+	mac := hmac.New(sha256.New, []byte(passwordHash))
+	_, _ = mac.Write([]byte(code))
+	_, _ = mac.Write([]byte("|"))
+	_, _ = mac.Write([]byte(expiresUnix))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func validSiteAccessCookie(value, code, passwordHash string, now time.Time) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	expiresUnix, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || expiresUnix <= now.Unix() {
+		return false
+	}
+	expected := siteAccessCookieSignature(code, passwordHash, parts[0])
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(expected)) == 1
 }
 
 // likeFingerprint 用 IP + UA hash 生成点赞指纹（防同一用户重复点赞）。
@@ -1386,14 +1424,9 @@ func (s *Server) handleStaticServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !routeCodeRe.MatchString(code) {
-		http.NotFound(w, r)
-		return
-	}
-
 	// 单段路径（无 sub）：先看 user FS 有没有同名文件
 	// 例如 /deploy.html / /api-docs.html / /index.html
-	// 仅在 path 看起来像"用户端静态资源"时（含扩展名）才尝试 user FS
+	// 仅在 path 看起来像“用户端静态资源”时（含扩展名）才尝试 user FS
 	if sub == "" && strings.Contains(code, ".") {
 		if f, err := web.UserSubFS().Open(code); err == nil {
 			st, stErr := f.Stat()
@@ -1403,6 +1436,11 @@ func (s *Server) handleStaticServe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+
+	if !routeCodeRe.MatchString(code) {
+		http.NotFound(w, r)
+		return
 	}
 	if sub == "" && !strings.HasSuffix(r.URL.Path, "/") {
 		u := *r.URL
@@ -1530,7 +1568,8 @@ func (s *Server) siteAccessAllowed(r *http.Request, code string) bool {
 	if err != nil || site.AccessPasswordHash == "" {
 		return true
 	}
-	if c, err := r.Cookie("pagepilot_access_" + code); err == nil && c.Value == "1" {
+	if c, err := r.Cookie(siteAccessCookieName(code)); err == nil &&
+		validSiteAccessCookie(c.Value, code, site.AccessPasswordHash, time.Now()) {
 		return true
 	}
 	if authErr := s.authorizeSiteWrite(r, code); authErr == nil {
