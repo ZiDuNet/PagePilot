@@ -363,7 +363,11 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
     try {
       const r = await fetch('/api/deploys/' + encodeURIComponent(code) + '/versions');
       const j = await r.json();
-      const versions = j.versions || [];
+      const versions = (j.versions || []).slice().sort((a, b) => {
+        const av = Number(a.versionNumber || a.version || 0);
+        const bv = Number(b.versionNumber || b.version || 0);
+        return bv - av;
+      });
       // 找当前 / 主版本号
       const current = versions.find(v => v.isCurrent) || versions.find(v => v.versionNumber === j.currentVersion);
       const primary = versions.find(v => v.isPrimary) || current;
