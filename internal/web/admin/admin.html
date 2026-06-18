@@ -685,7 +685,6 @@
           <div class="field"><label>初始密码</label><input id="user-password" class="input" type="password" placeholder="至少 8 位"></div>
           <div class="field"><label>部署额度</label><input id="user-limit" class="input" type="number" min="-1" value="20"><div class="hint">-1 表示不限额。普通用户默认 20 次。</div></div>
           <div class="field"><label><input id="user-admin" type="checkbox"> 管理员</label></div>
-          <div class="field"><label><input id="user-can-like" type="checkbox" checked> 允许点赞</label></div>
           <button id="user-create" class="btn btn-primary" type="button">创建用户</button>
         </div>
         <div class="panel">
@@ -1220,12 +1219,11 @@
       await api("/api/admin/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password, deployLimit, isAdmin: $("user-admin").checked, canLike: $("user-can-like").checked })
+        body: JSON.stringify({ username, password, deployLimit, isAdmin: $("user-admin").checked })
       });
       $("user-name").value = "";
       $("user-password").value = "";
       $("user-admin").checked = false;
-      $("user-can-like").checked = true;
       toast("用户已创建", "success");
       await loadUsers();
     } catch (err) { toast("创建失败：" + err.message, "error"); }
@@ -1251,7 +1249,6 @@
           <button class="btn btn-danger" data-user-delete="${escapeHtml(u.id)}" data-user-name="${escapeHtml(u.username)}">删除</button>
           <label><input type="checkbox" ${u.isAdmin ? "checked" : ""} data-user-admin="${escapeHtml(u.id)}"> 管理员</label>
           <label><input type="checkbox" ${u.isActive ? "checked" : ""} data-user-active="${escapeHtml(u.id)}"> 启用</label>
-          <label><input type="checkbox" ${u.canLike ? "checked" : ""} data-user-like="${escapeHtml(u.id)}"> 可点赞</label>
         </div>`).join("")}
     `).join("");
     $("users-list").querySelectorAll("[data-user-save]").forEach(btn => btn.addEventListener("click", async () => {
@@ -1264,8 +1261,7 @@
           body: JSON.stringify({
             deployLimit: Number(row.querySelector("[data-user-limit]").value || 0),
             isAdmin: row.querySelector("[data-user-admin]").checked,
-            isActive: row.querySelector("[data-user-active]").checked,
-            canLike: row.querySelector("[data-user-like]").checked
+            isActive: row.querySelector("[data-user-active]").checked
           })
         });
         toast("用户已保存", "success");

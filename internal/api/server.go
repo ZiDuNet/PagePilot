@@ -2430,11 +2430,6 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", err.Error()), reqID))
 		return
 	}
-	if !req.CanLike {
-		user.CanLike = false
-		_ = s.auth.UpdateUser(r.Context(), user)
-		user, _ = s.auth.GetUser(r.Context(), user.ID)
-	}
 	writeJSON(w, http.StatusOK, UserCreateResponse{Success: true, User: toUserListItem(user)})
 }
 
@@ -2462,9 +2457,6 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IsActive != nil {
 		user.IsActive = *req.IsActive
-	}
-	if req.CanLike != nil {
-		user.CanLike = *req.CanLike
 	}
 	if req.DeployLimit != nil {
 		user.DeployLimit = *req.DeployLimit
@@ -2534,7 +2526,6 @@ func toUserListItem(user store.AdminUser) UserListItem {
 		Username:    user.Username,
 		IsAdmin:     user.IsAdmin,
 		IsActive:    user.IsActive,
-		CanLike:     user.CanLike,
 		DeployLimit: user.DeployLimit,
 		DeployCount: user.DeployCount,
 		Remaining:   remaining,

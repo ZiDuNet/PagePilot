@@ -75,7 +75,6 @@ type UserListItem struct {
 	Username    string     `json:"username"`
 	IsAdmin     bool       `json:"isAdmin"`
 	IsActive    bool       `json:"isActive"`
-	CanLike     bool       `json:"canLike"`
 	DeployLimit int        `json:"deployLimit"`
 	DeployCount int        `json:"deployCount"`
 	Remaining   int        `json:"remaining"`
@@ -92,7 +91,6 @@ type UserCreateRequest struct {
 	Username    string `json:"username"`
 	Password    string `json:"password"`
 	IsAdmin     bool   `json:"isAdmin"`
-	CanLike     bool   `json:"canLike"`
 	DeployLimit int    `json:"deployLimit"`
 }
 
@@ -105,7 +103,6 @@ type UserUpdateRequest struct {
 	Username    *string `json:"username,omitempty"`
 	IsAdmin     *bool   `json:"isAdmin,omitempty"`
 	IsActive    *bool   `json:"isActive,omitempty"`
-	CanLike     *bool   `json:"canLike,omitempty"`
 	DeployLimit *int    `json:"deployLimit,omitempty"`
 }
 
