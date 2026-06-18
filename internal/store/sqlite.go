@@ -175,6 +175,8 @@ func migrateSitesAddMarketplaceColumns(db *sql.DB) error {
 		{"like_count", "INTEGER NOT NULL DEFAULT 0"},
 		{"status", "TEXT NOT NULL DEFAULT 'active'"},
 		{"access_password_hash", "TEXT NOT NULL DEFAULT ''"},
+		{"is_pinned", "BOOLEAN NOT NULL DEFAULT 0"},
+		{"pinned_at", "DATETIME"},
 		{"expires_at", "DATETIME"},
 		{"updated_at", "DATETIME"},
 		{"primary_version_strategy", "TEXT NOT NULL DEFAULT 'likes'"},
@@ -266,6 +268,10 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	if site.ExpiresAt != nil {
 		expiresAt = site.ExpiresAt.UTC()
 	}
+	var pinnedAt any
+	if site.PinnedAt != nil {
+		pinnedAt = site.PinnedAt.UTC()
+	}
 	now := time.Now().UTC()
 	updatedAt := site.UpdatedAt
 	if updatedAt.IsZero() {
@@ -273,9 +279,9 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sites (code, public_id, owner_token_id, current_version, primary_version_strategy,
-		                   view_count, like_count, status, access_password_hash, expires_at, created_at, updated_at, source)
-		VALUES (?, ?, ?, NULL, ?, 0, 0, ?, ?, ?, ?, ?, ?)
-	`, site.Code, publicID, site.OwnerTokenID, strategy, status, site.AccessPasswordHash, expiresAt, site.CreatedAt.UTC(), updatedAt.UTC(), site.Source)
+		                   view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source)
+		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, site.Code, publicID, site.OwnerTokenID, strategy, site.ViewCount, site.LikeCount, status, site.AccessPasswordHash, site.IsPinned, pinnedAt, expiresAt, site.CreatedAt.UTC(), updatedAt.UTC(), site.Source)
 	if err != nil {
 		return fmt.Errorf("insert site: %w", err)
 	}
@@ -287,14 +293,16 @@ func (s *SQLiteStore) GetSite(ctx context.Context, code string) (Site, error) {
 	var site Site
 	var cur sql.NullInt64
 	var expiresAt sql.NullString
+	var pinnedAt sql.NullString
 	var updatedAt sql.NullString
+	var isPinned int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT code, public_id, owner_token_id, current_version, primary_version_strategy,
-		       view_count, like_count, status, access_password_hash, expires_at, created_at, updated_at, source
+		       view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source
 		FROM sites WHERE code = ?
 	`, code).Scan(
 		&site.Code, &site.PublicID, &site.OwnerTokenID, &cur, &site.PrimaryVersionStrategy,
-		&site.ViewCount, &site.LikeCount, &site.Status, &site.AccessPasswordHash, &expiresAt, &site.CreatedAt, &updatedAt, &site.Source,
+		&site.ViewCount, &site.LikeCount, &site.Status, &site.AccessPasswordHash, &isPinned, &pinnedAt, &expiresAt, &site.CreatedAt, &updatedAt, &site.Source,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Site{}, ErrNotFound
@@ -312,14 +320,21 @@ func (s *SQLiteStore) GetSite(ctx context.Context, code string) (Site, error) {
 	if site.Status == "" {
 		site.Status = "active"
 	}
+	site.IsPinned = isPinned != 0
+	if pinnedAt.Valid && pinnedAt.String != "" {
+		if t, perr := parseSQLiteTime(pinnedAt.String); perr == nil {
+			t = t.Local()
+			site.PinnedAt = &t
+		}
+	}
 	if expiresAt.Valid && expiresAt.String != "" {
-		if t, perr := time.Parse(time.RFC3339, expiresAt.String); perr == nil {
+		if t, perr := parseSQLiteTime(expiresAt.String); perr == nil {
 			t = t.Local()
 			site.ExpiresAt = &t
 		}
 	}
 	if updatedAt.Valid && updatedAt.String != "" {
-		if t, perr := time.Parse(time.RFC3339, updatedAt.String); perr == nil {
+		if t, perr := parseSQLiteTime(updatedAt.String); perr == nil {
 			site.UpdatedAt = t.Local()
 		}
 	}
@@ -832,13 +847,15 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 			s.like_count,
 			COALESCE(s.status, 'active') AS status,
 			CASE WHEN COALESCE(s.access_password_hash, '') <> '' THEN 1 ELSE 0 END AS access_protected,
+			COALESCE(s.is_pinned, 0) AS is_pinned,
+			s.pinned_at,
 			COUNT(DISTINCT v.version_number) AS version_count,
 			COALESCE(SUM(v.total_size), 0) AS total_size,
 			MAX(v.created_at) AS last_version_at
 		FROM sites s
 		LEFT JOIN versions v ON v.site_code = s.code
 		GROUP BY s.code
-		ORDER BY s.created_at DESC
+		ORDER BY COALESCE(s.is_pinned, 0) DESC, s.pinned_at DESC, s.created_at DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list sites: %w", err)
@@ -851,31 +868,35 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 		var cur sql.NullInt64
 		var updatedAt sql.NullString
 		var accessProtected int
+		var isPinned int
+		var pinnedAt sql.NullString
 		var lastVStr sql.NullString // SQLite 的 MAX() 返回字符串，扫不进 *time.Time
 		if err := rows.Scan(
 			&item.Code, &item.PublicID, &item.OwnerTokenID, &cur, &item.CreatedAt, &updatedAt, &item.Source,
 			&item.ViewCount, &item.LikeCount, &item.Status,
-			&accessProtected, &item.VersionCount, &item.TotalSize, &lastVStr,
+			&accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
 		); err != nil {
 			return nil, fmt.Errorf("scan site row: %w", err)
 		}
 		item.AccessProtected = accessProtected != 0
+		item.IsPinned = isPinned != 0
 		if cur.Valid {
 			v := cur.Int64
 			item.CurrentVersion = &v
 		}
 		if updatedAt.Valid && updatedAt.String != "" {
-			if t, perr := time.Parse(time.RFC3339, updatedAt.String); perr == nil {
-				item.UpdatedAt = t.Local()
-			} else if t, perr := time.Parse("2006-01-02 15:04:05", updatedAt.String); perr == nil {
+			if t, perr := parseSQLiteTime(updatedAt.String); perr == nil {
 				item.UpdatedAt = t.Local()
 			}
 		}
-		if lastVStr.Valid && lastVStr.String != "" {
-			if t, perr := time.Parse(time.RFC3339, lastVStr.String); perr == nil {
+		if pinnedAt.Valid && pinnedAt.String != "" {
+			if t, perr := parseSQLiteTime(pinnedAt.String); perr == nil {
 				t = t.Local()
-				item.LastVersionAt = &t
-			} else if t, perr := time.Parse("2006-01-02 15:04:05", lastVStr.String); perr == nil {
+				item.PinnedAt = &t
+			}
+		}
+		if lastVStr.Valid && lastVStr.String != "" {
+			if t, perr := parseSQLiteTime(lastVStr.String); perr == nil {
 				t = t.Local()
 				item.LastVersionAt = &t
 			}
@@ -950,6 +971,8 @@ const marketplaceSelectCols = `
 	s.like_count             AS like_count,
 	s.status                 AS status,
 	CASE WHEN COALESCE(s.access_password_hash, '') <> '' THEN 1 ELSE 0 END AS access_protected,
+	COALESCE(s.is_pinned, 0) AS is_pinned,
+	s.pinned_at              AS pinned_at,
 	s.expires_at             AS expires_at,
 	s.created_at             AS created_at,
 	COALESCE(s.updated_at, s.created_at) AS updated_at,
@@ -979,13 +1002,16 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	var strategy sql.NullString
 	var status sql.NullString
 	var accessProtected int
+	var isPinned int
+	var pinnedAt sql.NullString
 	if err := sc.Scan(
 		&d.ID, &d.Code, &d.OwnerTokenID, &curVer, &curVerID, &title, &desc, &mainEntry, &fileSize,
-		&strategy, &d.ViewCount, &d.LikeCount, &status, &accessProtected, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
+		&strategy, &d.ViewCount, &d.LikeCount, &status, &accessProtected, &isPinned, &pinnedAt, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
 	); err != nil {
 		return d, err
 	}
 	d.AccessProtected = accessProtected != 0
+	d.IsPinned = isPinned != 0
 	if curVer.Valid {
 		v := curVer.Int64
 		d.CurrentVersion = &v
@@ -1018,14 +1044,20 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	if d.PrimaryVersionStrategy == "" {
 		d.PrimaryVersionStrategy = "likes"
 	}
+	if pinnedAt.Valid && pinnedAt.String != "" {
+		if t, perr := parseSQLiteTime(pinnedAt.String); perr == nil {
+			t = t.Local()
+			d.PinnedAt = &t
+		}
+	}
 	if expiresAt.Valid && expiresAt.String != "" {
-		if t, perr := time.Parse(time.RFC3339, expiresAt.String); perr == nil {
+		if t, perr := parseSQLiteTime(expiresAt.String); perr == nil {
 			t = t.Local()
 			d.ExpiresAt = &t
 		}
 	}
 	if updatedAt.Valid && updatedAt.String != "" {
-		if t, perr := time.Parse(time.RFC3339, updatedAt.String); perr == nil {
+		if t, perr := parseSQLiteTime(updatedAt.String); perr == nil {
 			d.UpdatedAt = t.Local()
 		}
 	}
@@ -1075,6 +1107,7 @@ func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sor
 	case "likes_asc":
 		orderSQL = "s.like_count ASC, s.created_at DESC"
 	}
+	orderSQL = "COALESCE(s.is_pinned, 0) DESC, " + orderSQL
 
 	// 总数
 	var total int
@@ -1192,6 +1225,26 @@ func (s *SQLiteStore) UpdateSiteStatus(ctx context.Context, code, status string)
 	return nil
 }
 
+// SetSitePinned 设置或取消首页应用商城置顶。
+func (s *SQLiteStore) SetSitePinned(ctx context.Context, code string, pinned bool) error {
+	now := time.Now().UTC()
+	var pinnedAt any
+	if pinned {
+		pinnedAt = now
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sites SET is_pinned = ?, pinned_at = ?, updated_at = ? WHERE code = ?`,
+		pinned, pinnedAt, now, code)
+	if err != nil {
+		return fmt.Errorf("set site pinned: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // TouchSiteUpdated 把 updated_at 更新为当前时间。
 func (s *SQLiteStore) TouchSiteUpdated(ctx context.Context, code string) error {
 	_, err := s.db.ExecContext(ctx,
@@ -1216,5 +1269,12 @@ func (s *SQLiteStore) SetSiteAccessPasswordHash(ctx context.Context, code, hash 
 	return nil
 }
 
-// 让 time.Time 在 import 中可见，避免被自动移除
-var _ = time.Now
+func parseSQLiteTime(value string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, nil
+	}
+	return time.Parse("2006-01-02 15:04:05", value)
+}

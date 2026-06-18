@@ -56,6 +56,7 @@ type DeployerPort interface {
 
 	DeleteSite(ctx context.Context, code string) *APIError
 	ListSites(ctx context.Context) ([]store.SiteWithMeta, error)
+	SetSitePinned(ctx context.Context, code string, pinned bool) error
 	PublicBaseURL() string
 	SetPublicBaseURL(ctx context.Context, baseURL string) error
 	SetAnonymousDeployLimit(ctx context.Context, n int) error
@@ -178,6 +179,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("PUT /api/config", s.handlePutConfig)
 	s.mux.HandleFunc("GET /api/admin/sites", s.handleAdminListSites)
+	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/pin", s.handleAdminSetSitePin)
 	s.mux.HandleFunc("DELETE /api/admin/sites/{code}", s.handleAdminDeleteSite)
 
 	// admin 后台单页
@@ -616,6 +618,8 @@ type marketplaceDeployResponse struct {
 	ExpiresAt              *string `json:"expiresAt"`
 	Status                 string  `json:"status"`
 	AccessProtected        bool    `json:"accessProtected"`
+	IsPinned               bool    `json:"isPinned"`
+	PinnedAt               *string `json:"pinnedAt"`
 }
 
 // handleListMarketplace 处理 GET /api/deploys —— 公开列出所有 deploy（应用商城）。
@@ -737,6 +741,11 @@ func (s *Server) toMarketplaceResponse(d store.MarketplaceDeploy, actor string, 
 		t := d.ExpiresAt.UTC().Format(time.RFC3339Nano)
 		expiresAt = &t
 	}
+	var pinnedAt *string
+	if d.PinnedAt != nil {
+		t := d.PinnedAt.UTC().Format(time.RFC3339Nano)
+		pinnedAt = &t
+	}
 	owned := isAdmin || (actor != "" && d.OwnerTokenID == actor)
 	return marketplaceDeployResponse{
 		ID:                     d.ID,
@@ -759,6 +768,8 @@ func (s *Server) toMarketplaceResponse(d store.MarketplaceDeploy, actor string, 
 		ExpiresAt:              expiresAt,
 		Status:                 d.Status,
 		AccessProtected:        d.AccessProtected,
+		IsPinned:               d.IsPinned,
+		PinnedAt:               pinnedAt,
 	}
 }
 
@@ -2614,12 +2625,61 @@ func (s *Server) handleAdminListSites(w http.ResponseWriter, r *http.Request) {
 			LikeCount:       site.LikeCount,
 			Status:          site.Status,
 			AccessProtected: site.AccessProtected,
+			IsPinned:        site.IsPinned,
+			PinnedAt:        site.PinnedAt,
 			CreatedAt:       site.CreatedAt,
 			Source:          site.Source,
 			LastVersionAt:   site.LastVersionAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, SiteListResponse{Success: true, Sites: items})
+}
+
+// handleAdminSetSitePin 允许管理员置顶或取消置顶首页应用商城站点。
+func (s *Server) handleAdminSetSitePin(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	code := r.PathValue("code")
+	if code == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "path",
+			"missing code in path"), reqID))
+		return
+	}
+	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	var req SitePinRequest
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+	if req.Pinned == nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "pinned",
+			"pinned is required"), reqID))
+		return
+	}
+	if err := s.deployer.SetSitePinned(r.Context(), code, *req.Pinned); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			return
+		}
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_pin", err.Error()), reqID))
+		return
+	}
+	site, err := s.deployer.GetSite(r.Context(), code)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			return
+		}
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_pin", err.Error()), reqID))
+		return
+	}
+	resp := SitePinResponse{Success: true, Code: code, IsPinned: site.IsPinned}
+	if site.PinnedAt != nil {
+		t := site.PinnedAt.UTC().Format(time.RFC3339Nano)
+		resp.PinnedAt = &t
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleAdminDeleteSite 删除整个 site。

@@ -197,6 +197,18 @@ func toolList() []toolDef {
 			},
 		},
 		{
+			Name:        "set_site_pin",
+			Description: "Admin only: pin or unpin a marketplace site. Pinned sites appear before normal marketplace ranking, while like ranking is preserved inside the pinned and normal groups.",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"code":   {Type: "string", Description: "Site short code"},
+					"pinned": {Type: "boolean", Description: "true to pin, false to unpin"},
+				},
+				Required: []string{"code", "pinned"},
+			},
+		},
+		{
 			Name:        "get_site_content",
 			Description: "获取 site 的元数据：文件清单、主入口、大小、是否锁定。可指定 version，默认取当前。",
 			InputSchema: jsonSchema{
@@ -339,6 +351,8 @@ func handleToolCall(ctx context.Context, c *client.Client, params json.RawMessag
 		resultText, callErr = toolClaimAnonymousSession(ctx, c, p.Arguments)
 	case "set_site_access_password":
 		resultText, callErr = toolSetSiteAccessPassword(ctx, c, p.Arguments)
+	case "set_site_pin":
+		resultText, callErr = toolSetSitePin(ctx, c, p.Arguments)
 	case "get_site_content":
 		resultText, callErr = toolGetContent(ctx, c, p.Arguments)
 	case "list_versions":
@@ -461,6 +475,23 @@ func toolSetSiteAccessPassword(ctx context.Context, c *client.Client, args map[s
 		return "", fmt.Errorf("password is required; pass an empty string to clear it")
 	}
 	resp, err := c.SetSiteAccessPassword(ctx, code, password)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolSetSitePin(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	code, _ := args["code"].(string)
+	pinned, ok := args["pinned"].(bool)
+	if code == "" {
+		return "", fmt.Errorf("code is required")
+	}
+	if !ok {
+		return "", fmt.Errorf("pinned is required")
+	}
+	resp, err := c.SetSitePin(ctx, code, pinned)
 	if err != nil {
 		return "", err
 	}

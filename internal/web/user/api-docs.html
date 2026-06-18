@@ -164,6 +164,7 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
         <li>周期性内容不要每天创建 <code class="inline">ai-daily-0507</code> 这类新短链；请使用稳定 code，例如 <code class="inline">ai-daily</code>，并在 title/description/filename 标注日期</li>
         <li>如果新部署与已有项目高度相似，优先读取版本历史并追加新版本；例如日报使用 <code class="inline">customCode=ai-daily</code> + <code class="inline">createVersion=true</code></li>
         <li>主域名策略默认是 <code class="inline">likes</code>（最高赞版本对外）；日更项目可用 <code class="inline">PATCH /api/deploys/:code/primary-strategy</code> 切到 <code class="inline">latest</code>（最新版本对外）</li>
+        <li>应用商城保留点赞排行；管理员后台置顶会优先于所有排序，置顶分组内部仍按当前 <code class="inline">sort</code> 排列；MCP 工具名为 <code class="inline">set_site_pin</code></li>
         <li>访问密码只保护前台查看入口；匿名访客也可以输入密码。验证成功后浏览器获得 5 分钟签名访问票据，站点改密码后旧票据立即失效</li>
         <li><code class="inline">/deploy.html</code> 与 <code class="inline">/api-docs.html</code> 是内置页面，应由 PagePilot 服务直接返回；反向代理只需完整转发路径</li>
         <li>成功部署后会启动 10 秒全局冷却；冷却中返回 <code class="inline">429</code> + <code class="inline">retryAfterSeconds</code></li>
@@ -203,6 +204,7 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
         <div class="flex flex-wrap items-center gap-2"><span class="method method-GET">GET</span><code class="inline">/api/deploys</code><span class="text-slate-500">— 应用市场列表（<code class="inline">?q=&sort=&page=&pageSize=</code>）</span></div>
         <div class="flex flex-wrap items-center gap-2"><span class="method method-GET">GET</span><code class="inline">/api/deploys/{publicId}</code><span class="text-slate-500">— 详情（<code class="inline">publicId</code> 是 UUID 或 code）</span></div>
         <div class="flex flex-wrap items-center gap-2"><span class="method method-POST">POST</span><code class="inline">/api/deploys/{code}/like</code><span class="text-slate-500">— 公开点赞（SHA-256 指纹去重）</span></div>
+        <div class="flex flex-wrap items-center gap-2"><span class="method method-PATCH">PATCH</span><code class="inline">/api/admin/sites/{code}/pin</code><span class="text-slate-500">— 管理员置顶 / 取消置顶首页应用</span></div>
         <div class="flex flex-wrap items-center gap-2"><span class="method method-GET">GET</span><code class="inline">/api/deploys/{code}/versions</code><span class="text-slate-500">— 版本列表</span></div>
         <div class="flex flex-wrap items-center gap-2"><span class="method method-PATCH">PATCH</span><code class="inline">/api/deploys/{code}/versions/{version}</code><span class="text-slate-500">— 覆盖未锁定版本 / 切换 active/inactive</span></div>
         <div class="flex flex-wrap items-center gap-2"><span class="method method-DELETE">DELETE</span><code class="inline">/api/deploys/{code}/versions/{version}</code><span class="text-slate-500">— 删除未锁定版本</span></div>
@@ -327,7 +329,7 @@ POST /api/deploy
               <li><code class="inline">page</code> — 页码，默认 1</li>
               <li><code class="inline">pageSize</code> — 每页数量，默认 12，最大 50</li>
               <li><code class="inline">q</code> — 关键词（标题 / 文件名 / code）</li>
-              <li><code class="inline">sort</code> — newest / oldest / likes_desc / views_desc</li>
+              <li><code class="inline">sort</code> — newest / oldest / likes_desc / views_desc；置顶应用始终优先</li>
               <li><code class="inline">status</code> — active / inactive</li>
             </ul>
           </div>
@@ -390,7 +392,7 @@ GET /api/deploys/16e7de50-62eb-4157-bb4e-002ba05b6ecb
           <h3 class="text-base font-semibold text-rose-900">
             <span class="method method-POST">POST</span> /api/deploys/{code}/like
           </h3>
-          <p class="text-sm text-slate-600">点赞只影响应用商城排序。生产模式可要求登录或有效 Token；同一身份对同一作品只计一次。</p>
+          <p class="text-sm text-slate-600">点赞影响应用商城排行。管理员置顶会优先于点赞排行；同一身份对同一作品只计一次。</p>
           <pre>POST /api/deploys/19zd9ahw/like
 
 {

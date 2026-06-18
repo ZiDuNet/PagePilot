@@ -18,6 +18,8 @@ type Site struct {
 	LikeCount              int64
 	Status                 string // 'active' | 'inactive'
 	AccessPasswordHash     string
+	IsPinned               bool
+	PinnedAt               *time.Time
 	ExpiresAt              *time.Time
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
@@ -42,6 +44,8 @@ type MarketplaceDeploy struct {
 	VersionCount           int
 	Status                 string
 	AccessProtected        bool
+	IsPinned               bool
+	PinnedAt               *time.Time
 	ExpiresAt              *time.Time
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
@@ -150,6 +154,8 @@ type SiteWithMeta struct {
 	LikeCount       int64
 	Status          string
 	AccessProtected bool
+	IsPinned        bool
+	PinnedAt        *time.Time
 	VersionCount    int
 	TotalSize       int64
 	LastVersionAt   *time.Time
@@ -280,6 +286,9 @@ type Store interface {
 
 	// UpdateSiteStatus 设置 site.status（active/inactive）。
 	UpdateSiteStatus(ctx context.Context, code, status string) error
+
+	// SetSitePinned 设置或取消首页应用商城置顶。
+	SetSitePinned(ctx context.Context, code string, pinned bool) error
 
 	// TouchSiteUpdated 把 site.updated_at 更新为当前时间。
 	TouchSiteUpdated(ctx context.Context, code string) error

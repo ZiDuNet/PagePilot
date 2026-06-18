@@ -551,6 +551,19 @@ def cmd_admin_delete_site(args) -> int:
     return print_result(status, data)
 
 
+def cmd_admin_pin_site(args) -> int:
+    code = urllib.parse.quote(args.code, safe="")
+    payload = {"pinned": not args.unpin}
+    status, data = request_json(
+        server_url(args),
+        auth_token(args),
+        f"/api/admin/sites/{code}/pin",
+        "PATCH",
+        payload,
+    )
+    return print_result(status, data)
+
+
 def cmd_config_get(args) -> int:
     status, data = request_json(server_url(args), auth_token(args), "/api/config")
     return print_result(status, data)
@@ -686,6 +699,10 @@ def build_parser() -> argparse.ArgumentParser:
     pa = admin_sub.add_parser("delete-site", help="Delete a whole site")
     pa.add_argument("code")
     pa.set_defaults(func=cmd_admin_delete_site)
+    pa = admin_sub.add_parser("pin-site", help="Pin or unpin a marketplace site")
+    pa.add_argument("code")
+    pa.add_argument("--unpin", action="store_true", help="Clear the marketplace pin")
+    pa.set_defaults(func=cmd_admin_pin_site)
 
     p_config = sub.add_parser("config", help="Read or update runtime config")
     config_sub = p_config.add_subparsers(dest="config_cmd", required=True)

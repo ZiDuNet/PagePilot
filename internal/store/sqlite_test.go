@@ -177,6 +177,143 @@ func TestClaimAnonymousSessionRejectsNewAnonymousDeploysAfterClaim(t *testing.T)
 	}
 }
 
+func TestMarketplacePinnedDeploysStayAboveLikeRanking(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-3 * time.Hour)
+
+	seedMarketplaceSite(t, store, "popular", 50, base)
+	seedMarketplaceSite(t, store, "pinned-high", 30, base.Add(time.Hour))
+	seedMarketplaceSite(t, store, "pinned-low", 1, base.Add(90*time.Minute))
+	seedMarketplaceSite(t, store, "fresh", 10, base.Add(2*time.Hour))
+
+	if err := store.SetSitePinned(ctx, "pinned-high", true); err != nil {
+		t.Fatalf("pin high site: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := store.SetSitePinned(ctx, "pinned-low", true); err != nil {
+		t.Fatalf("pin low site: %v", err)
+	}
+
+	deploys, total, err := store.ListMarketplaceDeploys(ctx, "", "", "likes_desc", 1, 10)
+	if err != nil {
+		t.Fatalf("list marketplace: %v", err)
+	}
+	if total != 4 {
+		t.Fatalf("total = %d, want 4", total)
+	}
+	got := []string{deploys[0].Code, deploys[1].Code, deploys[2].Code, deploys[3].Code}
+	want := []string{"pinned-high", "pinned-low", "popular", "fresh"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+	if !deploys[0].IsPinned || deploys[0].PinnedAt == nil {
+		t.Fatalf("first deploy pin fields = isPinned:%v pinnedAt:%v, want pinned", deploys[0].IsPinned, deploys[0].PinnedAt)
+	}
+}
+
+func TestSQLiteMigrationAddsSitePinColumns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "hostctl.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE sites (
+			code TEXT PRIMARY KEY,
+			public_id TEXT NOT NULL UNIQUE,
+			owner_token_id TEXT NOT NULL,
+			current_version INTEGER,
+			primary_version_strategy TEXT NOT NULL DEFAULT 'likes',
+			view_count INTEGER NOT NULL DEFAULT 0,
+			like_count INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'active',
+			access_password_hash TEXT NOT NULL DEFAULT '',
+			expires_at DATETIME,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			source TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		t.Fatalf("seed old sites table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	defer store.Close()
+
+	cols := map[string]bool{}
+	rows, err := store.db.Query(`PRAGMA table_info(sites)`)
+	if err != nil {
+		t.Fatalf("pragma table_info: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan column: %v", err)
+		}
+		cols[name] = true
+	}
+	for _, name := range []string{"is_pinned", "pinned_at"} {
+		if !cols[name] {
+			t.Fatalf("column %s was not added by migration", name)
+		}
+	}
+}
+
+func seedMarketplaceSite(t *testing.T, store *SQLiteStore, code string, likes int64, createdAt time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	if err := store.CreateSite(ctx, Site{
+		Code:         code,
+		PublicID:     code + "-public-id",
+		OwnerTokenID: "user:owner",
+		LikeCount:    likes,
+		CreatedAt:    createdAt,
+		UpdatedAt:    createdAt,
+		Source:       "api",
+	}); err != nil {
+		t.Fatalf("create site %s: %v", code, err)
+	}
+	if err := store.CreateVersion(ctx, Version{
+		ID:            code + "-version-id",
+		SiteCode:      code,
+		VersionNumber: 1,
+		Title:         code,
+		Description:   code + " description",
+		MainEntry:     "index.html",
+		TotalSize:     100,
+		FileCount:     1,
+		ContentSha256: code + "-sha",
+		Status:        "active",
+		CreatedAt:     createdAt,
+	}); err != nil {
+		t.Fatalf("create version %s: %v", code, err)
+	}
+	v := int64(1)
+	if err := store.SetCurrentVersion(ctx, code, &v); err != nil {
+		t.Fatalf("set current version %s: %v", code, err)
+	}
+	if likes > 0 {
+		if _, err := store.db.ExecContext(ctx, `UPDATE sites SET like_count = ? WHERE code = ?`, likes, code); err != nil {
+			t.Fatalf("set like count %s: %v", code, err)
+		}
+	}
+}
+
 func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "hostctl.db"))

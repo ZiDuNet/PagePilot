@@ -811,6 +811,10 @@ func (d *Deployer) GetSite(ctx context.Context, code string) (store.Site, error)
 	return d.store.GetSite(ctx, code)
 }
 
+func (d *Deployer) SetSitePinned(ctx context.Context, code string, pinned bool) error {
+	return d.store.SetSitePinned(ctx, code, pinned)
+}
+
 func (d *Deployer) SetSiteAccessPassword(ctx context.Context, code, password string) error {
 	hash := ""
 	if strings.TrimSpace(password) != "" {

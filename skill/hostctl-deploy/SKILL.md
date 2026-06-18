@@ -46,6 +46,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - Confirm before deleting a whole site.
 - For private work, set or clear access with the `access` command. Do not expose protected content in summaries.
 - Access passwords protect browser viewing only. Anonymous visitors can enter the password; a successful check grants a signed 5-minute browser cookie, and changing the site password invalidates old cookies.
+- Marketplace like ranking is still available. Admin-pinned sites appear before all normal ranking results; only admins should pin or unpin sites from the admin console/API/script/MCP.
 - After deploying or appending, verify the returned App URL, Short URL, and Version URL. If any URL returns 404, inspect `mainEntry`, current version, and the uploaded file list before reporting success.
 - Built-in PagePilot pages such as `/deploy.html`, `/api-docs.html`, and `/agents/` should be served by the hostctl server. If these return 404, ask the operator to deploy the latest server build and check reverse proxy forwarding.
 
@@ -79,6 +80,13 @@ Manage access:
 ```bash
 python skill/hostctl-deploy/scripts/hostctl_deploy.py access my-landing --password "change-me"
 python skill/hostctl-deploy/scripts/hostctl_deploy.py access my-landing --clear
+```
+
+Pin marketplace entries as an admin:
+
+```bash
+python skill/hostctl-deploy/scripts/hostctl_deploy.py admin pin-site my-landing
+python skill/hostctl-deploy/scripts/hostctl_deploy.py admin pin-site my-landing --unpin
 ```
 
 Create tokens:

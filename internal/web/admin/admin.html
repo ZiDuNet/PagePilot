@@ -1372,7 +1372,7 @@
       <tr>
         <td><code>${escapeHtml(s.code)}</code><div style="color:#94a3b8;font-size:12px">${escapeHtml(s.publicId || "")}</div></td>
         <td>${ownerBadge(s)}</td>
-        <td>${statusBadge(s.status)} ${s.accessProtected ? '<span class="badge badge-amber">加密</span>' : '<span class="badge badge-slate">公开</span>'}</td>
+        <td>${statusBadge(s.status)} ${s.isPinned ? '<span class="badge badge-amber">置顶</span>' : ''} ${s.accessProtected ? '<span class="badge badge-amber">加密</span>' : '<span class="badge badge-slate">公开</span>'}</td>
         <td>v${s.currentVersion || "-"} · ${s.versionCount || 0} 个</td>
         <td>${s.viewCount || 0} / ${s.likeCount || 0}</td>
         <td>${fmtSize(s.totalSize)}</td>
@@ -1382,12 +1382,14 @@
           <button class="btn btn-light" data-action="versions" data-code="${escapeHtml(s.code)}">版本</button>
           <a class="btn btn-light" href="/deploy/${encodeURIComponent(s.publicId || s.code)}" target="_blank">详情</a>
           <button class="btn btn-light" data-action="password" data-code="${escapeHtml(s.code)}" data-protected="${s.accessProtected ? "1" : "0"}">${s.accessProtected ? "改密码" : "加密"}</button>
+          ${isAdminSession() ? `<button class="btn btn-light" data-action="pin" data-code="${escapeHtml(s.code)}" data-pinned="${s.isPinned ? "1" : "0"}">${s.isPinned ? "取消置顶" : "置顶"}</button>` : ""}
           <button class="btn ${s.status === "inactive" ? "btn-light" : "btn-danger"}" data-action="toggle" data-code="${escapeHtml(s.code)}" data-status="${escapeHtml(s.status || "active")}">${s.status === "inactive" ? "上架" : "下架"}</button>
           <button class="btn btn-danger" data-action="delete" data-code="${escapeHtml(s.code)}">删除</button>
         </div></td>
       </tr>`).join("") : `<tr><td colspan="8"><div class="empty">没有匹配的站点。</div></td></tr>`;
     tbody.querySelectorAll("[data-action='password']").forEach(b => b.addEventListener("click", () => setSitePassword(b.dataset.code, b.dataset.protected === "1")));
     tbody.querySelectorAll("[data-action='versions']").forEach(b => b.addEventListener("click", () => openVersions(b.dataset.code)));
+    tbody.querySelectorAll("[data-action='pin']").forEach(b => b.addEventListener("click", () => setSitePinned(b.dataset.code, b.dataset.pinned === "1")));
     tbody.querySelectorAll("[data-action='toggle']").forEach(b => b.addEventListener("click", () => toggleSiteStatus(b.dataset.code, b.dataset.status)));
     tbody.querySelectorAll("[data-action='delete']").forEach(b => b.addEventListener("click", () => deleteSite(b.dataset.code)));
   }
@@ -1395,6 +1397,17 @@
     const label = isAdminSession() ? (site.ownerUsername || (site.ownerTokenId || "").replace(/^user:/, "") || "未归属") : "我";
     const cls = site.ownerUsername ? "badge-slate" : "badge-amber";
     return `<span class="badge ${cls}">${escapeHtml(label)}</span>`;
+  }
+  async function setSitePinned(code, pinnedNow) {
+    try {
+      await api(`/api/admin/sites/${encodeURIComponent(code)}/pin`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned: !pinnedNow })
+      });
+      toast(pinnedNow ? "已取消置顶" : "已置顶", "success");
+      await loadSites();
+    } catch (err) { toast("置顶失败：" + err.message, "error"); }
   }
   async function toggleSiteStatus(code, current) {
     try {

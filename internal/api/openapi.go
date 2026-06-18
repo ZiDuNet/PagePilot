@@ -221,6 +221,18 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"responses":   map[string]any{"200": map[string]any{"description": "Site list", "content": jsonSchemaRef("SiteListResponse")}},
 				},
 			},
+			"/api/admin/sites/{code}/pin": map[string]any{
+				"patch": map[string]any{
+					"summary":     "Pin or unpin a marketplace site",
+					"description": "Admin required. Pinned sites appear before normal marketplace ranking; like ranking is still preserved within pinned and unpinned groups.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SitePinRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Pin state updated", "content": jsonSchemaRef("SitePinResponse")},
+						"403": errorResponse(),
+					},
+				},
+			},
 			"/api/admin/anonymous-sessions": map[string]any{
 				"get": map[string]any{
 					"summary":     "List recent anonymous deploy sessions",
@@ -392,6 +404,8 @@ func openAPISchemas() map[string]any {
 		}},
 		"AdminSessionResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "mode": str, "tokenId": str, "label": str, "userId": str, "username": str, "isAdmin": boolSchema}},
 		"SiteListResponse":     map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "sites": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
+		"SitePinRequest":       map[string]any{"type": "object", "required": []string{"pinned"}, "properties": map[string]any{"pinned": boolSchema}},
+		"SitePinResponse":      map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "code": str, "isPinned": boolSchema, "pinnedAt": timeSchema}},
 		"TokenCreateRequest":   map[string]any{"type": "object", "properties": map[string]any{"label": str, "ownerUserId": str, "isAdmin": boolSchema, "expiresAt": timeSchema, "ttlSeconds": intSchema}},
 		"TokenCreateResponse":  map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "id": str, "token": str, "label": str, "ownerUserId": str, "isAdmin": boolSchema, "expiresAt": timeSchema, "createdAt": timeSchema}},
 		"TokenListResponse":    map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "tokens": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},

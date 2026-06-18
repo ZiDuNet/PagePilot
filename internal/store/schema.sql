@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS sites (
     like_count                 INTEGER NOT NULL DEFAULT 0,       -- 点赞数
     status                     TEXT NOT NULL DEFAULT 'active',   -- 'active' | 'inactive'
     access_password_hash       TEXT NOT NULL DEFAULT '',         -- 为空表示公开访问
+    is_pinned                  BOOLEAN NOT NULL DEFAULT 0,       -- 管理员是否置顶
+    pinned_at                  DATETIME,                         -- 最近置顶时间
     expires_at                 DATETIME,                         -- 可选过期时间；NULL = 永久
     created_at                 DATETIME NOT NULL,
     updated_at                 DATETIME NOT NULL,                -- 最后修改时间

@@ -250,6 +250,17 @@ func (c *Client) SetSiteAccessPassword(ctx context.Context, code, password strin
 	return resp, nil
 }
 
+// SetSitePin 设置或取消管理员应用商城置顶。
+func (c *Client) SetSitePin(ctx context.Context, code string, pinned bool) (map[string]any, error) {
+	var resp map[string]any
+	if err := c.doPatch(ctx,
+		"/api/admin/sites/"+url.PathEscape(code)+"/pin",
+		map[string]any{"pinned": pinned}, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 // ListVersions 调用 GET /api/deploys/{code}/versions。
 func (c *Client) ListVersions(ctx context.Context, code string) (*api.ListVersionsResponse, error) {
 	var resp api.ListVersionsResponse

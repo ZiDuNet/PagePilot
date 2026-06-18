@@ -127,6 +127,7 @@ func main() {
 		cmdLike(),
 		cmdStrategy(),
 		cmdAccess(),
+		cmdAdmin(),
 		cmdClaimSession(),
 		cmdToken(),
 		cmdConfig(),
@@ -857,7 +858,43 @@ func cmdToken() *cobra.Command {
 	return root
 }
 
-// ===== 子命令：config =====
+// ===== 子命令：admin =====
+
+func cmdAdmin() *cobra.Command {
+	root := &cobra.Command{
+		Use:   "admin",
+		Short: "Admin site operations",
+	}
+
+	var unpin bool
+	pinC := &cobra.Command{
+		Use:   "pin-site <code>",
+		Short: "Pin or unpin a marketplace site",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := withSignalCancel()
+			defer cancel()
+			resp, err := buildClient().SetSitePin(ctx, args[0], !unpin)
+			if err != nil {
+				printErr(err)
+				return errSilent
+			}
+			if flagJSON {
+				_ = json.NewEncoder(os.Stdout).Encode(resp)
+				return nil
+			}
+			if unpin {
+				fmt.Printf("Unpinned marketplace site %s\n", args[0])
+			} else {
+				fmt.Printf("Pinned marketplace site %s\n", args[0])
+			}
+			return nil
+		},
+	}
+	pinC.Flags().BoolVar(&unpin, "unpin", false, "clear the marketplace pin")
+	root.AddCommand(pinC)
+	return root
+}
 
 func parseTTLSeconds(value string) (*int64, error) {
 	value = strings.TrimSpace(value)
@@ -901,6 +938,8 @@ func cmdClaimSession() *cobra.Command {
 		},
 	}
 }
+
+// ===== 子命令：config =====
 
 func cmdConfig() *cobra.Command {
 	root := &cobra.Command{

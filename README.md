@@ -87,6 +87,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 | `PATCH` | `/api/deploys/{code}/current` | 回滚或切换当前版本 |
 | `POST` | `/api/deploys/{code}/versions/{version}/lock` | 锁定 / 解锁某个版本 |
 | `GET/PATCH` | `/api/deploys/{code}/primary-strategy` | 读取或设置 `likes` / `latest` 策略 |
+| `PATCH` | `/api/admin/sites/{code}/pin` | 管理员置顶 / 取消置顶首页应用 |
 | `GET` | `/api/admin/session` | 校验管理员登录 |
 | `GET` | `/api/admin/anonymous-sessions` | 查看匿名会话使用情况 |
 | `GET` | `/api/admin/sites` | 管理员站点清单 |
@@ -104,6 +105,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - Token 必须归属到用户。创建 Token 时默认永久有效，也可传 `expiresAt` 或 `ttlSeconds` 创建临时 Token。
 - 管理员控制台、令牌管理、配置写入以及整站删除都需要管理员权限（`isAdmin=true`）。
 - 公共市场、点赞、静态页面以及内容读取保持公开。
+- 首页应用商城保留点赞排行；管理员置顶会优先于所有排序，置顶分组内部仍按当前选择的排序（如 `likes_desc`）排列。
 - 访问密码输入入口保持公开，匿名访客也可以输入密码查看加密站点；验证通过后浏览器获得 5 分钟签名访问票据，站点改密码后旧票据立即失效。
 - 内置页面 `/deploy.html`、`/api-docs.html`、`/agents/` 由 Go 服务内嵌返回；反向代理应把这些路径原样转发给 PagePilot。
 
@@ -138,6 +140,8 @@ bin/hostctl token create ci-bot
 bin/hostctl token create temp-runner --ttl 24h
 bin/hostctl token create admin --admin
 bin/hostctl claim-session <anonymous-session-id>
+bin/hostctl admin pin-site my-landing
+bin/hostctl admin pin-site my-landing --unpin
 ```
 
 ## Agent 技能
@@ -152,9 +156,10 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py token create --label ci-bo
 python skill/hostctl-deploy/scripts/hostctl_deploy.py token create --label temp-runner --ttl-seconds 86400
 python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 python skill/hostctl-deploy/scripts/hostctl_deploy.py admin sites
+python skill/hostctl-deploy/scripts/hostctl_deploy.py admin pin-site my-landing
 ```
 
-本项目还在 `cmd/hostctl-mcp` 提供了 MCP 服务器，供偏好通过 stdio 走 JSON-RPC 的工具使用。
+本项目还在 `cmd/hostctl-mcp` 提供了 MCP 服务器，供偏好通过 stdio 走 JSON-RPC 的工具使用；管理员置顶对应工具为 `set_site_pin`。
 
 对已有项目，Agent 应在原 code 上追加版本，而不是创建新的短链接。技能会把 `source -> code` 记在 `~/.hostctl/projects.json`；如果没有记录的 code，Agent 在部署更新前应向用户索要原始 code 或 URL。
 

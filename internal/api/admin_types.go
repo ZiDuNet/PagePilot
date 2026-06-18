@@ -63,6 +63,8 @@ type SiteListItem struct {
 	LikeCount       int64      `json:"likeCount"`
 	Status          string     `json:"status"`
 	AccessProtected bool       `json:"accessProtected"`
+	IsPinned        bool       `json:"isPinned"`
+	PinnedAt        *time.Time `json:"pinnedAt,omitempty"`
 	CreatedAt       time.Time  `json:"createdAt"`
 	Source          string     `json:"source"`
 	LastVersionAt   *time.Time `json:"lastVersionAt,omitempty"`
@@ -127,6 +129,17 @@ type SiteListResponse struct {
 type SiteDeleteResponse struct {
 	Success bool   `json:"success"`
 	Code    string `json:"code"`
+}
+
+type SitePinRequest struct {
+	Pinned *bool `json:"pinned"`
+}
+
+type SitePinResponse struct {
+	Success  bool    `json:"success"`
+	Code     string  `json:"code"`
+	IsPinned bool    `json:"isPinned"`
+	PinnedAt *string `json:"pinnedAt,omitempty"`
 }
 
 type AnonymousSessionResponse struct {
