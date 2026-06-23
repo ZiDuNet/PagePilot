@@ -1554,7 +1554,7 @@
   }
 
   function cardTemplate(d) {
-    const title = d.title || d.filename || d.code || "Untitled";
+    const title = d.title || d.code || "Untitled";
     const code = d.code || "";
     const appUrl = `/agent/${encodeURIComponent(code)}/`;
     const detailUrl = d.id ? `/deploy/${encodeURIComponent(d.id)}` : appUrl;

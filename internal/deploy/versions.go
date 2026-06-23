@@ -211,7 +211,7 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 	}
 
 	if err := d.store.UpdateVersionContent(ctx, code, version, store.Version{
-		Title:         req.Title,
+		Title:         sanitizeSiteTitle(req.Title),
 		Description:   desc,
 		MainEntry:     mainEntry,
 		TotalSize:     totalSize,

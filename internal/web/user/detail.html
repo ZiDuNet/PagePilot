@@ -306,7 +306,7 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
       const d = j.id ? j : (j.deploy || j);
       deployData = d;
 
-      $('d-title').textContent = d.title || d.filename || d.code || '未命名';
+      $('d-title').textContent = d.title || d.code || '未命名';
       const cv = d.currentVersionNumber || d.currentVersion || 1;
       $('d-current-badge').textContent = '当前版本 v' + cv;
       $('d-primary-badge').textContent = '主版本 v' + (d.primaryVersionNumber || cv);

@@ -193,7 +193,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		ID:            versionID,
 		SiteCode:      code,
 		VersionNumber: versionNumber,
-		Title:         req.Title,
+		Title:         sanitizeSiteTitle(req.Title),
 		Description:   desc,
 		MainEntry:     mainEntry,
 		TotalSize:     totalSize,
@@ -708,6 +708,17 @@ func (d *Deployer) SetCORSAllowOrigins(ctx context.Context, origins string) erro
 	}
 	d.cfg.CORSAllowOrigins = origins
 	return nil
+}
+
+func sanitizeSiteTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+	if strings.EqualFold(title, "index.html") || strings.EqualFold(title, "index.htm") {
+		return ""
+	}
+	return title
 }
 
 // LoadPersistedSettings 启动时从数据库恢复持久化设置。

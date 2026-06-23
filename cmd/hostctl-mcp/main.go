@@ -165,7 +165,7 @@ func toolList() []toolDef {
 				Properties: map[string]*schemaProp{
 					"source":          {Type: "string", Description: "本地路径。文件 = 单 HTML；目录 = 多文件 site"},
 					"description":     {Type: "string", Description: "必填，≤240 字符，说明本次部署内容"},
-					"title":           {Type: "string", Description: "可选站点标题"},
+					"title":           {Type: "string", Description: "站点标题，建议填写可读名称；不要使用 index.html 这类文件名"},
 					"custom_code":     {Type: "string", Description: "自定义短码，^[a-z0-9-]{3,32}$；留空自动生成"},
 					"create_version":  {Type: "boolean", Description: "custom_code 已存在时，true 追加版本；false/省略 报 CONFLICT"},
 					"access_password": {Type: "string", Description: "Optional visit password for a new site. Empty means public."},
@@ -418,6 +418,9 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 			df = append(df, deployFileT{Path: f.Path, ContentBase64: base64.StdEncoding.EncodeToString(f.Data)})
 		}
 	}
+	if title == "" {
+		title = deriveSiteTitleFromChunks(df)
+	}
 
 	// 构造请求 JSON
 	reqBody := map[string]any{
@@ -450,6 +453,57 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 		return fmt.Sprintf("部署成功！访问 URL: %s\n\n%s", url, string(pretty)), nil
 	}
 	return string(pretty), nil
+}
+
+func deriveSiteTitleFromChunks(files []deployFileT) string {
+	mainEntry := ""
+	for _, f := range files {
+		if strings.EqualFold(f.Path, "index.html") {
+			mainEntry = f.Path
+			break
+		}
+		if mainEntry == "" && strings.HasSuffix(strings.ToLower(f.Path), ".html") {
+			mainEntry = f.Path
+		}
+	}
+	if mainEntry == "" && len(files) > 0 {
+		mainEntry = files[0].Path
+	}
+	for _, f := range files {
+		if !strings.EqualFold(f.Path, mainEntry) || f.ContentBase64 != "" {
+			continue
+		}
+		title := extractHTMLTitleString(f.Content)
+		if title == "" || strings.EqualFold(title, "index.html") || strings.EqualFold(title, "index.htm") {
+			return ""
+		}
+		return title
+	}
+	return ""
+}
+
+func extractHTMLTitleString(content string) string {
+	start := strings.Index(strings.ToLower(content), "<title")
+	if start < 0 {
+		return ""
+	}
+	rest := content[start:]
+	openEnd := strings.Index(rest, ">")
+	if openEnd < 0 {
+		return ""
+	}
+	rest = rest[openEnd+1:]
+	closeIdx := strings.Index(strings.ToLower(rest), "</title>")
+	if closeIdx < 0 {
+		return ""
+	}
+	title := strings.TrimSpace(rest[:closeIdx])
+	title = strings.ReplaceAll(title, "&lt;", "<")
+	title = strings.ReplaceAll(title, "&gt;", ">")
+	title = strings.ReplaceAll(title, "&amp;", "&")
+	title = strings.ReplaceAll(title, "&quot;", `"`)
+	title = strings.ReplaceAll(title, "&#39;", "'")
+	return strings.TrimSpace(title)
 }
 
 func toolClaimAnonymousSession(ctx context.Context, c *client.Client, args map[string]any) (string, error) {

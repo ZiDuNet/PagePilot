@@ -32,6 +32,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - Never deploy secrets: `.env`, API keys, bearer tokens, private credentials, or local config files.
 - Do not deploy hidden, system, dependency, cache, log, database, or build-artifact folders/files such as `.git`, `.DS_Store`, `node_modules`, `__pycache__`, `*.log`, `*.db`, `dist.zip`, or local package archives unless the user explicitly asks and it is safe.
 - Always provide `--description`; keep it concise and under 240 characters.
+- Always provide a human-readable `--title` for user-facing sites when deploying or appending. Do not use filenames such as `index.html` as the title.
 - For a new stable project, prefer a readable `--code`.
 - Keep custom codes stable and route-safe: use lowercase letters, numbers, and hyphens; avoid reserved names such as `admin`, `api`, `skill`, `agent`, `agents`, `deploy`, `login`, and `register`.
 - For an update, reuse the existing code and append a new version. If the original code or URL is unknown, ask before deploying.

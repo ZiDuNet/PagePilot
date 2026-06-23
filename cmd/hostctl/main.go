@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -19,6 +20,8 @@ import (
 	"github.com/yourorg/hostctl/internal/api"
 	"github.com/yourorg/hostctl/internal/client"
 )
+
+var htmlTitleRe = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 
 // 全局 flag
 var (
@@ -268,6 +271,44 @@ func readSource(source string) (files []api.DeployFile, mainEntry string, err er
 	return files, mainEntry, nil
 }
 
+func deriveSiteTitle(files []api.DeployFile, mainEntry string) string {
+	title := strings.TrimSpace(extractHTMLTitle(files, mainEntry))
+	if title == "" {
+		return ""
+	}
+	if strings.EqualFold(title, "index.html") || strings.EqualFold(title, "index.htm") {
+		return ""
+	}
+	return title
+}
+
+func extractHTMLTitle(files []api.DeployFile, mainEntry string) string {
+	mainEntry = strings.TrimSpace(mainEntry)
+	if mainEntry == "" {
+		return ""
+	}
+	for _, f := range files {
+		if !strings.EqualFold(f.Path, mainEntry) || f.ContentBase64 != "" {
+			continue
+		}
+		match := htmlTitleRe.FindStringSubmatch(f.Content)
+		if len(match) < 2 {
+			return ""
+		}
+		return strings.TrimSpace(htmlUnescape(match[1]))
+	}
+	return ""
+}
+
+func htmlUnescape(s string) string {
+	s = strings.ReplaceAll(s, "&lt;", "<")
+	s = strings.ReplaceAll(s, "&gt;", ">")
+	s = strings.ReplaceAll(s, "&amp;", "&")
+	s = strings.ReplaceAll(s, "&quot;", `"`)
+	s = strings.ReplaceAll(s, "&#39;", "'")
+	return s
+}
+
 // looksBinary 简单判断：含 \x00 或大量非可打印字节。
 func looksBinary(b []byte) bool {
 	n := len(b)
@@ -316,6 +357,9 @@ func cmdDeploy() *cobra.Command {
 			if filename != "" {
 				mainEntry = filename
 			}
+			if title == "" {
+				title = deriveSiteTitle(files, mainEntry)
+			}
 			req := api.DeployRequest{
 				Description:    description,
 				Title:          title,
@@ -351,7 +395,10 @@ func cmdDeploy() *cobra.Command {
 // ===== 子命令：append =====
 
 func cmdAppend() *cobra.Command {
-	var description string
+	var (
+		description string
+		title       string
+	)
 	c := &cobra.Command{
 		Use:   "append <code> <source>",
 		Short: "Append a new version to an existing site",
@@ -364,8 +411,12 @@ func cmdAppend() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if title == "" {
+				title = deriveSiteTitle(files, mainEntry)
+			}
 			req := api.DeployRequest{
 				Description:      description,
+				Title:            title,
 				Filename:         mainEntry,
 				Files:            files,
 				EnableCustomCode: true,
@@ -385,6 +436,7 @@ func cmdAppend() *cobra.Command {
 		},
 	}
 	c.Flags().StringVarP(&description, "description", "d", "", "version description (required, max 240 chars)")
+	c.Flags().StringVarP(&title, "title", "t", "", "version title (optional metadata)")
 	_ = c.MarkFlagRequired("description")
 	return c
 }
