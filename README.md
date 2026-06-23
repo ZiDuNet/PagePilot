@@ -13,7 +13,7 @@ hostctl 是 PagePilot 的静态站点控制平面。它让用户和 AI Agent 都
 - 手动部署页面位于 `/deploy.html`，API 文档页面位于 `/api-docs.html`，两者都是内置静态页面。
 - 管理员控制台位于 `/admin`，包含登录、仪表盘、部署、站点、令牌、配置和版本控制。
 - JSON API，并对外提供 `/openapi.json` 供 Agent 与外部集成使用。
-- 版本化静态托管，访问路径为 `/agent/{code}`，并提供短链接 `/{code}`。
+- 版本化静态托管，访问路径为 `/agent/{code}`，并提供应用访问 URL `/agent/{code}/`。
 - Go CLI（`hostctl`）、MCP 服务器（`hostctl-mcp`）以及一个独立可用的 Codex/Claude 技能脚本。
 - 匿名部署配额、用户所有的 Agent Token，以及按用户的部署上限。
 - 元数据存储使用 SQLite，静态资源托管在文件系统上。
@@ -161,7 +161,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py admin pin-site my-landing
 
 本项目还在 `cmd/hostctl-mcp` 提供了 MCP 服务器，供偏好通过 stdio 走 JSON-RPC 的工具使用；管理员置顶对应工具为 `set_site_pin`。
 
-对已有项目，Agent 应在原 code 上追加版本，而不是创建新的短链接。技能会把 `source -> code` 记在 `~/.hostctl/projects.json`；如果没有记录的 code，Agent 在部署更新前应向用户索要原始 code 或 URL。
+对已有项目，Agent 应在原 code 上追加版本，而不是创建新的访问地址。技能会把 `source -> code` 记在 `~/.hostctl/projects.json`；如果没有记录的 code，Agent 在部署更新前应向用户索要原始 code 或 URL。
 
 ## 存储布局
 

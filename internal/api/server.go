@@ -191,19 +191,17 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/static/", http.StripPrefix("/admin/static/", http.FileServer(http.FS(web.AdminSubFS()))))
 
 	// dev 模式：把已部署站点 serve 起来（生产由 Caddy 做）。
-	// 路径模式优先级：/api/*、/admin、/admin/* 已被前面注册占用；
-	// /{code}/{path...} 用通配符捕获短码路径，比 GET / 更具体，比保留段优先级低（已字面量注册）。
+	// 路径模式优先级：/api/*、/admin、/admin/* 已被前面注册占用。
 	// /agent/{code}：应用本体 URL（用户部署后访问应用本身用这个前缀）
-	// /agent/{code}/{path...}：多文件子路径（CSS/JS/图片等）
+	// /agent/{code}/{path...}：当前版本的多文件子路径（CSS/JS/图片等）
+	// /agent/{code}/versions/{version}：历史版本预览入口
+	// /agent/{code}/versions/{version}/{path...}：历史版本的多文件子路径
 	// /deploy/{uuid}：详情页（SPA）
 	s.mux.HandleFunc("GET /agent/{code}", s.handleAppServe)
 	s.mux.HandleFunc("GET /agent/{code}/{path...}", s.handleAppServe)
+	s.mux.HandleFunc("GET /agent/{code}/versions/{version}", s.handleAppServe)
+	s.mux.HandleFunc("GET /agent/{code}/versions/{version}/{path...}", s.handleAppServe)
 	s.mux.HandleFunc("GET /deploy/{uuid}", s.handleDetailUI)
-
-	// 短码静态服务：/abc123 / /abc123/styles.css / /abc123/images/x.png
-	// 优先级高于 GET /（短码模式更具体），低于 /api、/admin、/s（已字面量注册）
-	s.mux.HandleFunc("GET /{code}", s.handleStaticServe)
-	s.mux.HandleFunc("GET /{code}/{path...}", s.handleStaticServe)
 
 	// 用户端 SPA：根路径托管 user/ 目录（首页 / 部署 / API 文档 / 静态资源）
 	s.mux.Handle("GET /", http.FileServer(http.FS(web.UserSubFS())))
@@ -1418,90 +1416,6 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, TokenRevokeResponse{Success: true, ID: id})
 }
 
-// handleStaticServe 处理 dev 模式下的 GET /{code}/{path...}。
-// 等价于 Caddy 的 rewrite + file_server。
-//
-//	/abc123        → {hosted}/abc123/current/index.html
-//	/abc123/       → 同上
-//	/abc123/x.css  → {hosted}/abc123/current/x.css
-//
-// 但首先会检查 user FS：用户端 index.html / deploy.html / api-docs.html 等单段资源
-// 必须先于磁盘 hosted dir 命中，否则会被短码路由吞掉。
-func (s *Server) handleStaticServe(w http.ResponseWriter, r *http.Request) {
-	code := r.PathValue("code")
-	sub := r.PathValue("path")
-
-	if s.redirectRootRelativeHostedPath(w, r) {
-		return
-	}
-
-	// 单段路径（无 sub）：先看 user FS 有没有同名文件
-	// 例如 /deploy.html / /api-docs.html / /index.html
-	// 仅在 path 看起来像“用户端静态资源”时（含扩展名）才尝试 user FS
-	if sub == "" && strings.Contains(code, ".") {
-		if f, err := web.UserSubFS().Open(code); err == nil {
-			st, stErr := f.Stat()
-			_ = f.Close()
-			if stErr == nil && !st.IsDir() {
-				http.ServeFileFS(w, r, web.UserSubFS(), code)
-				return
-			}
-		}
-	}
-
-	if !routeCodeRe.MatchString(code) {
-		http.NotFound(w, r)
-		return
-	}
-	if sub == "" && !strings.HasSuffix(r.URL.Path, "/") {
-		u := *r.URL
-		u.Path = r.URL.Path + "/"
-		http.Redirect(w, r, u.String(), http.StatusPermanentRedirect)
-		return
-	}
-	if !s.siteAccessAllowed(r, code) {
-		s.renderAccessPasswordPageV2(w, code)
-		return
-	}
-
-	base := filepath.Join(s.cfg.HostedDir, code, "current")
-	if sub == "" {
-		var err error
-		sub, err = s.currentMainEntry(r.Context(), code)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-	}
-	full := filepath.Join(base, sub)
-
-	// realpath 校验，防穿越
-	absBase, err := filepath.Abs(base)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	absFull, err := filepath.Abs(full)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	rel, err := filepath.Rel(absBase, absFull)
-	if err != nil || (rel != "." && rel != ".." && strings.HasPrefix(rel, "..")) {
-		http.NotFound(w, r)
-		return
-	}
-
-	// 访问主入口（sub 为空）时给 site.view_count + 1。
-	// 异步执行避免阻塞响应；错误忽略（计数失败不影响 serve）。
-	if r.PathValue("path") == "" {
-		go func(c string) {
-			_ = s.deployer.IncrementViewCount(context.Background(), c)
-		}(code)
-	}
-
-	s.serveHostedFile(w, r, code, sub, absFull)
-}
 func (s *Server) authenticate(r *http.Request) (string, *APIError) {
 	tok, authErr := s.authenticateToken(r)
 	if authErr != nil {
@@ -2895,20 +2809,49 @@ func extractCodeFromURL(u string) string {
 	return u
 }
 
-// handleAppServe 处理 GET /agent/{code} 与 GET /agent/{code}/{path...}。
-// 直接 serve 应用本体。
-// 子路径为空时返回 mainEntry（默认 index.html），并异步 +1 view_count。
+// handleAppServe 处理 GET /agent/{code}、GET /agent/{code}/{path...}
+// 以及 GET /agent/{code}/versions/{version} 相关入口。
+// 当前版本走 HostedDir/{code}/current，历史版本走 HostedDir/{code}/versions/{version}。
 func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 	sub := r.PathValue("path")
+	versionValue := strings.TrimSpace(r.PathValue("version"))
 
 	if !routeCodeRe.MatchString(code) {
 		http.NotFound(w, r)
 		return
 	}
+
+	var versionPtr *int64
+	if versionValue != "" {
+		versionNumber, err := parseInt64(versionValue)
+		if err != nil || versionNumber <= 0 {
+			http.NotFound(w, r)
+			return
+		}
+		versionPtr = &versionNumber
+	} else if versionQuery := strings.TrimSpace(r.URL.Query().Get("v")); versionQuery != "" {
+		versionNumber, err := parseInt64(versionQuery)
+		if err != nil || versionNumber <= 0 {
+			http.NotFound(w, r)
+			return
+		}
+		target := *r.URL
+		target.Path = buildVersionServePath(code, versionNumber, sub)
+		query := target.Query()
+		query.Del("v")
+		target.RawQuery = query.Encode()
+		http.Redirect(w, r, target.String(), http.StatusPermanentRedirect)
+		return
+	}
+
 	if sub == "" && !strings.HasSuffix(r.URL.Path, "/") {
 		u := *r.URL
-		u.Path = r.URL.Path + "/"
+		if versionPtr != nil {
+			u.Path = buildVersionServePath(code, *versionPtr, "")
+		} else {
+			u.Path = r.URL.Path + "/"
+		}
 		http.Redirect(w, r, u.String(), http.StatusPermanentRedirect)
 		return
 	}
@@ -2918,13 +2861,20 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	base := filepath.Join(s.cfg.HostedDir, code, "current")
+	var mainEntry string
+	if versionPtr != nil {
+		base = filepath.Join(s.cfg.HostedDir, code, "versions", strconv.FormatInt(*versionPtr, 10))
+	}
 	if sub == "" {
-		var err error
-		sub, err = s.currentMainEntry(r.Context(), code)
-		if err != nil {
+		content, apiErr := s.deployer.GetContent(r.Context(), code, versionPtr)
+		if apiErr != nil {
 			http.NotFound(w, r)
 			return
 		}
+		mainEntry = content.MainEntry
+	}
+	if sub == "" {
+		sub = mainEntry
 	}
 	full := filepath.Join(base, sub)
 
@@ -2944,8 +2894,8 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 访问主入口（sub 为空）时给 site.view_count + 1
-	if r.PathValue("path") == "" {
+	// 仅当前版本入口统计浏览量；历史版本预览不计数。
+	if versionPtr == nil && r.PathValue("path") == "" {
 		go func(c string) {
 			_ = s.deployer.IncrementViewCount(context.Background(), c)
 		}(code)
@@ -2966,7 +2916,25 @@ func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code, s
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	http.ServeContent(w, r, filepath.Base(absFull), fileModTime(absFull), strings.NewReader(injectHostedHTMLCompat(body, code)))
+	routePrefix := buildAppRoutePrefix(code)
+	if versionValue := strings.TrimSpace(r.PathValue("version")); versionValue != "" {
+		if versionNumber, err := parseInt64(versionValue); err == nil && versionNumber > 0 {
+			routePrefix = buildVersionServePath(code, versionNumber, "")
+		}
+	}
+	http.ServeContent(w, r, filepath.Base(absFull), fileModTime(absFull), strings.NewReader(injectHostedHTMLCompat(body, routePrefix)))
+}
+
+func buildAppRoutePrefix(code string) string {
+	return "/agent/" + code + "/"
+}
+
+func buildVersionServePath(code string, version int64, sub string) string {
+	base := "/agent/" + code + "/versions/" + strconv.FormatInt(version, 10)
+	if sub == "" {
+		return base + "/"
+	}
+	return base + "/" + strings.TrimPrefix(sub, "/")
 }
 
 func fileModTime(path string) time.Time {
@@ -2977,9 +2945,9 @@ func fileModTime(path string) time.Time {
 	return st.ModTime()
 }
 
-func injectHostedHTMLCompat(body []byte, code string) string {
+func injectHostedHTMLCompat(body []byte, routePrefix string) string {
 	htmlText := string(body)
-	script := hostedHTMLCompatScript(code)
+	script := hostedHTMLCompatScript(routePrefix)
 	lower := strings.ToLower(htmlText)
 	if i := strings.LastIndex(lower, "</body>"); i >= 0 {
 		return htmlText[:i] + script + htmlText[i:]
@@ -2987,11 +2955,10 @@ func injectHostedHTMLCompat(body []byte, code string) string {
 	return htmlText + script
 }
 
-func hostedHTMLCompatScript(code string) string {
-	codeJSON, _ := json.Marshal(code)
+func hostedHTMLCompatScript(routePrefix string) string {
+	prefixJSON, _ := json.Marshal(routePrefix)
 	return "\n<script data-pagepilot-compat>\n(function(){\n" +
-		"var code=" + string(codeJSON) + ";\n" +
-		"var prefix='/agent/'+code+'/';\n" +
+		"var prefix=" + string(prefixJSON) + ";\n" +
 		"function isPlainClick(e){return e.button===0&&!e.metaKey&&!e.ctrlKey&&!e.shiftKey&&!e.altKey;}\n" +
 		"function shouldHandle(e,a){\n" +
 		" if(!a||!isPlainClick(e)) return false;\n" +
@@ -3012,67 +2979,6 @@ func hostedHTMLCompatScript(code string) string {
 		" },0);\n" +
 		"},true);\n" +
 		"})();\n</script>\n"
-}
-
-func (s *Server) redirectRootRelativeHostedPath(w http.ResponseWriter, r *http.Request) bool {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		return false
-	}
-	if !isHostedCompatPath(r.URL.Path) {
-		return false
-	}
-	ref := r.Referer()
-	if ref == "" {
-		return false
-	}
-	code := extractCodeFromURL(ref)
-	if !routeCodeRe.MatchString(code) {
-		return false
-	}
-	site, err := s.deployer.GetSite(r.Context(), code)
-	if err != nil || site.Code == "" {
-		return false
-	}
-	target := *r.URL
-	target.Path = "/agent/" + code + r.URL.Path
-	http.Redirect(w, r, target.String(), http.StatusTemporaryRedirect)
-	return true
-}
-
-func isHostedCompatPath(path string) bool {
-	path = strings.ToLower(strings.TrimSpace(path))
-	if path == "" || !strings.HasPrefix(path, "/") {
-		return false
-	}
-	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/admin") || strings.HasPrefix(path, "/agent/") || strings.HasPrefix(path, "/skill/") || strings.HasPrefix(path, "/deploy/") {
-		return false
-	}
-	switch filepath.Ext(path) {
-	case ".html", ".htm", ".css", ".js", ".mjs", ".json", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".avif", ".woff", ".woff2", ".ttf", ".otf", ".map", ".txt", ".xml", ".webmanifest":
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *Server) currentMainEntry(ctx context.Context, code string) (string, error) {
-	content, apiErr := s.deployer.GetContent(ctx, code, nil)
-	if apiErr != nil {
-		return "", fmt.Errorf(apiErr.Detail)
-	}
-	mainEntry := strings.TrimSpace(content.MainEntry)
-	if mainEntry == "" {
-		mainEntry = "index.html"
-	}
-	if strings.HasPrefix(mainEntry, "/") || strings.Contains(mainEntry, `\`) {
-		return "", fmt.Errorf("invalid main entry")
-	}
-	for _, seg := range strings.Split(filepath.ToSlash(mainEntry), "/") {
-		if seg == "" || seg == "." || seg == ".." {
-			return "", fmt.Errorf("invalid main entry")
-		}
-	}
-	return mainEntry, nil
 }
 
 // handleDetailUI 处理 GET /deploy/{uuid}（详情页 SPA）。

@@ -243,7 +243,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	site, _ := d.store.GetSite(ctx, code)
 	allVersions, _ := d.store.ListVersions(ctx, code)
 	base := strings.TrimRight(d.cfg.PublicBaseURL, "/")
-	publicURL := fmt.Sprintf("%s/%s/", base, code)
+	publicURL := fmt.Sprintf("%s/agent/%s/", base, code)
 	strategy := api.StrategyLikes
 	if site.PrimaryVersionStrategy == string(api.StrategyLatest) {
 		strategy = api.StrategyLatest
@@ -260,7 +260,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		Code:                   code,
 		URL:                    publicURL,
 		DetailURL:              fmt.Sprintf("%s/agent/%s/", base, code),
-		VersionURL:             fmt.Sprintf("%s/%s?v=%d", base, code, versionNumber),
+		VersionURL:             fmt.Sprintf("%s/agent/%s/versions/%d/", base, code, versionNumber),
 		QRCode:                 generateQRCodeDataURL(publicURL),
 		Description:            desc,
 		VersionID:              versionID,

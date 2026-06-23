@@ -159,7 +159,7 @@ func toolList() []toolDef {
 	return []toolDef{
 		{
 			Name:        "deploy_site",
-			Description: "把本地路径（文件或目录）部署为可访问的静态网站。修改已有项目时必须传原 custom_code；custom_code 已存在会默认追加版本，保持同一短链。description 必填（≤240 字符）。",
+			Description: "把本地路径（文件或目录）部署为可访问的静态网站。修改已有项目时必须传原 custom_code；custom_code 已存在会默认追加版本，保持同一 code 和访问地址。description 必填（≤240 字符）。",
 			InputSchema: jsonSchema{
 				Type: "object",
 				Properties: map[string]*schemaProp{
@@ -305,7 +305,7 @@ func toolList() []toolDef {
 		},
 		{
 			Name:        "set_primary_strategy",
-			Description: "切换主域名策略：likes（默认，最高赞版本对外）/ latest（最新版本对外，适合日更项目）。更改 /agent/{code} 访问时返回哪个版本。",
+			Description: "切换主域名策略：likes（默认，最高赞版本对外）/ latest（最新版本对外，适合日更项目）。更改 /agent/{code}/ 访问时返回哪个版本。",
 			InputSchema: jsonSchema{
 				Type: "object",
 				Properties: map[string]*schemaProp{

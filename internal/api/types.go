@@ -73,7 +73,7 @@ type DeployResponse struct {
 	// detailUrl 是应用本体的访问 URL（/agent/{code} 前缀）
 	DetailURL string `json:"detailUrl"`
 
-	// versionUrl 指向具体版本的预览（?v=N）
+	// versionUrl 指向具体版本的预览。
 	VersionURL string `json:"versionUrl"`
 
 	// qrCode 是 base64 data URL（PNG）
@@ -90,11 +90,11 @@ type DeployResponse struct {
 	// currentVersionId 是当前对外服务的版本 UUID（部署成功后通常 = versionId）
 	CurrentVersionID string `json:"currentVersionId"`
 
-	// preserveHint 仅新建短链时返回。提示 Agent 告诉用户：
+	// preserveHint 仅新建站点时返回。提示 Agent 告诉用户：
 	// 用 lock 锁定该版本以防自动清理。
 	PreserveHint string `json:"preserveHint,omitempty"`
 
-	// agentGuideUrl 仅新建短链时返回。稳定 API 文档链接。
+	// agentGuideUrl 仅新建站点时返回。稳定 API 文档链接。
 	AgentGuideURL string `json:"agentGuideUrl,omitempty"`
 
 	// primaryVersionStrategy 该 site 的主 URL 选版本策略

@@ -423,7 +423,7 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
               ${!isCurrent ? `<button data-action="set-current" data-version="${v.versionNumber || v.version}" class="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">设为当前</button>` : ''}
               ${!v.isLocked ? `<button data-action="lock-version" data-version="${v.versionNumber || v.version}" class="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">锁定</button>` : ''}
               ${v.isLocked ? `<button data-action="unlock-version" data-version="${v.versionNumber || v.version}" class="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">解锁</button>` : ''}
-              <a href="/agent/${encodeURIComponent(code)}?v=${v.versionNumber || v.version}" target="_blank" rel="noopener" class="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">查看</a>
+              <a href="/agent/${encodeURIComponent(code)}/versions/${v.versionNumber || v.version}/" target="_blank" rel="noopener" class="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">查看</a>
             </div>
           </div>
         `;

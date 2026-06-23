@@ -232,9 +232,9 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 	return &api.DeployResponse{
 		Success:       true,
 		Code:          code,
-		URL:           fmt.Sprintf("%s/%s", base, code),
+		URL:           fmt.Sprintf("%s/agent/%s/", base, code),
 		DetailURL:     fmt.Sprintf("%s/agent/%s/", base, code),
-		VersionURL:    fmt.Sprintf("%s/%s/v/%d", base, code, version),
+		VersionURL:    fmt.Sprintf("%s/agent/%s/versions/%d/", base, code, version),
 		VersionNumber: int(version),
 		PreserveHint:  "Lock this version to prevent modifications.",
 		Size:          totalSize,

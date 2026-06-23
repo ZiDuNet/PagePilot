@@ -578,7 +578,7 @@
     <section class="quick-grid" id="quick-actions"></section>
 
     <section class="stats-grid">
-      <div class="stat-card"><div class="stat-label">Sites</div><div class="stat-value" id="stat-sites">0</div><div class="stat-note">已发布短链</div></div>
+      <div class="stat-card"><div class="stat-label">Sites</div><div class="stat-value" id="stat-sites">0</div><div class="stat-note">已发布站点</div></div>
       <div class="stat-card"><div class="stat-label">Versions</div><div class="stat-value" id="stat-versions">0</div><div class="stat-note">累计版本</div></div>
       <div class="stat-card"><div class="stat-label">Traffic</div><div class="stat-value" id="stat-views">0</div><div class="stat-note">累计访问</div></div>
       <div class="stat-card"><div class="stat-label">Storage</div><div class="stat-value" id="stat-size">0 B</div><div class="stat-note">版本文件总量</div></div>
@@ -626,7 +626,7 @@
           </div>
           <div class="field"><label>一句话描述</label><input id="d-desc" class="input" maxlength="240" placeholder="例如：产品发布页 v1"></div>
           <div class="field"><label>标题</label><input id="d-title" class="input" placeholder="Product Launch"></div>
-          <div class="field"><label>自定义短链</label><input id="d-code" class="input mono" placeholder="my-landing"><div class="hint"><label><input id="d-append" type="checkbox"> 短链已存在时追加为新版本（只能追加你拥有的短链）</label></div></div>
+          <div class="field"><label>自定义 code</label><input id="d-code" class="input mono" placeholder="my-landing"><div class="hint"><label><input id="d-append" type="checkbox"> code 已存在时追加为新版本（只能追加你拥有的站点）</label></div></div>
           <div class="field"><label>访问密码</label><input id="d-access-password" class="input" type="password" autocomplete="new-password" placeholder="可选，至少 4 位"><div class="hint">创建新站点时生效；追加版本不会修改原访问密码，可在站点管理里调整。</div></div>
           <div id="drop-zone" class="file-zone">
             <div>
@@ -788,7 +788,7 @@
   const titles = {
     overview: ["工作台总览", "查看你可管理的发布资源和常用操作。"],
     account: ["账号设置", "管理你的登录信息和 Agent 接入入口。"],
-    deploy: ["发布应用", "上传 HTML 或多文件静态站点，生成可访问短链。"],
+    deploy: ["发布应用", "上传 HTML 或多文件静态站点，生成可访问站点。"],
     sites: ["我的站点", "查看、打开、加密、下架和管理版本。"],
     users: ["用户管理", "管理账号、角色、启用状态和部署额度。"],
     tokens: ["Agent Token", "创建永久或临时访问令牌，管理 Agent 接入。"],
@@ -1667,7 +1667,7 @@
           <div style="color:#64748b;font-size:13px">${escapeHtml(v.description || "无描述")}</div>
           <div class="file-row"><span>${fmtSize(v.size)} · ${v.fileCount} 文件 · ${fmtTime(v.createdAt)}</span><span></span></div>
           <div class="actions">
-            <a class="btn btn-light" href="/agent/${encodeURIComponent(code)}/?v=${v.versionNumber}" target="_blank">预览</a>
+            <a class="btn btn-light" href="/agent/${encodeURIComponent(code)}/versions/${v.versionNumber}/" target="_blank">预览</a>
             ${v.isCurrent ? "" : `<button class="btn btn-light" data-vact="current" data-v="${v.versionNumber}">设为当前</button>`}
             <button class="btn btn-light" data-vact="${v.isLocked ? "unlock" : "lock"}" data-v="${v.versionNumber}">${v.isLocked ? "解锁" : "锁定"}</button>
             ${v.isLocked ? "" : `<button class="btn btn-danger" data-vact="delete" data-v="${v.versionNumber}">删除</button>`}

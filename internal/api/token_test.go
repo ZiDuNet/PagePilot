@@ -193,9 +193,9 @@ func (s *claimedAnonymousDeployStub) Deploy(
 	return &DeployResponse{
 		Success:                true,
 		Code:                   "demo",
-		URL:                    "http://example.test/demo",
+		URL:                    "http://example.test/agent/demo/",
 		DetailURL:              "http://example.test/agent/demo/",
-		VersionURL:             "http://example.test/demo?v=1",
+		VersionURL:             "http://example.test/agent/demo/versions/1/",
 		VersionID:              "version-1",
 		CurrentVersionID:       "version-1",
 		PrimaryVersionStrategy: StrategyLatest,

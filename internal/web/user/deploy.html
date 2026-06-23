@@ -197,14 +197,14 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
           <div class="space-y-2">
             <label class="flex items-start gap-2 text-sm font-medium text-slate-700">
               <input id="enable-custom" type="checkbox" class="mt-1 rounded border-slate-300 text-sky-600 focus:ring-sky-500">
-              <span>启用自定义短链后缀（适合稳定项目，便于分享）</span>
+              <span>启用自定义 code 后缀（适合稳定项目，便于分享）</span>
             </label>
             <input id="custom-code" type="text" placeholder="my-landing" pattern="[a-z0-9-]{3,32}" disabled class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none ring-sky-300 transition focus:border-sky-400 focus:ring-2 disabled:bg-slate-50 disabled:text-slate-400">
-            <p class="text-xs text-slate-500">短链已存在时，可勾选"追加版本"以新版本形式更新内容。</p>
+            <p class="text-xs text-slate-500">code 已存在时，可勾选"追加版本"以新版本形式更新内容。</p>
           </div>
           <label class="flex items-start gap-2 text-sm font-medium text-slate-700">
             <input id="create-version" type="checkbox" class="mt-1 rounded border-slate-300 text-sky-600 focus:ring-sky-500">
-            <span>追加新版本（短链已存在时使用）</span>
+            <span>追加新版本（code 已存在时使用）</span>
           </label>
         </div>
 
@@ -343,7 +343,7 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
     reader.readAsText(file);
   });
 
-  // 文件名 / 描述 / 自定义短链
+  // 文件名 / 描述 / 自定义 code
   $('filename').addEventListener('input', updateInfo);
   $('content').addEventListener('input', updateInfo);
   $('description').addEventListener('input', updateInfo);
@@ -431,10 +431,10 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
   function renderResult(d) {
     $('result-card').classList.remove('hidden');
     const rows = [
-      ['短链 code', d.code],
-      ['访问 URL', d.url],
+      ['code', d.code],
+      ['应用 URL', d.url],
       ['应用本体', d.detailUrl],
-      ['版本 URL', d.versionUrl],
+      ['版本预览 URL', d.versionUrl],
       ['版本号', 'v' + d.versionNumber],
       ['大小', formatSize(d.size)],
     ];

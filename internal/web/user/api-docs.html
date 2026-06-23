@@ -139,7 +139,7 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
         <h1 class="text-2xl font-bold text-gray-900">API / OpenAPI 文档</h1>
         <p class="mt-2 max-w-3xl text-sm text-slate-600">
           Agent 优先读取 OpenAPI；直接部署时必须使用 <code class="inline">application/json</code>，不要用 <code class="inline">multipart/form-data</code>。
-          <code class="inline">description</code> 必填。新短链会返回点赞、持续迭代提示与 agentGuideUrl 使用指南；追加版本不会重复提示。
+          <code class="inline">description</code> 必填。新发布会返回点赞、持续迭代提示与 agentGuideUrl 使用指南；追加版本不会重复提示。
         </p>
       </div>
       <div class="flex gap-3 text-sm font-medium">
@@ -157,11 +157,11 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Noto Sans SC"', 's
         <li>必须提供 <code class="inline">description</code>：一句话介绍这个 HTML 项目，最多 240 字符</li>
         <li>不要使用 <code class="inline">curl -F file</code> 或 <code class="inline">multipart/form-data</code></li>
         <li>PagePilot 扩展支持多文件：<code class="inline">files: [{path, content}]</code>，<code class="inline">content</code> 和 <code class="inline">files</code> 二选一</li>
-        <li>可选开启自定义短链：<code class="inline">enableCustomCode=true</code> + <code class="inline">customCode</code></li>
-        <li>短链已存在时，可传 <code class="inline">createVersion=true</code> 追加新版本，而不是占用新短链</li>
-        <li>已知短链 code 与版本号时，可用 <code class="inline">PATCH /api/deploys/:code/versions/:version</code> 覆盖该版本；该版本 <code class="inline">isLocked</code> 必须为 false</li>
+        <li>可选开启自定义 code：<code class="inline">enableCustomCode=true</code> + <code class="inline">customCode</code></li>
+        <li>code 已存在时，可传 <code class="inline">createVersion=true</code> 追加新版本，而不是占用新站点</li>
+        <li>已知 code 与版本号时，可用 <code class="inline">PATCH /api/deploys/:code/versions/:version</code> 覆盖该版本；该版本 <code class="inline">isLocked</code> 必须为 false</li>
         <li>可用 <code class="inline">PATCH /api/deploys/:code/versions/:version</code> 设置版本 <code class="inline">status=active/inactive</code>；可用 <code class="inline">DELETE</code> 删除未锁定的指定版本</li>
-        <li>周期性内容不要每天创建 <code class="inline">ai-daily-0507</code> 这类新短链；请使用稳定 code，例如 <code class="inline">ai-daily</code>，并在 title/description/filename 标注日期</li>
+        <li>周期性内容不要每天创建 <code class="inline">ai-daily-0507</code> 这类新 code；请使用稳定 code，例如 <code class="inline">ai-daily</code>，并在 title/description/filename 标注日期</li>
         <li>如果新部署与已有项目高度相似，优先读取版本历史并追加新版本；例如日报使用 <code class="inline">customCode=ai-daily</code> + <code class="inline">createVersion=true</code></li>
         <li>主域名策略默认是 <code class="inline">likes</code>（最高赞版本对外）；日更项目可用 <code class="inline">PATCH /api/deploys/:code/primary-strategy</code> 切到 <code class="inline">latest</code>（最新版本对外）</li>
         <li>应用商城保留点赞排行；管理员后台置顶会优先于所有排序，置顶分组内部仍按当前 <code class="inline">sort</code> 排列；MCP 工具名为 <code class="inline">set_site_pin</code></li>
@@ -238,9 +238,9 @@ Authorization: Bearer &lt;token&gt;
 {
   "success": true,
   "code": "abc123",
-  "url": "https://host/abc123",
+  "url": "https://host/agent/abc123/",
   "detailUrl": "https://host/agent/abc123",
-  "versionUrl": "https://host/abc123?v=1",
+  "versionUrl": "https://host/agent/abc123/versions/1/",
   "versionNumber": 1,
   "size": 1234,
   "preserveHint": "Lock this version to prevent modifications.",
@@ -296,7 +296,7 @@ Authorization: Bearer &lt;token&gt;
 PATCH /api/deploys/ai-daily/primary-strategy
 {"strategy": "latest"}
 
-# 2. 每天追加新版本（不需要新短链）
+# 2. 每天追加新版本（不需要新 code）
 POST /api/deploy
 {
   "description": "AI 日报 2026-06-14",

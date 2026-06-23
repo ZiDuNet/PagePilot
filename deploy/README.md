@@ -36,7 +36,7 @@ Docker 默认把这些目录挂载到宿主机的 `./data/docker/` 下：
 | `./data/docker/hosted` | `/var/www/hosted` | 已发布的静态站点文件 |
 | `./data/docker/logs` | `/var/log/hostctl` | 服务日志目录 |
 
-如果外层使用 Nginx、Caddy、宝塔或云厂商负载均衡，只需要把整个站点反向代理到容器端口。`/deploy.html`、`/api-docs.html`、`/agents/`、`/api/*`、`/agent/*` 和短链都由 PagePilot 自己处理，不要在反向代理里维护路径白名单。
+如果外层使用 Nginx、Caddy、宝塔或云厂商负载均衡，只需要把整个站点反向代理到容器端口。`/deploy.html`、`/api-docs.html`、`/agents/`、`/api/*`、`/agent/*` 和应用访问地址都由 PagePilot 自己处理，不要在反向代理里维护路径白名单。
 
 ## 1. 准备服务器
 
@@ -87,7 +87,7 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Caddy 直接把整个站点反向代理到 hostctl 即可。hostctl 自己处理首页、后台、API、Skill 下载、应用访问与短链路由，不需要在 Caddy 里维护路径白名单。
+Caddy 直接把整个站点反向代理到 hostctl 即可。hostctl 自己处理首页、后台、API、Skill 下载、应用访问与应用访问路由，不需要在 Caddy 里维护路径白名单。
 
 ## 5. 首次登录
 
