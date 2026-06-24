@@ -11,6 +11,7 @@ docker compose up -d --build
 ```
 
 完整 Docker 部署、升级、备份、反向代理和排障说明请见 [deploy/DOCKER.md](DOCKER.md)。
+应用访问地址默认使用 `/agent/{code}/`，泛域名或双模式配置请参考 [APP_URL_MODE.md](APP_URL_MODE.md)。
 
 部署前请在 `docker-compose.yml` 中把 `HOSTCTL_PUBLIC_BASE_URL` 改成真实对外地址，例如：
 
@@ -36,7 +37,15 @@ Docker 默认把这些目录挂载到宿主机的 `./data/docker/` 下：
 | `./data/docker/hosted` | `/var/www/hosted` | 已发布的静态站点文件 |
 | `./data/docker/logs` | `/var/log/hostctl` | 服务日志目录 |
 
-如果外层使用 Nginx、Caddy、宝塔或云厂商负载均衡，只需要把整个站点反向代理到容器端口。`/deploy.html`、`/api-docs.html`、`/agents/`、`/api/*`、`/agent/*` 和应用访问地址都由 PagePilot 自己处理，不要在反向代理里维护路径白名单。
+如果外层使用 Nginx、Caddy、宝塔或云厂商负载均衡，只需要把整个站点反向代理到容器端口。`/deploy.html`、`/api-docs.html`、`/agents/`、`/screens/`、`/api/*`、`/agent/*` 和应用访问地址都由 PagePilot 自己处理，不要在反向代理里维护路径白名单。
+
+`CORS_ALLOW_ORIGINS` 默认留空，也就是默认关闭浏览器跨域访问。只有在另一个网页前端必须跨域调用 PagePilot API 时，才填写明确的 origin 白名单；不要配置成 `*`。
+
+内置前端说明：
+
+- 用户端 React 工程位于 `frontend/user`，构建产物为 `internal/web/user/app`。
+- 后台 React 工程位于 `frontend/admin`，构建产物为 `internal/web/admin/app`。
+- Go 服务通过 `embed` 打包这些产物，所以源码方式发布二进制前需要先构建前端。
 
 ## 1. 准备服务器
 
@@ -62,6 +71,15 @@ make build-linux
 scp bin/hostctl-server-linux-amd64 root@vps:/usr/local/bin/hostctl-server
 scp bin/hostctl-linux-amd64 root@vps:/usr/local/bin/hostctl
 ssh root@vps 'chmod +x /usr/local/bin/hostctl-server /usr/local/bin/hostctl'
+```
+
+如果不使用 `make`，可以手动构建前端和服务端：
+
+```bash
+(cd frontend/user && npm install && npm run build)
+(cd frontend/admin && npm install && npm run build)
+go build -o bin/hostctl-server ./cmd/hostctl-server
+go build -o bin/hostctl ./cmd/hostctl
 ```
 
 ## 3. 安装 systemd
@@ -114,6 +132,8 @@ curl -s https://host.example.com/api/health
 curl -s https://host.example.com/openapi.json | jq '.info.title'
 curl -fsS https://host.example.com/deploy.html >/dev/null
 curl -fsS https://host.example.com/api-docs.html >/dev/null
+curl -fsS https://host.example.com/screens/ >/dev/null
+curl -fsS https://host.example.com/admin >/dev/null
 ```
 
 登录后台后，也可以在 Agent 技能里执行：
@@ -150,3 +170,4 @@ df -h /var/www/hosted /var/lib/hostctl
 - `GET /openapi.json`
 - `GET /deploy.html`
 - `GET /api-docs.html`
+- `GET /screens/`

@@ -35,6 +35,14 @@ services:
       # Include the external port if users visit one, for example https://pagepilot.example.com:1143.
       HOSTCTL_PUBLIC_BASE_URL: "http://localhost:8787"
 
+      # App URL strategy. Keep "path" for /agent/{code}/ compatibility.
+      # Use "domain" only after DNS and reverse proxy accept *.your-domain.
+      # See deploy/APP_URL_MODE.md for Nginx and Docker examples.
+      HOSTCTL_APP_URL_MODE: "path"
+      HOSTCTL_APP_DOMAIN_SUFFIX: ""
+      HOSTCTL_APP_URL_SCHEME: "https"
+      HOSTCTL_APP_URL_PORT: ""
+
       # Production mode: login is required after the first admin account exists.
       REQUIRE_AUTH: "true"
 

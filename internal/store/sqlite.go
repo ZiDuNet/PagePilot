@@ -80,6 +80,10 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate anonymous sessions agent meta: %w", err)
 	}
+	if err := migrateScreensAddDeviceInfo(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate screens device info: %w", err)
+	}
 
 	// 给老 site 补 public_id（NULL 的填上）
 	if err := backfillSitesPublicID(db); err != nil {
@@ -174,6 +178,7 @@ func migrateSitesAddMarketplaceColumns(db *sql.DB) error {
 		{"view_count", "INTEGER NOT NULL DEFAULT 0"},
 		{"like_count", "INTEGER NOT NULL DEFAULT 0"},
 		{"status", "TEXT NOT NULL DEFAULT 'active'"},
+		{"visibility", "TEXT NOT NULL DEFAULT 'public'"},
 		{"access_password_hash", "TEXT NOT NULL DEFAULT ''"},
 		{"is_pinned", "BOOLEAN NOT NULL DEFAULT 0"},
 		{"pinned_at", "DATETIME"},
@@ -188,6 +193,30 @@ func migrateSitesAddMarketplaceColumns(db *sql.DB) error {
 			if !contains(msg, "duplicate column") {
 				return fmt.Errorf("alter add %s: %w", c.name, err)
 			}
+		}
+	}
+	return nil
+}
+
+func migrateScreensAddDeviceInfo(db *sql.DB) error {
+	cols := []struct {
+		name string
+		ddl  string
+	}{
+		{"device_info", "TEXT NOT NULL DEFAULT '{}'"},
+		{"screenshot_request_id", "TEXT NOT NULL DEFAULT ''"},
+		{"screenshot_requested_at", "DATETIME"},
+		{"screenshot_at", "DATETIME"},
+		{"command_request_id", "TEXT NOT NULL DEFAULT ''"},
+		{"command_type", "TEXT NOT NULL DEFAULT ''"},
+		{"command_payload", "TEXT NOT NULL DEFAULT '{}'"},
+		{"command_requested_at", "DATETIME"},
+		{"command_completed_at", "DATETIME"},
+	}
+	for _, c := range cols {
+		_, err := db.Exec(fmt.Sprintf(`ALTER TABLE screens ADD COLUMN %s %s`, c.name, c.ddl))
+		if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
+			return fmt.Errorf("alter screens add %s: %w", c.name, err)
 		}
 	}
 	return nil
@@ -264,6 +293,10 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	if status == "" {
 		status = "active"
 	}
+	visibility := site.Visibility
+	if visibility == "" {
+		visibility = "public"
+	}
 	var expiresAt any
 	if site.ExpiresAt != nil {
 		expiresAt = site.ExpiresAt.UTC()
@@ -279,9 +312,9 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sites (code, public_id, owner_token_id, current_version, primary_version_strategy,
-		                   view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source)
-		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, site.Code, publicID, site.OwnerTokenID, strategy, site.ViewCount, site.LikeCount, status, site.AccessPasswordHash, site.IsPinned, pinnedAt, expiresAt, site.CreatedAt.UTC(), updatedAt.UTC(), site.Source)
+		                   visibility, view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source)
+		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, site.Code, publicID, site.OwnerTokenID, strategy, visibility, site.ViewCount, site.LikeCount, status, site.AccessPasswordHash, site.IsPinned, pinnedAt, expiresAt, site.CreatedAt.UTC(), updatedAt.UTC(), site.Source)
 	if err != nil {
 		return fmt.Errorf("insert site: %w", err)
 	}
@@ -298,11 +331,11 @@ func (s *SQLiteStore) GetSite(ctx context.Context, code string) (Site, error) {
 	var isPinned int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT code, public_id, owner_token_id, current_version, primary_version_strategy,
-		       view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source
+		       visibility, view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source
 		FROM sites WHERE code = ?
 	`, code).Scan(
 		&site.Code, &site.PublicID, &site.OwnerTokenID, &cur, &site.PrimaryVersionStrategy,
-		&site.ViewCount, &site.LikeCount, &site.Status, &site.AccessPasswordHash, &isPinned, &pinnedAt, &expiresAt, &site.CreatedAt, &updatedAt, &site.Source,
+		&site.Visibility, &site.ViewCount, &site.LikeCount, &site.Status, &site.AccessPasswordHash, &isPinned, &pinnedAt, &expiresAt, &site.CreatedAt, &updatedAt, &site.Source,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Site{}, ErrNotFound
@@ -319,6 +352,9 @@ func (s *SQLiteStore) GetSite(ctx context.Context, code string) (Site, error) {
 	}
 	if site.Status == "" {
 		site.Status = "active"
+	}
+	if site.Visibility == "" {
+		site.Visibility = "public"
 	}
 	site.IsPinned = isPinned != 0
 	if pinnedAt.Valid && pinnedAt.String != "" {
@@ -848,6 +884,7 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 			s.view_count,
 			s.like_count,
 			COALESCE(s.status, 'active') AS status,
+			COALESCE(s.visibility, 'public') AS visibility,
 			CASE WHEN COALESCE(s.access_password_hash, '') <> '' THEN 1 ELSE 0 END AS access_protected,
 			COALESCE(s.is_pinned, 0) AS is_pinned,
 			s.pinned_at,
@@ -876,7 +913,7 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 		if err := rows.Scan(
 			&item.Code, &item.PublicID, &item.OwnerTokenID, &cur, &item.CreatedAt, &updatedAt, &item.Source,
 			&item.ViewCount, &item.LikeCount, &item.Status,
-			&accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
+			&item.Visibility, &accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
 		); err != nil {
 			return nil, fmt.Errorf("scan site row: %w", err)
 		}
@@ -905,6 +942,9 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 		}
 		if item.Status == "" {
 			item.Status = "active"
+		}
+		if item.Visibility == "" {
+			item.Visibility = "public"
 		}
 		if item.UpdatedAt.IsZero() {
 			item.UpdatedAt = item.CreatedAt
@@ -969,6 +1009,7 @@ const marketplaceSelectCols = `
 	cv.main_entry            AS main_entry,
 	cv.total_size            AS file_size,
 	s.primary_version_strategy AS primary_version_strategy,
+	COALESCE(s.visibility, 'public') AS visibility,
 	s.view_count             AS view_count,
 	s.like_count             AS like_count,
 	s.status                 AS status,
@@ -1003,12 +1044,13 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	var updatedAt sql.NullString
 	var strategy sql.NullString
 	var status sql.NullString
+	var visibility sql.NullString
 	var accessProtected int
 	var isPinned int
 	var pinnedAt sql.NullString
 	if err := sc.Scan(
 		&d.ID, &d.Code, &d.OwnerTokenID, &curVer, &curVerID, &title, &desc, &mainEntry, &fileSize,
-		&strategy, &d.ViewCount, &d.LikeCount, &status, &accessProtected, &isPinned, &pinnedAt, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
+		&strategy, &visibility, &d.ViewCount, &d.LikeCount, &status, &accessProtected, &isPinned, &pinnedAt, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
 	); err != nil {
 		return d, err
 	}
@@ -1040,8 +1082,14 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	if status.Valid {
 		d.Status = status.String
 	}
+	if visibility.Valid {
+		d.Visibility = visibility.String
+	}
 	if d.Status == "" {
 		d.Status = "active"
+	}
+	if d.Visibility == "" {
+		d.Visibility = "public"
 	}
 	if d.PrimaryVersionStrategy == "" {
 		d.PrimaryVersionStrategy = "likes"
@@ -1082,6 +1130,7 @@ func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sor
 
 	var where []string
 	var args []any
+	where = append(where, `COALESCE(s.visibility, 'public') = 'public'`)
 	if q != "" {
 		where = append(where, `(s.code LIKE ? OR cv.title LIKE ? OR cv.description LIKE ? OR cv.main_entry LIKE ?)`)
 		like := "%" + q + "%"
@@ -1219,6 +1268,21 @@ func (s *SQLiteStore) UpdateSiteStatus(ctx context.Context, code, status string)
 		status, time.Now().UTC(), code)
 	if err != nil {
 		return fmt.Errorf("update site status: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetSiteVisibility 设置站点是否进入首页应用商城。
+func (s *SQLiteStore) SetSiteVisibility(ctx context.Context, code, visibility string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sites SET visibility = ?, updated_at = ? WHERE code = ?`,
+		visibility, time.Now().UTC(), code)
+	if err != nil {
+		return fmt.Errorf("set site visibility: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {

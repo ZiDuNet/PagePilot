@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Config is the hostctl-server runtime configuration.
@@ -12,6 +13,10 @@ type Config struct {
 	HostedDir        string
 	DBPath           string
 	PublicBaseURL    string
+	AppURLMode       string
+	AppDomainSuffix  string
+	AppURLScheme     string
+	AppURLPort       string
 	CORSAllowOrigins string
 
 	MaxSingleFileBytes int64
@@ -32,7 +37,9 @@ func Default() Config {
 		HostedDir:            "/var/www/hosted",
 		DBPath:               "/var/lib/hostctl/hostctl.db",
 		PublicBaseURL:        "http://localhost:8787",
-		CORSAllowOrigins:     "*",
+		AppURLMode:           "path",
+		AppURLScheme:         "https",
+		CORSAllowOrigins:     "",
 		MaxSingleFileBytes:   1 << 20,
 		MaxSiteTotalBytes:    10 << 20,
 		MaxFilesPerSite:      100,
@@ -51,6 +58,18 @@ func Default() Config {
 	}
 	if v := os.Getenv("HOSTCTL_PUBLIC_BASE_URL"); v != "" {
 		c.PublicBaseURL = v
+	}
+	if v := os.Getenv("HOSTCTL_APP_URL_MODE"); v != "" {
+		c.AppURLMode = v
+	}
+	if v := os.Getenv("HOSTCTL_APP_DOMAIN_SUFFIX"); v != "" {
+		c.AppDomainSuffix = v
+	}
+	if v := os.Getenv("HOSTCTL_APP_URL_SCHEME"); v != "" {
+		c.AppURLScheme = v
+	}
+	if v := os.Getenv("HOSTCTL_APP_URL_PORT"); v != "" {
+		c.AppURLPort = v
 	}
 	if v := os.Getenv("HOSTCTL_CORS_ALLOW_ORIGINS"); v != "" {
 		c.CORSAllowOrigins = v
@@ -100,6 +119,18 @@ func Default() Config {
 	if v := os.Getenv("PUBLIC_BASE_URL"); v != "" {
 		c.PublicBaseURL = v
 	}
+	if v := os.Getenv("APP_URL_MODE"); v != "" {
+		c.AppURLMode = v
+	}
+	if v := os.Getenv("APP_DOMAIN_SUFFIX"); v != "" {
+		c.AppDomainSuffix = v
+	}
+	if v := os.Getenv("APP_URL_SCHEME"); v != "" {
+		c.AppURLScheme = v
+	}
+	if v := os.Getenv("APP_URL_PORT"); v != "" {
+		c.AppURLPort = v
+	}
 	if v := os.Getenv("CORS_ALLOW_ORIGINS"); v != "" {
 		c.CORSAllowOrigins = v
 	}
@@ -145,6 +176,8 @@ func Default() Config {
 		c.BootstrapAdminPassword = v
 	}
 
+	c.CORSAllowOrigins = NormalizeCORSAllowOrigins(c.CORSAllowOrigins)
+
 	if os.Getenv("HOSTCTL_DEV") == "1" {
 		if c.HostedDir == "/var/www/hosted" {
 			c.HostedDir = filepath.Join("data", "hosted")
@@ -174,6 +207,16 @@ func (c Config) Validate() error {
 	if c.PublicBaseURL == "" {
 		return fmt.Errorf("PublicBaseURL is empty")
 	}
+	switch c.AppURLMode {
+	case "", "path", "domain", "dual":
+	default:
+		return fmt.Errorf("AppURLMode must be path, domain, or dual")
+	}
+	switch c.AppURLScheme {
+	case "", "http", "https":
+	default:
+		return fmt.Errorf("AppURLScheme must be http or https")
+	}
 	if c.MaxSingleFileBytes <= 0 {
 		return fmt.Errorf("MaxSingleFileBytes must be positive")
 	}
@@ -190,4 +233,14 @@ func (c Config) Validate() error {
 		return fmt.Errorf("AnonymousDeployLimit must be -1 or greater")
 	}
 	return nil
+}
+
+// NormalizeCORSAllowOrigins 规范化 CORS 白名单配置。
+// 当前版本默认关闭 CORS；星号通配符会被视为关闭。
+func NormalizeCORSAllowOrigins(origins string) string {
+	origins = strings.TrimSpace(origins)
+	if origins == "*" {
+		return ""
+	}
+	return origins
 }

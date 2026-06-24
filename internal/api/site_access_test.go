@@ -27,7 +27,7 @@ func TestSiteAccessRejectsForgedCookie(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/demo", nil)
 	req.AddCookie(&http.Cookie{Name: "pagepilot_access_demo", Value: "1"})
 
-	if srv.siteAccessAllowed(req, "demo") {
+	if srv.siteAccessAllowed(req, "demo", nil) {
 		t.Fatal("forged access cookie was accepted")
 	}
 }
@@ -65,7 +65,7 @@ func TestSiteAccessCookieInvalidatesWhenPasswordChanges(t *testing.T) {
 
 	allowedReq := httptest.NewRequest(http.MethodGet, "/demo", nil)
 	allowedReq.AddCookie(cookies[0])
-	if !srv.siteAccessAllowed(allowedReq, "demo") {
+	if !srv.siteAccessAllowed(allowedReq, "demo", nil) {
 		t.Fatal("fresh password access cookie was rejected")
 	}
 
@@ -75,7 +75,7 @@ func TestSiteAccessCookieInvalidatesWhenPasswordChanges(t *testing.T) {
 	}
 	deployer.site.AccessPasswordHash = newHash
 
-	if srv.siteAccessAllowed(allowedReq, "demo") {
+	if srv.siteAccessAllowed(allowedReq, "demo", nil) {
 		t.Fatal("old access cookie was accepted after password change")
 	}
 }

@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -37,7 +39,7 @@ func (s *Server) handleListScreens(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]ScreenItem, 0, len(screens))
 	for _, screen := range screens {
-		items = append(items, toScreenItem(screen))
+		items = append(items, s.toScreenItem(r.Context(), screen))
 	}
 	writeJSON(w, http.StatusOK, ScreenListResponse{Success: true, Screens: items})
 }
@@ -67,7 +69,7 @@ func (s *Server) handleBindScreen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(statusCode, "screen_pairing", err.Error()), reqID))
 		return
 	}
-	writeJSON(w, http.StatusOK, ScreenBindResponse{Success: true, Screen: toScreenItem(screen)})
+	writeJSON(w, http.StatusOK, ScreenBindResponse{Success: true, Screen: s.toScreenItem(r.Context(), screen)})
 }
 
 func (s *Server) handlePublishScreen(w http.ResponseWriter, r *http.Request) {
@@ -100,8 +102,8 @@ func (s *Server) handlePublishScreen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site", err.Error()), reqID))
 		return
 	}
-	if !isAdmin && site.OwnerTokenID != "user:"+userID {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "site", "you can only publish your own apps to screens"), reqID))
+	if !isAdmin && !screenPublishAllowedForUser(site, userID) {
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "site", "you can publish your own apps or public unprotected marketplace apps to screens"), reqID))
 		return
 	}
 	publishOwnerID := userID
@@ -138,7 +140,18 @@ func (s *Server) handlePublishScreen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen", err.Error()), reqID))
 		return
 	}
-	writeJSON(w, http.StatusOK, ScreenPublishResponse{Success: true, Screen: toScreenItem(screen)})
+	writeJSON(w, http.StatusOK, ScreenPublishResponse{Success: true, Screen: s.toScreenItem(r.Context(), screen)})
+}
+
+func screenPublishAllowedForUser(site store.Site, userID string) bool {
+	if site.OwnerTokenID == "user:"+userID {
+		return true
+	}
+	visibility := strings.TrimSpace(site.Visibility)
+	if visibility == "" {
+		visibility = "public"
+	}
+	return visibility == "public" && strings.TrimSpace(site.AccessPasswordHash) == ""
 }
 
 func (s *Server) handleUnbindScreen(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +211,7 @@ func (s *Server) handleDevicePairingStart(w http.ResponseWriter, r *http.Request
 			PairingSecretHash: auth.HashToken(pairingSecret),
 			ScreenID:          "screen_" + randomHex(12),
 			DeviceName:        deviceName,
+			DeviceInfo:        deviceInfoPayload(req.DeviceInfo),
 			ExpiresAt:         now.Add(screenPairingTTL),
 			CreatedAt:         now,
 		}
@@ -271,7 +285,7 @@ func (s *Server) handleDevicePairingComplete(w http.ResponseWriter, r *http.Requ
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen", err.Error()), reqID))
 		return
 	}
-	item := toScreenItem(screen)
+	item := s.toScreenItem(r.Context(), screen)
 	writeJSON(w, http.StatusOK, DevicePairingCompleteResponse{
 		Success:     true,
 		Paired:      true,
@@ -292,6 +306,17 @@ func (s *Server) handleDeviceManifest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	if resp.AccessCookie != nil {
+		http.SetCookie(w, &http.Cookie{
+			Name:     resp.AccessCookie.Name,
+			Value:    resp.AccessCookie.Value,
+			Path:     resp.AccessCookie.Path,
+			MaxAge:   resp.AccessCookie.MaxAgeSeconds,
+			Expires:  resp.AccessCookie.ExpiresAt,
+			SameSite: http.SameSiteLaxMode,
+			HttpOnly: true,
+		})
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -306,12 +331,12 @@ func (s *Server) handleDeviceHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
-	updated, err := s.deployer.TouchScreenHeartbeat(r.Context(), screen.ID, strings.TrimSpace(req.AppVersion), strings.TrimSpace(req.Runtime))
+	updated, err := s.deployer.TouchScreenHeartbeat(r.Context(), screen.ID, strings.TrimSpace(req.AppVersion), strings.TrimSpace(req.Runtime), deviceInfoPayload(req.DeviceInfo))
 	if err != nil {
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "heartbeat", err.Error()), reqID))
 		return
 	}
-	writeJSON(w, http.StatusOK, DeviceHeartbeatResponse{Success: true, Screen: toScreenItem(updated)})
+	writeJSON(w, http.StatusOK, DeviceHeartbeatResponse{Success: true, Screen: s.toScreenItem(r.Context(), updated)})
 }
 
 func (s *Server) authenticateDevice(r *http.Request) (store.Screen, *APIError) {
@@ -333,13 +358,31 @@ func (s *Server) authenticateDevice(r *http.Request) (store.Screen, *APIError) {
 
 func (s *Server) screenManifest(ctx context.Context, screen store.Screen) (ScreenManifestResponse, *APIError) {
 	now := time.Now().UTC()
-	base := strings.TrimRight(s.deployer.PublicBaseURL(), "/")
+	base := s.publicBaseURL()
+	appURLs := s.appURLConfig()
 	resp := ScreenManifestResponse{
-		Success:   true,
-		ScreenID:  screen.ID,
-		Mode:      "idle",
-		BaseURL:   base,
-		UpdatedAt: now,
+		Success:       true,
+		ScreenID:      screen.ID,
+		ScreenName:    screen.Name,
+		OwnerUserID:   screen.OwnerUserID,
+		OwnerUsername: s.ownerUsername(ctx, screen.OwnerUserID),
+		Mode:          "idle",
+		BaseURL:       base,
+		UpdatedAt:     now,
+	}
+	if strings.TrimSpace(screen.ScreenshotRequestID) != "" && screen.ScreenshotRequestedAt != nil {
+		resp.Screenshot = &ScreenScreenshotCommand{
+			RequestID:   screen.ScreenshotRequestID,
+			RequestedAt: *screen.ScreenshotRequestedAt,
+		}
+	}
+	if strings.TrimSpace(screen.CommandRequestID) != "" && strings.TrimSpace(screen.CommandType) != "" && screen.CommandRequestedAt != nil {
+		resp.Command = &ScreenDeviceCommand{
+			RequestID:   screen.CommandRequestID,
+			Type:        screen.CommandType,
+			Payload:     rawDeviceInfo(screen.CommandPayload),
+			RequestedAt: *screen.CommandRequestedAt,
+		}
 	}
 	if strings.TrimSpace(screen.CurrentSiteCode) == "" {
 		return resp, nil
@@ -348,10 +391,7 @@ func (s *Server) screenManifest(ctx context.Context, screen store.Screen) (Scree
 	if apiErr != nil {
 		return ScreenManifestResponse{}, apiErr
 	}
-	entryURL := fmt.Sprintf("%s/agent/%s/", base, screen.CurrentSiteCode)
-	if screen.CurrentVersion != nil && *screen.CurrentVersion > 0 {
-		entryURL = fmt.Sprintf("%s/agent/%s/versions/%d/", base, screen.CurrentSiteCode, *screen.CurrentVersion)
-	}
+	entryURL := appURLs.PrimaryAppURL(screen.CurrentSiteCode, screen.CurrentVersion)
 	resp.Mode = "webapp"
 	resp.EntryURL = entryURL
 	resp.SiteCode = screen.CurrentSiteCode
@@ -360,11 +400,12 @@ func (s *Server) screenManifest(ctx context.Context, screen store.Screen) (Scree
 	resp.Title = content.Title
 	resp.Description = content.Description
 	resp.UpdatedAt = screen.UpdatedAt
+	resp.AccessCookie = s.newScreenAccessCookie(screen, screen.CurrentSiteCode, &content.Version)
 	resp.Assets = make([]ScreenManifestAsset, 0, len(content.Files))
 	for _, file := range content.Files {
 		resp.Assets = append(resp.Assets, ScreenManifestAsset{
 			Path:   file.Path,
-			URL:    fmt.Sprintf("%s/agent/%s/versions/%d/%s", base, screen.CurrentSiteCode, content.Version, escapeManifestAssetPath(file.Path)),
+			URL:    appURLs.AssetURL(screen.CurrentSiteCode, content.Version, escapeManifestAssetPath(file.Path)),
 			Size:   file.Size,
 			Sha256: file.Sha256,
 		})
@@ -372,21 +413,59 @@ func (s *Server) screenManifest(ctx context.Context, screen store.Screen) (Scree
 	return resp, nil
 }
 
-func toScreenItem(screen store.Screen) ScreenItem {
+func (s *Server) toScreenItem(ctx context.Context, screen store.Screen) ScreenItem {
 	return ScreenItem{
-		ID:              screen.ID,
-		OwnerUserID:     screen.OwnerUserID,
-		Name:            screen.Name,
-		DeviceName:      screen.DeviceName,
-		Status:          screen.Status,
-		CurrentSiteCode: screen.CurrentSiteCode,
-		CurrentVersion:  screen.CurrentVersion,
-		LastSeenAt:      screen.LastSeenAt,
-		AppVersion:      screen.AppVersion,
-		Runtime:         screen.Runtime,
-		CreatedAt:       screen.CreatedAt,
-		UpdatedAt:       screen.UpdatedAt,
+		ID:                    screen.ID,
+		OwnerUserID:           screen.OwnerUserID,
+		OwnerUsername:         s.ownerUsername(ctx, screen.OwnerUserID),
+		Name:                  screen.Name,
+		DeviceName:            screen.DeviceName,
+		Status:                screen.Status,
+		CurrentSiteCode:       screen.CurrentSiteCode,
+		CurrentVersion:        screen.CurrentVersion,
+		LastSeenAt:            screen.LastSeenAt,
+		AppVersion:            screen.AppVersion,
+		Runtime:               screen.Runtime,
+		DeviceInfo:            rawDeviceInfo(screen.DeviceInfo),
+		ScreenshotRequestedAt: screen.ScreenshotRequestedAt,
+		ScreenshotAt:          screen.ScreenshotAt,
+		CommandType:           screen.CommandType,
+		CommandRequestedAt:    screen.CommandRequestedAt,
+		CommandCompletedAt:    screen.CommandCompletedAt,
+		CreatedAt:             screen.CreatedAt,
+		UpdatedAt:             screen.UpdatedAt,
 	}
+}
+
+func (s *Server) ownerUsername(ctx context.Context, ownerUserID string) string {
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	if ownerUserID == "" || s.auth == nil {
+		return ""
+	}
+	user, err := s.auth.GetUser(ctx, ownerUserID)
+	if err != nil {
+		return ""
+	}
+	return user.Username
+}
+
+func deviceInfoPayload(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return "{}"
+	}
+	if len(raw) > 8192 || !json.Valid(raw) {
+		return "{}"
+	}
+	return string(raw)
+}
+
+func rawDeviceInfo(value string) json.RawMessage {
+	value = strings.TrimSpace(value)
+	if value == "" || !json.Valid([]byte(value)) {
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(value)
 }
 
 func screenPairingCode() string {

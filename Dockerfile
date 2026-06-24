@@ -2,6 +2,20 @@
 # Build stage compiles static Go binaries; runtime stage keeps only binaries and small OS deps.
 
 # ===== Build =====
+FROM node:22-alpine AS frontend-builder
+
+WORKDIR /src
+
+COPY frontend/user/package*.json ./frontend/user/
+RUN cd frontend/user && npm ci
+COPY frontend/user ./frontend/user
+RUN cd frontend/user && npm run build
+
+COPY frontend/admin/package*.json ./frontend/admin/
+RUN cd frontend/admin && npm ci
+COPY frontend/admin ./frontend/admin
+RUN cd frontend/admin && npm run build
+
 FROM golang:1.22-alpine AS builder
 
 # git is needed by go mod for VCS-backed modules.
@@ -19,6 +33,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+COPY --from=frontend-builder /src/internal/web/user/app ./internal/web/user/app
+COPY --from=frontend-builder /src/internal/web/admin/app ./internal/web/admin/app
 
 # modernc.org/sqlite is pure Go, so CGO can stay disabled.
 ENV CGO_ENABLED=0 GOOS=linux

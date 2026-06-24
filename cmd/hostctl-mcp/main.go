@@ -168,9 +168,10 @@ func toolList() []toolDef {
 					"title":           {Type: "string", Description: "站点标题，建议填写可读名称；不要使用 index.html 这类文件名"},
 					"custom_code":     {Type: "string", Description: "自定义短码，^[a-z0-9-]{3,32}$；留空自动生成"},
 					"create_version":  {Type: "boolean", Description: "custom_code 已存在时，true 追加版本；false/省略 报 CONFLICT"},
+					"visibility":      {Type: "string", Description: "public 进入商城；unlisted 仅链接访问", Enum: []string{"public", "unlisted"}},
 					"access_password": {Type: "string", Description: "Optional visit password for a new site. Empty means public."},
 				},
-				Required: []string{"source", "description"},
+				Required: []string{"source", "description", "title"},
 			},
 		},
 		{
@@ -315,6 +316,71 @@ func toolList() []toolDef {
 				Required: []string{"code", "strategy"},
 			},
 		},
+		{
+			Name:        "list_screens",
+			Description: "注册用户工具：列出当前 HOSTCTL_TOKEN 绑定的硬件屏幕。投屏前先用它让用户选择目标屏幕。",
+			InputSchema: jsonSchema{Type: "object"},
+		},
+		{
+			Name:        "bind_screen",
+			Description: "注册用户工具：用屏幕 APP 上显示的 5 分钟一次性配对码绑定硬件屏幕。",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"pairing_code": {Type: "string", Description: "屏幕 APP 显示的短期配对码"},
+					"name":         {Type: "string", Description: "可选屏幕名称，例如 大厅屏"},
+				},
+				Required: []string{"pairing_code"},
+			},
+		},
+		{
+			Name:        "publish_screen",
+			Description: "注册用户工具：把已有 PagePilot 应用投放到自己的屏幕。投放的是播放 manifest，屏幕端加载 App URL。",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"screen_id":      {Type: "string", Description: "目标屏幕 id"},
+					"code":           {Type: "string", Description: "要投放的应用 code"},
+					"version_number": {Type: "integer", Description: "可选版本号，省略使用当前版本"},
+				},
+				Required: []string{"screen_id", "code"},
+			},
+		},
+		{
+			Name:        "request_screen_screenshot",
+			Description: "注册用户工具：向指定屏幕下发截图指令。设备在线时会回传后台，随后可在后台查看。",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"screen_id": {Type: "string", Description: "目标屏幕 id"},
+				},
+				Required: []string{"screen_id"},
+			},
+		},
+		{
+			Name:        "send_screen_command",
+			Description: "注册用户工具：向屏幕下发 refresh/sleep/wake/shutdown 指令。shutdown 是软关机/黑屏待机，真实断电取决于硬件能力。",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"screen_id": {Type: "string", Description: "目标屏幕 id"},
+					"command":   {Type: "string", Description: "指令类型", Enum: []string{"refresh", "sleep", "wake", "shutdown"}},
+					"payload":   {Type: "object", Description: "可选 JSON payload"},
+				},
+				Required: []string{"screen_id", "command"},
+			},
+		},
+		{
+			Name:        "unbind_screen",
+			Description: "注册用户工具：解绑自己的屏幕。解绑后屏幕端需要重新配对。",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"screen_id": {Type: "string", Description: "目标屏幕 id"},
+				},
+				Required: []string{"screen_id"},
+			},
+		},
 	}
 }
 
@@ -371,6 +437,18 @@ func handleToolCall(ctx context.Context, c *client.Client, params json.RawMessag
 		resultText, callErr = toolLikeDeploy(ctx, c, p.Arguments)
 	case "set_primary_strategy":
 		resultText, callErr = toolSetPrimaryStrategy(ctx, c, p.Arguments)
+	case "list_screens":
+		resultText, callErr = toolListScreens(ctx, c)
+	case "bind_screen":
+		resultText, callErr = toolBindScreen(ctx, c, p.Arguments)
+	case "publish_screen":
+		resultText, callErr = toolPublishScreen(ctx, c, p.Arguments)
+	case "request_screen_screenshot":
+		resultText, callErr = toolRequestScreenScreenshot(ctx, c, p.Arguments)
+	case "send_screen_command":
+		resultText, callErr = toolSendScreenCommand(ctx, c, p.Arguments)
+	case "unbind_screen":
+		resultText, callErr = toolUnbindScreen(ctx, c, p.Arguments)
 	default:
 		return rpcResp{Error: &rpcErr{Code: -32601, Message: "unknown tool: " + p.Name}}
 	}
@@ -393,12 +471,16 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 	customCode, _ := args["custom_code"].(string)
 	accessPassword, _ := args["access_password"].(string)
 	createVersion, _ := args["create_version"].(bool)
+	visibility, _ := args["visibility"].(string)
 
 	if source == "" {
 		return "", fmt.Errorf("source is required")
 	}
 	if desc == "" {
 		return "", fmt.Errorf("description is required")
+	}
+	if strings.TrimSpace(title) == "" {
+		return "", fmt.Errorf("title is required; use a meaningful Chinese display name")
 	}
 
 	files, err := readSourceDir(source)
@@ -430,13 +512,18 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 	if title != "" {
 		reqBody["title"] = title
 	}
+	if visibility != "" {
+		if visibility != "public" && visibility != "unlisted" {
+			return "", fmt.Errorf("visibility must be public or unlisted")
+		}
+		reqBody["visibility"] = visibility
+	}
 	if accessPassword != "" {
 		reqBody["accessPassword"] = accessPassword
 	}
 	if customCode != "" {
 		reqBody["enableCustomCode"] = true
 		reqBody["customCode"] = customCode
-		reqBody["createVersion"] = true
 		if createVersion {
 			reqBody["createVersion"] = true
 		}
@@ -551,6 +638,142 @@ func toolSetSitePin(ctx context.Context, c *client.Client, args map[string]any) 
 	}
 	pretty, _ := json.MarshalIndent(resp, "", "  ")
 	return string(pretty), nil
+}
+
+func toolListScreens(ctx context.Context, c *client.Client) (string, error) {
+	resp, err := c.ListScreens(ctx)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolBindScreen(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	pairingCode, _ := args["pairing_code"].(string)
+	name, _ := args["name"].(string)
+	if strings.TrimSpace(pairingCode) == "" {
+		return "", fmt.Errorf("pairing_code is required")
+	}
+	resp, err := c.BindScreen(ctx, pairingCode, name)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolPublishScreen(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	screenID, _ := args["screen_id"].(string)
+	code, _ := args["code"].(string)
+	if strings.TrimSpace(screenID) == "" {
+		return "", fmt.Errorf("screen_id is required")
+	}
+	if strings.TrimSpace(code) == "" {
+		return "", fmt.Errorf("code is required")
+	}
+	versionNumber, err := optionalInt64Arg(args, "version_number")
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.PublishScreen(ctx, screenID, code, versionNumber)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolRequestScreenScreenshot(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	screenID, _ := args["screen_id"].(string)
+	if strings.TrimSpace(screenID) == "" {
+		return "", fmt.Errorf("screen_id is required")
+	}
+	resp, err := c.RequestScreenScreenshot(ctx, screenID)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolSendScreenCommand(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	screenID, _ := args["screen_id"].(string)
+	command, _ := args["command"].(string)
+	if strings.TrimSpace(screenID) == "" {
+		return "", fmt.Errorf("screen_id is required")
+	}
+	switch command {
+	case "refresh", "sleep", "wake", "shutdown":
+	default:
+		return "", fmt.Errorf("command must be refresh, sleep, wake, or shutdown")
+	}
+	payload, err := optionalRawJSONArg(args, "payload")
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.RequestScreenCommand(ctx, screenID, command, payload)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolUnbindScreen(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	screenID, _ := args["screen_id"].(string)
+	if strings.TrimSpace(screenID) == "" {
+		return "", fmt.Errorf("screen_id is required")
+	}
+	resp, err := c.UnbindScreen(ctx, screenID)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func optionalInt64Arg(args map[string]any, key string) (*int64, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	var out int64
+	switch v := value.(type) {
+	case float64:
+		out = int64(v)
+		if float64(out) != v {
+			return nil, fmt.Errorf("%s must be an integer", key)
+		}
+	case int:
+		out = int64(v)
+	case int64:
+		out = v
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return nil, fmt.Errorf("%s must be an integer", key)
+		}
+		out = parsed
+	default:
+		return nil, fmt.Errorf("%s must be an integer", key)
+	}
+	if out <= 0 {
+		return nil, fmt.Errorf("%s must be positive", key)
+	}
+	return &out, nil
+}
+
+func optionalRawJSONArg(args map[string]any, key string) (json.RawMessage, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s: %w", key, err)
+	}
+	return raw, nil
 }
 
 // deployFileT 是 DeployFile 的本地等价（避免 import api 包的循环依赖）。

@@ -20,9 +20,9 @@ cat > "$TMP_DIR/site-v2/index.html" <<'HTML'
 HTML
 
 python "$SCRIPT" --server "$SERVER" doctor
-python "$SCRIPT" --server "$SERVER" deploy "$TMP_DIR/site" --code "$CODE" --description "Skill smoke test version one." > "$TMP_DIR/deploy.json"
+python "$SCRIPT" --server "$SERVER" deploy "$TMP_DIR/site" --code "$CODE" --title "技能冒烟页面" --description "Skill smoke test version one." > "$TMP_DIR/deploy.json"
 sleep 2
-python "$SCRIPT" --server "$SERVER" append "$CODE" "$TMP_DIR/site-v2" --description "Skill smoke test version two." > "$TMP_DIR/append.json"
+python "$SCRIPT" --server "$SERVER" append "$CODE" "$TMP_DIR/site-v2" --title "技能冒烟页面新版" --description "Skill smoke test version two." > "$TMP_DIR/append.json"
 python "$SCRIPT" --server "$SERVER" versions "$CODE" > "$TMP_DIR/versions.json"
 python "$SCRIPT" --server "$SERVER" current "$CODE" 1 > "$TMP_DIR/current.json"
 python "$SCRIPT" --server "$SERVER" lock "$CODE" 1 > "$TMP_DIR/lock.json"

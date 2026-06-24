@@ -6,9 +6,12 @@
     android:name=".ScreenApplication"
     android:allowBackup="false"
     android:hardwareAccelerated="true"
+    android:icon="@drawable/pagepilot_logo"
     android:label="PagePilot Screen"
+    android:roundIcon="@drawable/pagepilot_logo"
     android:supportsRtl="true"
-    android:theme="@style/AppTheme">
+    android:theme="@style/AppTheme"
+    android:usesCleartextTraffic="true">
     <activity
       android:name=".MainActivity"
       android:configChanges="keyboard|keyboardHidden|orientation|screenSize"

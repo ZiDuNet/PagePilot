@@ -31,6 +31,12 @@ docker compose logs -f hostctl
 HOSTCTL_PUBLIC_BASE_URL: "https://pagepilot.example.com:1143"
 ```
 
+镜像构建会把内置用户端和后台产物打进 Go 二进制。源码部署时请确认以下产物来自最新代码：
+
+- 用户端 React：`frontend/user` 构建到 `internal/web/user/app`。
+- 后台 React：`frontend/admin` 构建到 `internal/web/admin/app`。
+- `/admin`、`/deploy.html`、`/api-docs.html`、`/agents/`、`/screens/` 都应由 PagePilot 服务自身返回。
+
 ## 首次管理员
 
 空数据库首次启动时，容器会自动创建默认管理员：
@@ -87,6 +93,8 @@ server {
 
 如果你使用的是 `https://pagepilot.example.com:1143` 这类带端口地址，`HOSTCTL_PUBLIC_BASE_URL` 也必须带相同端口，否则二维码、应用详情页和 Skill 下载链接会生成错误地址。
 
+应用访问地址默认使用 `/agent/{code}/`。如需让应用使用 `https://{code}.example.com/` 泛域名访问，或在路径模式和泛域名之间切换，请参考 [APP_URL_MODE.md](APP_URL_MODE.md)。外部 Nginx 只需要一条泛域名 `server_name`，不需要为每个应用单独配置。
+
 ## 常用命令
 
 ```bash
@@ -121,9 +129,11 @@ docker compose logs -f hostctl
 curl -fsS http://127.0.0.1:8787/api/health
 curl -fsS http://127.0.0.1:8787/deploy.html >/dev/null
 curl -fsS http://127.0.0.1:8787/api-docs.html >/dev/null
+curl -fsS http://127.0.0.1:8787/screens/ >/dev/null
+curl -fsS http://127.0.0.1:8787/admin >/dev/null
 ```
 
-`/deploy.html` 和 `/api-docs.html` 是内置用户页面，应该由 PagePilot 直接返回，不能被反向代理拦截成 404。
+`/admin`、`/deploy.html`、`/api-docs.html`、`/agents/` 和 `/screens/` 是内置页面，应该由 PagePilot 直接返回，不能被反向代理拦截成 404。
 
 ## 备份与恢复
 
@@ -152,13 +162,14 @@ docker compose up -d
 - 首次登录后立即修改默认管理员密码。
 - Token 明文只返回一次，请使用密码管理器或 CI Secret 保存。
 - 访问密码仅保护前台查看入口。匿名用户也可以输入访问密码查看加密站点；输入正确后浏览器获得 5 分钟访问票据，改密码后旧票据立即失效。
+- 用户上传的 HTML/JS 会以托管应用形式运行。路径模式默认加 CSP sandbox，建议生产环境使用泛域名模式隔离用户上传脚本，详见 [APP_URL_MODE.md](APP_URL_MODE.md)。
 - 不要把 `./data/docker/hostctl/hostctl.db`、`./data/docker/hosted` 或备份包提交到 Git。
 
 ## 排障
 
 | 现象 | 检查项 |
 |---|---|
-| 首页可访问但 `/deploy.html` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
+| 首页可访问但 `/deploy.html` 或 `/screens/` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
 | 二维码或分享链接域名错误 | 检查 `HOSTCTL_PUBLIC_BASE_URL` 是否为用户真实访问地址。 |
 | 登录默认管理员失败 | 如果数据库已有用户，默认管理员不会再次创建；请用已有管理员或备份恢复。 |
 | 发布后静态文件丢失 | 检查 `./data/docker/hosted` 是否正确挂载且未被清空。 |

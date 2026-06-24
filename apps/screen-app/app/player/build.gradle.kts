@@ -9,7 +9,7 @@ android {
 
   defaultConfig {
     applicationId = "cc.pagepilot.screen"
-    minSdk = 23
+    minSdk = 21
     targetSdk = 35
     versionCode = 1
     versionName = "0.1.0"

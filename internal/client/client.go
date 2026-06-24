@@ -392,3 +392,70 @@ func (c *Client) RevokeToken(ctx context.Context, id string) (*api.TokenRevokeRe
 	}
 	return &resp, nil
 }
+
+// ListScreens 调用 GET /api/screens。
+func (c *Client) ListScreens(ctx context.Context) (*api.ScreenListResponse, error) {
+	var resp api.ScreenListResponse
+	if err := c.doGet(ctx, "/api/screens", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// BindScreen 调用 POST /api/screens/bind。
+func (c *Client) BindScreen(ctx context.Context, pairingCode, name string) (*api.ScreenBindResponse, error) {
+	var resp api.ScreenBindResponse
+	if err := c.doPost(ctx,
+		"/api/screens/bind",
+		api.ScreenBindRequest{PairingCode: pairingCode, Name: name},
+		&resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// PublishScreen 调用 POST /api/screens/{screenId}/publish。
+func (c *Client) PublishScreen(ctx context.Context, screenID, code string, versionNumber *int64) (*api.ScreenPublishResponse, error) {
+	var resp api.ScreenPublishResponse
+	if err := c.doPost(ctx,
+		"/api/screens/"+url.PathEscape(screenID)+"/publish",
+		api.ScreenPublishRequest{Code: code, VersionNumber: versionNumber},
+		&resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// RequestScreenScreenshot 调用 POST /api/screens/{screenId}/screenshot。
+func (c *Client) RequestScreenScreenshot(ctx context.Context, screenID string) (*api.ScreenScreenshotResponse, error) {
+	var resp api.ScreenScreenshotResponse
+	if err := c.doPost(ctx,
+		"/api/screens/"+url.PathEscape(screenID)+"/screenshot",
+		nil,
+		&resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// RequestScreenCommand 调用 POST /api/screens/{screenId}/command。
+func (c *Client) RequestScreenCommand(ctx context.Context, screenID, commandType string, payload json.RawMessage) (*api.ScreenCommandResponse, error) {
+	var resp api.ScreenCommandResponse
+	req := api.ScreenCommandRequest{Type: commandType, Payload: payload}
+	if err := c.doPost(ctx,
+		"/api/screens/"+url.PathEscape(screenID)+"/command",
+		req,
+		&resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// UnbindScreen 调用 DELETE /api/screens/{screenId}。
+func (c *Client) UnbindScreen(ctx context.Context, screenID string) (*api.ScreenDeleteResponse, error) {
+	var resp api.ScreenDeleteResponse
+	if err := c.doDelete(ctx, "/api/screens/"+url.PathEscape(screenID), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}

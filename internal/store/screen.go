@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -37,9 +39,9 @@ func (s *SQLiteStore) CreateScreenPairing(ctx context.Context, pairing ScreenPai
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO screens (id, name, device_name, status, created_at, updated_at)
-		VALUES (?, ?, ?, 'pairing', ?, ?)
-	`, pairing.ScreenID, pairing.DeviceName, pairing.DeviceName, pairing.CreatedAt.UTC(), pairing.CreatedAt.UTC())
+		INSERT INTO screens (id, name, device_name, status, device_info, created_at, updated_at)
+		VALUES (?, ?, ?, 'pairing', ?, ?, ?)
+	`, pairing.ScreenID, pairing.DeviceName, pairing.DeviceName, normalizeDeviceInfo(pairing.DeviceInfo), pairing.CreatedAt.UTC(), pairing.CreatedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("insert screen: %w", err)
 	}
@@ -205,15 +207,90 @@ func (s *SQLiteStore) PublishScreen(ctx context.Context, screenID, ownerUserID, 
 	return nil
 }
 
-func (s *SQLiteStore) TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime string) (Screen, error) {
+func (s *SQLiteStore) TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime, deviceInfo string) (Screen, error) {
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE screens
-		SET status = 'online', last_seen_at = ?, app_version = ?, runtime = ?, updated_at = ?
+		SET status = 'online', last_seen_at = ?, app_version = ?, runtime = ?, device_info = ?, updated_at = ?
 		WHERE id = ? AND revoked_at IS NULL
-	`, now, appVersion, runtime, now, screenID)
+	`, now, appVersion, runtime, normalizeDeviceInfo(deviceInfo), now, screenID)
 	if err != nil {
 		return Screen{}, fmt.Errorf("touch screen heartbeat: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Screen{}, ErrNotFound
+	}
+	return s.GetScreen(ctx, screenID)
+}
+
+func (s *SQLiteStore) RequestScreenScreenshot(ctx context.Context, screenID, requestID string) (Screen, error) {
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE screens
+		SET screenshot_request_id = ?, screenshot_requested_at = ?, updated_at = ?
+		WHERE id = ? AND revoked_at IS NULL
+	`, requestID, now, now, screenID)
+	if err != nil {
+		return Screen{}, fmt.Errorf("request screen screenshot: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Screen{}, ErrNotFound
+	}
+	return s.GetScreen(ctx, screenID)
+}
+
+func (s *SQLiteStore) CompleteScreenScreenshot(ctx context.Context, screenID, requestID string, screenshotAt time.Time) (Screen, error) {
+	now := screenshotAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE screens
+		SET screenshot_request_id = '', screenshot_requested_at = NULL, screenshot_at = ?, updated_at = ?
+		WHERE id = ? AND screenshot_request_id = ? AND revoked_at IS NULL
+	`, now, now, screenID, requestID)
+	if err != nil {
+		return Screen{}, fmt.Errorf("complete screen screenshot: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Screen{}, ErrNotFound
+	}
+	return s.GetScreen(ctx, screenID)
+}
+
+func (s *SQLiteStore) RequestScreenCommand(ctx context.Context, screenID, requestID, commandType, payload string) (Screen, error) {
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE screens
+		SET command_request_id = ?, command_type = ?, command_payload = ?, command_requested_at = ?, updated_at = ?
+		WHERE id = ? AND revoked_at IS NULL
+	`, requestID, commandType, normalizeDeviceInfo(payload), now, now, screenID)
+	if err != nil {
+		return Screen{}, fmt.Errorf("request screen command: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Screen{}, ErrNotFound
+	}
+	return s.GetScreen(ctx, screenID)
+}
+
+func (s *SQLiteStore) CompleteScreenCommand(ctx context.Context, screenID, requestID string, completedAt time.Time) (Screen, error) {
+	now := completedAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE screens
+		SET command_request_id = '', command_type = '', command_payload = '{}',
+		    command_completed_at = ?, updated_at = ?
+		WHERE id = ? AND command_request_id = ? AND revoked_at IS NULL
+	`, now, now, screenID, requestID)
+	if err != nil {
+		return Screen{}, fmt.Errorf("complete screen command: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
@@ -258,6 +335,9 @@ func screenSelectSQL() string {
 	return `
 		SELECT id, owner_user_id, name, device_name, device_token_hash, status,
 		       current_site_code, current_version, last_seen_at, app_version, runtime,
+		       device_info, screenshot_request_id, screenshot_requested_at, screenshot_at,
+		       command_request_id, command_type, command_payload, command_requested_at,
+		       command_completed_at,
 		       created_at, updated_at, revoked_at
 		FROM screens`
 }
@@ -289,8 +369,16 @@ func scanScreens(rows *sql.Rows) ([]Screen, error) {
 func scanScreenRow(row scanner, screen *Screen) error {
 	var ownerUserID sql.NullString
 	var deviceTokenHash sql.NullString
+	var screenshotRequestID sql.NullString
+	var commandRequestID sql.NullString
+	var commandType sql.NullString
+	var commandPayload sql.NullString
 	var currentVersion sql.NullInt64
 	var lastSeenAt sql.NullTime
+	var screenshotRequestedAt sql.NullTime
+	var screenshotAt sql.NullTime
+	var commandRequestedAt sql.NullTime
+	var commandCompletedAt sql.NullTime
 	var revokedAt sql.NullTime
 	err := row.Scan(
 		&screen.ID,
@@ -304,6 +392,15 @@ func scanScreenRow(row scanner, screen *Screen) error {
 		&lastSeenAt,
 		&screen.AppVersion,
 		&screen.Runtime,
+		&screen.DeviceInfo,
+		&screenshotRequestID,
+		&screenshotRequestedAt,
+		&screenshotAt,
+		&commandRequestID,
+		&commandType,
+		&commandPayload,
+		&commandRequestedAt,
+		&commandCompletedAt,
 		&screen.CreatedAt,
 		&screen.UpdatedAt,
 		&revokedAt,
@@ -317,6 +414,18 @@ func scanScreenRow(row scanner, screen *Screen) error {
 	if deviceTokenHash.Valid {
 		screen.DeviceTokenHash = deviceTokenHash.String
 	}
+	if screenshotRequestID.Valid {
+		screen.ScreenshotRequestID = screenshotRequestID.String
+	}
+	if commandRequestID.Valid {
+		screen.CommandRequestID = commandRequestID.String
+	}
+	if commandType.Valid {
+		screen.CommandType = commandType.String
+	}
+	if commandPayload.Valid {
+		screen.CommandPayload = commandPayload.String
+	}
 	if currentVersion.Valid {
 		v := currentVersion.Int64
 		screen.CurrentVersion = &v
@@ -325,13 +434,43 @@ func scanScreenRow(row scanner, screen *Screen) error {
 		t := lastSeenAt.Time.Local()
 		screen.LastSeenAt = &t
 	}
+	if screenshotRequestedAt.Valid {
+		t := screenshotRequestedAt.Time.Local()
+		screen.ScreenshotRequestedAt = &t
+	}
+	if screenshotAt.Valid {
+		t := screenshotAt.Time.Local()
+		screen.ScreenshotAt = &t
+	}
+	if commandRequestedAt.Valid {
+		t := commandRequestedAt.Time.Local()
+		screen.CommandRequestedAt = &t
+	}
+	if commandCompletedAt.Valid {
+		t := commandCompletedAt.Time.Local()
+		screen.CommandCompletedAt = &t
+	}
 	if revokedAt.Valid {
 		t := revokedAt.Time.Local()
 		screen.RevokedAt = &t
 	}
 	screen.CreatedAt = screen.CreatedAt.Local()
 	screen.UpdatedAt = screen.UpdatedAt.Local()
+	if screen.DeviceInfo == "" {
+		screen.DeviceInfo = "{}"
+	}
+	if screen.CommandPayload == "" {
+		screen.CommandPayload = "{}"
+	}
 	return nil
+}
+
+func normalizeDeviceInfo(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 8192 || !json.Valid([]byte(value)) {
+		return "{}"
+	}
+	return value
 }
 
 func nilInt64(v *int64) any {

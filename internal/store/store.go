@@ -14,6 +14,7 @@ type Site struct {
 	OwnerTokenID           string
 	CurrentVersion         *int64
 	PrimaryVersionStrategy string // 'likes' | 'latest'
+	Visibility             string // 'public' | 'unlisted'
 	ViewCount              int64
 	LikeCount              int64
 	Status                 string // 'active' | 'inactive'
@@ -39,6 +40,7 @@ type MarketplaceDeploy struct {
 	MainEntry              string
 	FileSize               int64 // 当前版本总大小
 	PrimaryVersionStrategy string
+	Visibility             string
 	ViewCount              int64
 	LikeCount              int64
 	VersionCount           int
@@ -142,20 +144,29 @@ type AdminSession struct {
 }
 
 type Screen struct {
-	ID              string
-	OwnerUserID     string
-	Name            string
-	DeviceName      string
-	DeviceTokenHash string
-	Status          string
-	CurrentSiteCode string
-	CurrentVersion  *int64
-	LastSeenAt      *time.Time
-	AppVersion      string
-	Runtime         string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	RevokedAt       *time.Time
+	ID                    string
+	OwnerUserID           string
+	Name                  string
+	DeviceName            string
+	DeviceTokenHash       string
+	Status                string
+	CurrentSiteCode       string
+	CurrentVersion        *int64
+	LastSeenAt            *time.Time
+	AppVersion            string
+	Runtime               string
+	DeviceInfo            string
+	ScreenshotRequestID   string
+	ScreenshotRequestedAt *time.Time
+	ScreenshotAt          *time.Time
+	CommandRequestID      string
+	CommandType           string
+	CommandPayload        string
+	CommandRequestedAt    *time.Time
+	CommandCompletedAt    *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	RevokedAt             *time.Time
 }
 
 type ScreenPairing struct {
@@ -164,6 +175,7 @@ type ScreenPairing struct {
 	PairingSecretHash string
 	ScreenID          string
 	DeviceName        string
+	DeviceInfo        string
 	ExpiresAt         time.Time
 	ConsumedAt        *time.Time
 	CreatedAt         time.Time
@@ -181,6 +193,7 @@ type SiteWithMeta struct {
 	ViewCount       int64
 	LikeCount       int64
 	Status          string
+	Visibility      string
 	AccessProtected bool
 	IsPinned        bool
 	PinnedAt        *time.Time
@@ -283,7 +296,11 @@ type Store interface {
 	ListScreensByUser(ctx context.Context, ownerUserID string) ([]Screen, error)
 	ListScreens(ctx context.Context) ([]Screen, error)
 	PublishScreen(ctx context.Context, screenID, ownerUserID, siteCode string, version *int64) error
-	TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime string) (Screen, error)
+	TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime, deviceInfo string) (Screen, error)
+	RequestScreenScreenshot(ctx context.Context, screenID, requestID string) (Screen, error)
+	CompleteScreenScreenshot(ctx context.Context, screenID, requestID string, screenshotAt time.Time) (Screen, error)
+	RequestScreenCommand(ctx context.Context, screenID, requestID, commandType, payload string) (Screen, error)
+	CompleteScreenCommand(ctx context.Context, screenID, requestID string, completedAt time.Time) (Screen, error)
 	UnbindScreen(ctx context.Context, screenID, ownerUserID string) error
 
 	// ===== 设置（Day 7：管理后台可写 baseURL） =====
@@ -325,6 +342,9 @@ type Store interface {
 
 	// UpdateSiteStatus 设置 site.status（active/inactive）。
 	UpdateSiteStatus(ctx context.Context, code, status string) error
+
+	// SetSiteVisibility 设置 site.visibility（public/unlisted）。
+	SetSiteVisibility(ctx context.Context, code, visibility string) error
 
 	// SetSitePinned 设置或取消首页应用商城置顶。
 	SetSitePinned(ctx context.Context, code string, pinned bool) error

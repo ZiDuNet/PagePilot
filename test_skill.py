@@ -58,12 +58,12 @@ def main() -> None:
         doctor = run("doctor", env=env)
         assert doctor and doctor["success"], doctor
 
-        deploy = run("deploy", str(site), "--code", code, "--description", "Skill smoke test version one.", env=env)
+        deploy = run("deploy", str(site), "--code", code, "--title", "技能冒烟页面", "--description", "Skill smoke test version one.", env=env)
         assert_ok("deploy", deploy or {})
 
-        time.sleep(2)
+        time.sleep(11)
 
-        append = run("append", code, str(site_v2), "--description", "Skill smoke test version two.", env=env)
+        append = run("append", code, str(site_v2), "--title", "技能冒烟页面新版", "--description", "Skill smoke test version two.", env=env)
         assert_ok("append", append or {})
 
         versions = run("versions", code, env=env)

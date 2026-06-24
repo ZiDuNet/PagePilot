@@ -103,6 +103,9 @@ func TestScreenPublishRejectsOtherUsersSite(t *testing.T) {
 	createScreenAPIUser(t, srv, "bob")
 	seedScreenPairing(t, srv, "pair-1", "123456", "pair-secret", "screen-1")
 	seedScreenSite(t, srv, "bob-app", "user:bob-id")
+	if err := srv.deployer.(*screenAPIDeployerStub).st.SetSiteVisibility(context.Background(), "bob-app", "unlisted"); err != nil {
+		t.Fatalf("set bob app visibility: %v", err)
+	}
 
 	bindBody, _ := json.Marshal(ScreenBindRequest{PairingCode: "123456"})
 	bindReq := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
@@ -132,6 +135,198 @@ func TestScreenPublishRejectsOtherUsersSite(t *testing.T) {
 
 	if publishRR.Code != http.StatusForbidden {
 		t.Fatalf("publish status = %d, body = %s; want %d", publishRR.Code, publishRR.Body.String(), http.StatusForbidden)
+	}
+}
+
+func TestScreenPublishAllowsPublicMarketplaceSite(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+
+	_, token := createScreenAPIUser(t, srv, "alice")
+	createScreenAPIUser(t, srv, "bob")
+	seedScreenPairing(t, srv, "pair-1", "123456", "pair-secret", "screen-1")
+	seedScreenSite(t, srv, "bob-app", "user:bob-id")
+
+	bindBody, _ := json.Marshal(ScreenBindRequest{PairingCode: "123456"})
+	bindReq := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
+	bindReq.Header.Set("Content-Type", "application/json")
+	bindReq.Header.Set("Authorization", "Bearer "+token)
+	bindRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(bindRR, bindReq)
+	if bindRR.Code != http.StatusOK {
+		t.Fatalf("bind status = %d, body = %s", bindRR.Code, bindRR.Body.String())
+	}
+
+	publishBody, _ := json.Marshal(ScreenPublishRequest{Code: "bob-app"})
+	publishReq := httptest.NewRequest(http.MethodPost, "/api/screens/screen-1/publish", bytes.NewReader(publishBody))
+	publishReq.Header.Set("Content-Type", "application/json")
+	publishReq.Header.Set("Authorization", "Bearer "+token)
+	publishRR := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(publishRR, publishReq)
+
+	if publishRR.Code != http.StatusOK {
+		t.Fatalf("publish status = %d, body = %s; want %d", publishRR.Code, publishRR.Body.String(), http.StatusOK)
+	}
+}
+
+func TestScreenScreenshotRequiresBackendCommand(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, token := createScreenAPIUser(t, srv, "alice")
+	seedScreenPairing(t, srv, "pair-1", "123456", "pair-secret", "screen-1")
+
+	bindBody, _ := json.Marshal(ScreenBindRequest{PairingCode: "123456"})
+	bindReq := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
+	bindReq.Header.Set("Content-Type", "application/json")
+	bindReq.Header.Set("Authorization", "Bearer "+token)
+	bindRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(bindRR, bindReq)
+	if bindRR.Code != http.StatusOK {
+		t.Fatalf("bind status = %d, body = %s", bindRR.Code, bindRR.Body.String())
+	}
+	if err := srv.deployer.CompleteScreenPairing(ctx, "pair-1", auth.HashToken("pair-secret"), auth.HashToken("device-token")); err != nil {
+		t.Fatalf("complete pairing: %v", err)
+	}
+
+	uploadBody, _ := json.Marshal(DeviceScreenshotRequest{
+		RequestID:     "stale",
+		ContentBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+		MimeType:      "image/png",
+		Width:         1,
+		Height:        1,
+	})
+	staleReq := httptest.NewRequest(http.MethodPost, "/api/device/screenshot", bytes.NewReader(uploadBody))
+	staleReq.Header.Set("Content-Type", "application/json")
+	staleReq.Header.Set("Authorization", "Device device-token")
+	staleRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(staleRR, staleReq)
+	if staleRR.Code != http.StatusConflict {
+		t.Fatalf("stale screenshot status = %d, body = %s; want %d", staleRR.Code, staleRR.Body.String(), http.StatusConflict)
+	}
+
+	requestReq := httptest.NewRequest(http.MethodPost, "/api/screens/screen-1/screenshot", nil)
+	requestReq.Header.Set("Authorization", "Bearer "+token)
+	requestRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(requestRR, requestReq)
+	if requestRR.Code != http.StatusOK {
+		t.Fatalf("request screenshot status = %d, body = %s; want %d", requestRR.Code, requestRR.Body.String(), http.StatusOK)
+	}
+	var requestResp ScreenScreenshotResponse
+	if err := json.Unmarshal(requestRR.Body.Bytes(), &requestResp); err != nil {
+		t.Fatalf("decode screenshot command: %v", err)
+	}
+	if requestResp.Screenshot == nil || requestResp.Screenshot.RequestID == "" {
+		t.Fatalf("screenshot command missing: %+v", requestResp)
+	}
+
+	upload := DeviceScreenshotRequest{
+		RequestID:     requestResp.Screenshot.RequestID,
+		ContentBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+		MimeType:      "image/png",
+		Width:         1,
+		Height:        1,
+	}
+	okBody, _ := json.Marshal(upload)
+	okReq := httptest.NewRequest(http.MethodPost, "/api/device/screenshot", bytes.NewReader(okBody))
+	okReq.Header.Set("Content-Type", "application/json")
+	okReq.Header.Set("Authorization", "Device device-token")
+	okRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(okRR, okReq)
+	if okRR.Code != http.StatusOK {
+		t.Fatalf("upload screenshot status = %d, body = %s; want %d", okRR.Code, okRR.Body.String(), http.StatusOK)
+	}
+
+	viewReq := httptest.NewRequest(http.MethodGet, "/api/screens/screen-1/screenshot", nil)
+	viewReq.Header.Set("Authorization", "Bearer "+token)
+	viewRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(viewRR, viewReq)
+	if viewRR.Code != http.StatusOK {
+		t.Fatalf("view screenshot status = %d, body = %s; want %d", viewRR.Code, viewRR.Body.String(), http.StatusOK)
+	}
+	if got := viewRR.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("content type = %q, want image/png", got)
+	}
+}
+
+func TestScreenCommandIsDeliveredAndAcknowledged(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, token := createScreenAPIUser(t, srv, "alice")
+	seedScreenPairing(t, srv, "pair-1", "123456", "pair-secret", "screen-1")
+
+	bindBody, _ := json.Marshal(ScreenBindRequest{PairingCode: "123456"})
+	bindReq := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
+	bindReq.Header.Set("Content-Type", "application/json")
+	bindReq.Header.Set("Authorization", "Bearer "+token)
+	bindRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(bindRR, bindReq)
+	if bindRR.Code != http.StatusOK {
+		t.Fatalf("bind status = %d, body = %s", bindRR.Code, bindRR.Body.String())
+	}
+	if err := srv.deployer.CompleteScreenPairing(ctx, "pair-1", auth.HashToken("pair-secret"), auth.HashToken("device-token")); err != nil {
+		t.Fatalf("complete pairing: %v", err)
+	}
+
+	commandBody, _ := json.Marshal(ScreenCommandRequest{Type: "refresh"})
+	commandReq := httptest.NewRequest(http.MethodPost, "/api/screens/screen-1/command", bytes.NewReader(commandBody))
+	commandReq.Header.Set("Content-Type", "application/json")
+	commandReq.Header.Set("Authorization", "Bearer "+token)
+	commandRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(commandRR, commandReq)
+	if commandRR.Code != http.StatusOK {
+		t.Fatalf("command status = %d, body = %s; want %d", commandRR.Code, commandRR.Body.String(), http.StatusOK)
+	}
+	var commandResp ScreenCommandResponse
+	if err := json.Unmarshal(commandRR.Body.Bytes(), &commandResp); err != nil {
+		t.Fatalf("decode command response: %v", err)
+	}
+	if commandResp.Command == nil || commandResp.Command.Type != "refresh" || commandResp.Command.RequestID == "" {
+		t.Fatalf("command response missing command: %+v", commandResp)
+	}
+
+	manifestReq := httptest.NewRequest(http.MethodGet, "/api/device/manifest", nil)
+	manifestReq.Header.Set("Authorization", "Device device-token")
+	manifestRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(manifestRR, manifestReq)
+	if manifestRR.Code != http.StatusOK {
+		t.Fatalf("manifest status = %d, body = %s; want %d", manifestRR.Code, manifestRR.Body.String(), http.StatusOK)
+	}
+	var manifest ScreenManifestResponse
+	if err := json.Unmarshal(manifestRR.Body.Bytes(), &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if manifest.Command == nil || manifest.Command.RequestID != commandResp.Command.RequestID || manifest.Command.Type != "refresh" {
+		t.Fatalf("manifest command = %+v, want refresh %s", manifest.Command, commandResp.Command.RequestID)
+	}
+
+	ackBody, _ := json.Marshal(DeviceCommandAckRequest{RequestID: commandResp.Command.RequestID, Type: "refresh"})
+	ackReq := httptest.NewRequest(http.MethodPost, "/api/device/command/ack", bytes.NewReader(ackBody))
+	ackReq.Header.Set("Content-Type", "application/json")
+	ackReq.Header.Set("Authorization", "Device device-token")
+	ackRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(ackRR, ackReq)
+	if ackRR.Code != http.StatusOK {
+		t.Fatalf("ack status = %d, body = %s; want %d", ackRR.Code, ackRR.Body.String(), http.StatusOK)
+	}
+
+	manifestAfterReq := httptest.NewRequest(http.MethodGet, "/api/device/manifest", nil)
+	manifestAfterReq.Header.Set("Authorization", "Device device-token")
+	manifestAfterRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(manifestAfterRR, manifestAfterReq)
+	if manifestAfterRR.Code != http.StatusOK {
+		t.Fatalf("manifest after ack status = %d, body = %s", manifestAfterRR.Code, manifestAfterRR.Body.String())
+	}
+	var manifestAfter ScreenManifestResponse
+	if err := json.Unmarshal(manifestAfterRR.Body.Bytes(), &manifestAfter); err != nil {
+		t.Fatalf("decode manifest after ack: %v", err)
+	}
+	if manifestAfter.Command != nil {
+		t.Fatalf("manifest command after ack = %+v, want nil", manifestAfter.Command)
 	}
 }
 
@@ -313,8 +508,24 @@ func (s *screenAPIDeployerStub) PublishScreen(ctx context.Context, screenID, own
 	return s.st.PublishScreen(ctx, screenID, ownerUserID, siteCode, version)
 }
 
-func (s *screenAPIDeployerStub) TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime string) (store.Screen, error) {
-	return s.st.TouchScreenHeartbeat(ctx, screenID, appVersion, runtime)
+func (s *screenAPIDeployerStub) TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime, deviceInfo string) (store.Screen, error) {
+	return s.st.TouchScreenHeartbeat(ctx, screenID, appVersion, runtime, deviceInfo)
+}
+
+func (s *screenAPIDeployerStub) RequestScreenScreenshot(ctx context.Context, screenID, requestID string) (store.Screen, error) {
+	return s.st.RequestScreenScreenshot(ctx, screenID, requestID)
+}
+
+func (s *screenAPIDeployerStub) CompleteScreenScreenshot(ctx context.Context, screenID, requestID string, screenshotAt time.Time) (store.Screen, error) {
+	return s.st.CompleteScreenScreenshot(ctx, screenID, requestID, screenshotAt)
+}
+
+func (s *screenAPIDeployerStub) RequestScreenCommand(ctx context.Context, screenID, requestID, commandType, payload string) (store.Screen, error) {
+	return s.st.RequestScreenCommand(ctx, screenID, requestID, commandType, payload)
+}
+
+func (s *screenAPIDeployerStub) CompleteScreenCommand(ctx context.Context, screenID, requestID string, completedAt time.Time) (store.Screen, error) {
+	return s.st.CompleteScreenCommand(ctx, screenID, requestID, completedAt)
 }
 
 func (s *screenAPIDeployerStub) UnbindScreen(ctx context.Context, screenID, ownerUserID string) error {

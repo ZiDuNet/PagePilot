@@ -24,14 +24,38 @@ data class ScreenManifest(
   val entryUrl: String,
   val siteCode: String,
   val version: Long,
+  val screenId: String,
+  val screenName: String,
+  val ownerUserId: String,
+  val ownerUsername: String,
+  val accessCookie: ScreenAccessCookie?,
+  val screenshot: ScreenScreenshotCommand?,
+  val command: ScreenCommand?,
+)
+
+data class ScreenAccessCookie(
+  val name: String,
+  val value: String,
+  val path: String,
+  val maxAgeSeconds: Int,
+)
+
+data class ScreenScreenshotCommand(
+  val requestId: String,
+)
+
+data class ScreenCommand(
+  val requestId: String,
+  val type: String,
 )
 
 class PagePilotApi(private val serverUrl: String) {
-  suspend fun startPairing(deviceName: String): PairingSession = withContext(Dispatchers.IO) {
+  suspend fun startPairing(deviceName: String, deviceInfo: JSONObject): PairingSession = withContext(Dispatchers.IO) {
     val body = JSONObject()
       .put("deviceName", deviceName)
       .put("appVersion", BuildConfig.VERSION_NAME)
       .put("runtime", "X5 WebView")
+      .put("deviceInfo", deviceInfo)
     val json = request("POST", "/api/device/pairing/start", body)
     PairingSession(
       screenId = json.getString("screenId"),
@@ -55,19 +79,74 @@ class PagePilotApi(private val serverUrl: String) {
 
   suspend fun manifest(deviceToken: String): ScreenManifest = withContext(Dispatchers.IO) {
     val json = request("GET", "/api/device/manifest", null, deviceToken)
+    val screenshot = json.optJSONObject("screenshot")?.let {
+      val requestId = it.optString("requestId", "")
+      if (requestId.isBlank()) null else ScreenScreenshotCommand(requestId)
+    }
+    val command = json.optJSONObject("command")?.let {
+      val requestId = it.optString("requestId", "")
+      val type = it.optString("type", "")
+      if (requestId.isBlank() || type.isBlank()) null else ScreenCommand(requestId, type)
+    }
+    val accessCookie = json.optJSONObject("accessCookie")?.let {
+      val name = it.optString("name", "")
+      val value = it.optString("value", "")
+      if (name.isBlank() || value.isBlank()) {
+        null
+      } else {
+        ScreenAccessCookie(
+          name = name,
+          value = value,
+          path = it.optString("path", "/").ifBlank { "/" },
+          maxAgeSeconds = it.optInt("maxAgeSeconds", 300),
+        )
+      }
+    }
     ScreenManifest(
       mode = json.optString("mode", "idle"),
       entryUrl = json.optString("entryUrl", ""),
       siteCode = json.optString("siteCode", ""),
       version = json.optLong("version", 0),
+      screenId = json.optString("screenId", ""),
+      screenName = json.optString("screenName", ""),
+      ownerUserId = json.optString("ownerUserId", ""),
+      ownerUsername = json.optString("ownerUsername", ""),
+      accessCookie = accessCookie,
+      screenshot = screenshot,
+      command = command,
     )
   }
 
-  suspend fun heartbeat(deviceToken: String) = withContext(Dispatchers.IO) {
+  suspend fun heartbeat(deviceToken: String, deviceInfo: JSONObject) = withContext(Dispatchers.IO) {
     val body = JSONObject()
       .put("appVersion", BuildConfig.VERSION_NAME)
       .put("runtime", "X5 WebView")
+      .put("deviceInfo", deviceInfo)
     request("POST", "/api/device/heartbeat", body, deviceToken)
+  }
+
+  suspend fun uploadScreenshot(
+    deviceToken: String,
+    requestId: String,
+    contentBase64: String,
+    mimeType: String,
+    width: Int,
+    height: Int,
+  ) = withContext(Dispatchers.IO) {
+    val body = JSONObject()
+      .put("requestId", requestId)
+      .put("contentBase64", contentBase64)
+      .put("mimeType", mimeType)
+      .put("width", width)
+      .put("height", height)
+    request("POST", "/api/device/screenshot", body, deviceToken)
+  }
+
+  suspend fun ackCommand(deviceToken: String, requestId: String, type: String) = withContext(Dispatchers.IO) {
+    val body = JSONObject()
+      .put("requestId", requestId)
+      .put("type", type)
+    request("POST", "/api/device/command/ack", body, deviceToken)
   }
 
   private fun request(method: String, path: String, body: JSONObject?, deviceToken: String = ""): JSONObject {

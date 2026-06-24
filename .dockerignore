@@ -23,3 +23,10 @@ test_*.sh
 
 # Already-built artifacts
 dist/
+
+# Dependency and build caches
+node_modules/
+frontend/*/node_modules/
+.gradle/
+build/
+apps/screen-app/**/build/

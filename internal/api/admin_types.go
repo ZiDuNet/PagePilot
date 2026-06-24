@@ -8,6 +8,7 @@ import "time"
 type ConfigResponse struct {
 	Success          bool            `json:"success"`
 	PublicBaseURL    string          `json:"publicBaseURL"`
+	AppURL           AppURLConfig    `json:"appURL"`
 	Mode             string          `json:"mode"` // "dev" | "prod"
 	CORSAllowOrigins string          `json:"corsAllowOrigins"`
 	CooldownSeconds  int             `json:"cooldownSeconds"`
@@ -30,6 +31,10 @@ type Limits struct {
 // ConfigUpdateRequest 是 PUT /api/config 请求体。任一非空字段会被更新。
 type ConfigUpdateRequest struct {
 	PublicBaseURL        *string `json:"publicBaseURL,omitempty"`
+	AppURLMode           *string `json:"appURLMode,omitempty"`
+	AppDomainSuffix      *string `json:"appDomainSuffix,omitempty"`
+	AppURLScheme         *string `json:"appURLScheme,omitempty"`
+	AppURLPort           *string `json:"appURLPort,omitempty"`
 	AnonymousDeployLimit *int    `json:"anonymousDeployLimit,omitempty"`
 	CooldownSeconds      *int    `json:"cooldownSeconds,omitempty"`
 	MaxSingleFileBytes   *int64  `json:"maxSingleFileBytes,omitempty"`
@@ -42,6 +47,7 @@ type ConfigUpdateRequest struct {
 type ConfigUpdateResponse struct {
 	Success          bool            `json:"success"`
 	PublicBaseURL    string          `json:"publicBaseURL"`
+	AppURL           AppURLConfig    `json:"appURL"`
 	CORSAllowOrigins string          `json:"corsAllowOrigins"`
 	CooldownSeconds  int             `json:"cooldownSeconds"`
 	Limits           Limits          `json:"limits"`
@@ -62,6 +68,7 @@ type SiteListItem struct {
 	ViewCount       int64      `json:"viewCount"`
 	LikeCount       int64      `json:"likeCount"`
 	Status          string     `json:"status"`
+	Visibility      string     `json:"visibility"`
 	AccessProtected bool       `json:"accessProtected"`
 	IsPinned        bool       `json:"isPinned"`
 	PinnedAt        *time.Time `json:"pinnedAt,omitempty"`
@@ -137,6 +144,16 @@ type SitePinResponse struct {
 	Code     string  `json:"code"`
 	IsPinned bool    `json:"isPinned"`
 	PinnedAt *string `json:"pinnedAt,omitempty"`
+}
+
+type SiteVisibilityRequest struct {
+	Visibility string `json:"visibility"`
+}
+
+type SiteVisibilityResponse struct {
+	Success    bool   `json:"success"`
+	Code       string `json:"code"`
+	Visibility string `json:"visibility"`
 }
 
 type AnonymousSessionResponse struct {

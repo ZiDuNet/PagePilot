@@ -1,27 +1,26 @@
 package web
 
 import (
+	"io/fs"
 	"strings"
 	"testing"
 )
 
-func TestAdminOverviewSummaryOnlyRendersInsideOverviewTab(t *testing.T) {
+func TestAdminHTMLUsesReactAppShell(t *testing.T) {
 	html := string(AdminHTML())
 
-	overviewStart := strings.Index(html, `<section id="tab-overview"`)
-	accountStart := strings.Index(html, `<section id="tab-account"`)
-	quickActions := strings.Index(html, `id="quick-actions"`)
-	statsGrid := strings.Index(html, `<section class="stats-grid"`)
-
-	if overviewStart == -1 || accountStart == -1 {
-		t.Fatalf("admin overview/account tab markers not found")
+	for _, want := range []string{`id="root"`, `/admin/assets/index.js`, `/admin/assets/index.css`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin html missing %q", want)
+		}
 	}
-	for name, idx := range map[string]int{
-		"quick-actions": quickActions,
-		"stats-grid":   statsGrid,
-	} {
-		if idx < overviewStart || idx > accountStart {
-			t.Fatalf("%s index = %d, want inside overview tab [%d, %d]", name, idx, overviewStart, accountStart)
+}
+
+func TestAdminAppAssetsAreEmbedded(t *testing.T) {
+	sub := AdminAppFS()
+	for _, path := range []string{"index.html", "assets/index.js", "assets/index.css"} {
+		if _, err := fs.Stat(sub, path); err != nil {
+			t.Fatalf("admin app asset %s missing: %v", path, err)
 		}
 	}
 }

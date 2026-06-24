@@ -77,6 +77,31 @@ func TestAppServeRedirectsLegacyVersionQuery(t *testing.T) {
 	}
 }
 
+func TestAppServeRejectsPathTraversal(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+
+	srv.deployer = &appServeDeployerStub{
+		site: store.Site{Code: "demo"},
+	}
+	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "index.html"), []byte("SAFE"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/demo/..", nil)
+	rr := httptest.NewRecorder()
+
+	srv.serveAppContent(rr, req, "demo", "..", "", false)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s; want 404", rr.Code, rr.Body.String())
+	}
+}
+
 type appServeDeployerStub struct {
 	DeployerPort
 	site store.Site

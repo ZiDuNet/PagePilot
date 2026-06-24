@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"io/fs"
 	"log"
 	"math/big"
@@ -57,6 +56,7 @@ type DeployerPort interface {
 	DeleteSite(ctx context.Context, code string) *APIError
 	ListSites(ctx context.Context) ([]store.SiteWithMeta, error)
 	SetSitePinned(ctx context.Context, code string, pinned bool) error
+	SetSiteVisibility(ctx context.Context, code, visibility string) error
 	PublicBaseURL() string
 	SetPublicBaseURL(ctx context.Context, baseURL string) error
 	SetAnonymousDeployLimit(ctx context.Context, n int) error
@@ -89,8 +89,20 @@ type DeployerPort interface {
 	ListScreensByUser(ctx context.Context, ownerUserID string) ([]store.Screen, error)
 	ListScreens(ctx context.Context) ([]store.Screen, error)
 	PublishScreen(ctx context.Context, screenID, ownerUserID, siteCode string, version *int64) error
-	TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime string) (store.Screen, error)
+	TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime, deviceInfo string) (store.Screen, error)
+	RequestScreenScreenshot(ctx context.Context, screenID, requestID string) (store.Screen, error)
+	CompleteScreenScreenshot(ctx context.Context, screenID, requestID string, screenshotAt time.Time) (store.Screen, error)
+	RequestScreenCommand(ctx context.Context, screenID, requestID, commandType, payload string) (store.Screen, error)
+	CompleteScreenCommand(ctx context.Context, screenID, requestID string, completedAt time.Time) (store.Screen, error)
 	UnbindScreen(ctx context.Context, screenID, ownerUserID string) error
+}
+
+type appURLConfigProvider interface {
+	AppURLConfig() AppURLConfig
+}
+
+type appURLConfigSetter interface {
+	SetAppURLConfig(ctx context.Context, cfg AppURLConfig) error
 }
 
 // Server 是 HTTP 服务器。
@@ -133,6 +145,27 @@ func New(cfg config.Config, deployer DeployerPort, authSvc *auth.Service, requir
 	return s
 }
 
+func (s *Server) publicBaseURL() string {
+	base := ""
+	if s.deployer != nil {
+		base = strings.TrimRight(s.deployer.PublicBaseURL(), "/")
+	}
+	if base == "" {
+		base = strings.TrimRight(s.cfg.PublicBaseURL, "/")
+	}
+	return base
+}
+
+func (s *Server) appURLConfig() AppURLConfig {
+	if p, ok := s.deployer.(appURLConfigProvider); ok {
+		cfg := p.AppURLConfig()
+		if cfg.PublicBaseURL != "" {
+			return cfg
+		}
+	}
+	return NewAppURLConfig(s.cfg)
+}
+
 // WithVersion 设置服务端版本号（用于 /api/config 响应）。
 func (s *Server) WithVersion(v string) *Server { s.version = v; return s }
 
@@ -151,16 +184,22 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/deploys/{code}/qr", s.handleQRCode)
 	s.mux.HandleFunc("POST /api/deploys/{code}/access", s.handleSiteAccessLogin)
 	s.mux.HandleFunc("PATCH /api/deploys/{code}/access", s.handleSetSiteAccessPassword)
+	s.mux.HandleFunc("PATCH /api/deploys/{code}/visibility", s.handleSetSiteVisibility)
 
 	// 屏幕投放：用户侧仅注册用户；设备侧仅 Device Token。
 	s.mux.HandleFunc("GET /api/screens", s.handleListScreens)
 	s.mux.HandleFunc("POST /api/screens/bind", s.handleBindScreen)
 	s.mux.HandleFunc("POST /api/screens/{screenId}/publish", s.handlePublishScreen)
+	s.mux.HandleFunc("POST /api/screens/{screenId}/screenshot", s.handleRequestScreenScreenshot)
+	s.mux.HandleFunc("GET /api/screens/{screenId}/screenshot", s.handleGetScreenScreenshot)
+	s.mux.HandleFunc("POST /api/screens/{screenId}/command", s.handleRequestScreenCommand)
 	s.mux.HandleFunc("DELETE /api/screens/{screenId}", s.handleUnbindScreen)
 	s.mux.HandleFunc("POST /api/device/pairing/start", s.handleDevicePairingStart)
 	s.mux.HandleFunc("POST /api/device/pairing/complete", s.handleDevicePairingComplete)
 	s.mux.HandleFunc("GET /api/device/manifest", s.handleDeviceManifest)
 	s.mux.HandleFunc("POST /api/device/heartbeat", s.handleDeviceHeartbeat)
+	s.mux.HandleFunc("POST /api/device/screenshot", s.handleDeviceScreenshot)
+	s.mux.HandleFunc("POST /api/device/command/ack", s.handleDeviceCommandAck)
 
 	// 版本管理（OpenAPI）
 	s.mux.HandleFunc("GET /api/deploys/{code}/versions", s.handleListVersions)
@@ -206,7 +245,9 @@ func (s *Server) routes() {
 	// admin 后台单页
 	s.mux.HandleFunc("GET /admin", s.handleAdminUI)
 	s.mux.HandleFunc("GET /admin/", s.handleAdminUI)
+	s.mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/", http.FileServer(http.FS(web.AdminAppFS()))))
 	s.mux.HandleFunc("GET /agents/", s.handleAgentGuideUI)
+	s.mux.HandleFunc("GET /screens/", s.handleScreenGuideUI)
 	s.mux.HandleFunc("GET /skill/hostctl-deploy.zip", s.handleSkillDownload)
 	// admin 子资源（admin.css / admin.js 等）从 embed 子树取
 	s.mux.Handle("GET /admin/static/", http.StripPrefix("/admin/static/", http.FileServer(http.FS(web.AdminSubFS()))))
@@ -258,21 +299,56 @@ func (s *Server) withMiddleware(h http.Handler) http.Handler {
 			return
 		}
 
+		if s.tryServeDomainApp(w, r) {
+			s.logger.Printf("%s %s %s %dms", r.Method, r.URL.Path, reqID, time.Since(start).Milliseconds())
+			return
+		}
+
 		h.ServeHTTP(w, r)
 
 		s.logger.Printf("%s %s %s %dms", r.Method, r.URL.Path, reqID, time.Since(start).Milliseconds())
 	})
 }
 
+func (s *Server) tryServeDomainApp(w http.ResponseWriter, r *http.Request) bool {
+	appURLs := s.appURLConfig()
+	code := appURLs.CodeFromRequestHost(r)
+	if code == "" {
+		return false
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/deploys/"+code+"/access" {
+		r.SetPathValue("code", code)
+		s.handleSiteAccessLogin(w, r)
+		return true
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return true
+	}
+	sub := strings.TrimPrefix(r.URL.Path, "/")
+	versionText := ""
+	if sub == "versions" || strings.HasPrefix(sub, "versions/") {
+		parts := strings.SplitN(sub, "/", 3)
+		if len(parts) >= 2 {
+			versionText = parts[1]
+			if len(parts) == 3 {
+				sub = parts[2]
+			} else {
+				sub = ""
+			}
+		}
+	}
+	s.serveAppContent(w, r, code, sub, versionText, true)
+	return true
+}
+
 func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	allowed := strings.TrimSpace(s.cfg.CORSAllowOrigins)
+	allowed := config.NormalizeCORSAllowOrigins(s.cfg.CORSAllowOrigins)
 	if allowed == "" {
 		return
 	}
-	if allowed == "*" {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-	} else if origin != "" && originAllowed(origin, allowed) {
+	if origin != "" && originAllowed(origin, allowed) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Add("Vary", "Origin")
 	}
@@ -636,6 +712,7 @@ type marketplaceDeployResponse struct {
 	VersionCount           int     `json:"versionCount"`
 	ExpiresAt              *string `json:"expiresAt"`
 	Status                 string  `json:"status"`
+	Visibility             string  `json:"visibility"`
 	AccessProtected        bool    `json:"accessProtected"`
 	IsPinned               bool    `json:"isPinned"`
 	PinnedAt               *string `json:"pinnedAt"`
@@ -743,7 +820,8 @@ func (s *Server) marketplaceActor(r *http.Request) (string, bool) {
 }
 
 func (s *Server) toMarketplaceResponse(d store.MarketplaceDeploy, actor string, isAdmin bool) marketplaceDeployResponse {
-	base := strings.TrimRight(s.deployer.PublicBaseURL(), "/")
+	base := s.publicBaseURL()
+	appURLs := s.appURLConfig()
 	var currentVerID, primaryVerID *string
 	if d.CurrentVersionID != "" {
 		v := d.CurrentVersionID
@@ -752,7 +830,7 @@ func (s *Server) toMarketplaceResponse(d store.MarketplaceDeploy, actor string, 
 	_ = primaryVerID
 	var filePath, qrPath string
 	if d.Code != "" {
-		filePath = base + "/" + d.Code
+		filePath = appURLs.PrimaryAppURL(d.Code, nil)
 		qrPath = base + "/api/deploys/" + d.Code + "/qr"
 	}
 	var expiresAt *string
@@ -786,6 +864,7 @@ func (s *Server) toMarketplaceResponse(d store.MarketplaceDeploy, actor string, 
 		VersionCount:           d.VersionCount,
 		ExpiresAt:              expiresAt,
 		Status:                 d.Status,
+		Visibility:             d.Visibility,
 		AccessProtected:        d.AccessProtected,
 		IsPinned:               d.IsPinned,
 		PinnedAt:               pinnedAt,
@@ -803,8 +882,7 @@ func (s *Server) handleQRCode(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	base := strings.TrimRight(s.deployer.PublicBaseURL(), "/")
-	png, err := qrcode.Encode(fmt.Sprintf("%s/agent/%s/", base, code), qrcode.Medium, 256)
+	png, err := qrcode.Encode(s.appURLConfig().PrimaryAppURL(code, nil), qrcode.Medium, 256)
 	if err != nil {
 		writeError(w, NewError(CodeInternal, "qr", err.Error()))
 		return
@@ -823,6 +901,7 @@ type siteAccessUpdateRequest struct {
 }
 
 const siteAccessCookieTTL = 5 * time.Minute
+const screenAccessCookieTTL = 5 * time.Minute
 
 func (s *Server) handleSiteAccessLogin(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -871,6 +950,44 @@ func (s *Server) handleSetSiteAccessPassword(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "code": code, "accessProtected": password != ""})
 }
 
+func (s *Server) handleSetSiteVisibility(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	code := strings.TrimSpace(r.PathValue("code"))
+	if apiErr := s.authorizeSiteWrite(r, code); apiErr != nil {
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+		return
+	}
+	var req SiteVisibilityRequest
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+	visibility := normalizeSiteVisibility(req.Visibility)
+	if visibility == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "visibility", "visibility must be public or unlisted"), reqID))
+		return
+	}
+	if err := s.deployer.SetSiteVisibility(r.Context(), code, visibility); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			return
+		}
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "visibility", err.Error()), reqID))
+		return
+	}
+	writeJSON(w, http.StatusOK, SiteVisibilityResponse{Success: true, Code: code, Visibility: visibility})
+}
+
+func normalizeSiteVisibility(raw string) string {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "public":
+		return "public"
+	case "unlisted":
+		return "unlisted"
+	default:
+		return ""
+	}
+}
+
 func setSiteAccessCookie(w http.ResponseWriter, code, passwordHash string) {
 	expiresAt := time.Now().UTC().Add(siteAccessCookieTTL)
 	http.SetCookie(w, &http.Cookie{
@@ -911,6 +1028,86 @@ func validSiteAccessCookie(value, code, passwordHash string, now time.Time) bool
 	}
 	expected := siteAccessCookieSignature(code, passwordHash, parts[0])
 	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(expected)) == 1
+}
+
+func screenAccessCookieName(code string) string {
+	return "pagepilot_screen_access_" + code
+}
+
+func (s *Server) newScreenAccessCookie(screen store.Screen, code string, version *int64) *ScreenAccessCookie {
+	code = strings.TrimSpace(code)
+	if code == "" || strings.TrimSpace(screen.ID) == "" || strings.TrimSpace(screen.DeviceTokenHash) == "" {
+		return nil
+	}
+	versionNumber := int64(0)
+	if version != nil {
+		versionNumber = *version
+	}
+	expiresAt := time.Now().UTC().Add(screenAccessCookieTTL)
+	return &ScreenAccessCookie{
+		Name:          screenAccessCookieName(code),
+		Value:         screenAccessCookieValue(screen.ID, code, versionNumber, expiresAt, screen.DeviceTokenHash),
+		Path:          "/",
+		MaxAgeSeconds: int(screenAccessCookieTTL.Seconds()),
+		ExpiresAt:     expiresAt,
+	}
+}
+
+func screenAccessCookieValue(screenID, code string, version int64, expiresAt time.Time, deviceTokenHash string) string {
+	versionText := strconv.FormatInt(version, 10)
+	expiresUnix := strconv.FormatInt(expiresAt.Unix(), 10)
+	return strings.Join([]string{
+		screenID,
+		versionText,
+		expiresUnix,
+		screenAccessCookieSignature(screenID, code, versionText, expiresUnix, deviceTokenHash),
+	}, ".")
+}
+
+func screenAccessCookieSignature(screenID, code, version, expiresUnix, deviceTokenHash string) string {
+	mac := hmac.New(sha256.New, []byte(deviceTokenHash))
+	_, _ = mac.Write([]byte("screen-access-v1|"))
+	_, _ = mac.Write([]byte(screenID))
+	_, _ = mac.Write([]byte("|"))
+	_, _ = mac.Write([]byte(code))
+	_, _ = mac.Write([]byte("|"))
+	_, _ = mac.Write([]byte(version))
+	_, _ = mac.Write([]byte("|"))
+	_, _ = mac.Write([]byte(expiresUnix))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) validScreenAccessCookie(r *http.Request, code string, versionPtr *int64, now time.Time) bool {
+	c, err := r.Cookie(screenAccessCookieName(code))
+	if err != nil || c.Value == "" {
+		return false
+	}
+	parts := strings.Split(c.Value, ".")
+	if len(parts) != 4 || parts[0] == "" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
+		return false
+	}
+	cookieVersion, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || cookieVersion < 0 {
+		return false
+	}
+	expiresUnix, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || expiresUnix <= now.Unix() {
+		return false
+	}
+	screen, err := s.deployer.GetScreen(r.Context(), parts[0])
+	if err != nil || screen.CurrentSiteCode != code || screen.DeviceTokenHash == "" {
+		return false
+	}
+	if versionPtr != nil && cookieVersion != *versionPtr {
+		return false
+	}
+	if versionPtr == nil && cookieVersion > 0 {
+		if screen.CurrentVersion == nil || *screen.CurrentVersion != cookieVersion {
+			return false
+		}
+	}
+	expected := screenAccessCookieSignature(parts[0], code, parts[1], parts[2], screen.DeviceTokenHash)
+	return subtle.ConstantTimeCompare([]byte(parts[3]), []byte(expected)) == 1
 }
 
 // likeFingerprint 用 IP + UA hash 生成点赞指纹（防同一用户重复点赞）。
@@ -1119,7 +1316,7 @@ func (s *Server) handleGetContent(w http.ResponseWriter, r *http.Request) {
 		versionPtr = &v
 	}
 
-	if !s.siteAccessAllowed(r, code) {
+	if !s.siteAccessAllowed(r, code, versionPtr) {
 		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "access_password",
 			"this site is password protected"), reqID))
 		return
@@ -1236,25 +1433,16 @@ func clientIPFromRequest(r *http.Request) string {
 
 // handleCreateToken 处理 POST /api/token。
 // 创建一个新 token，返回明文（仅此一次可见）。
-// 在 requireAuth=true 模式下：要求已有 admin token 才能创建新 token。
-// 在 requireAuth=false 模式下：开放创建（首次引导用）。
+// 必须使用已登录账号或 Bearer Token；普通用户只能给自己创建普通 Token。
 func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
-	var req TokenCreateRequest
-	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
-		return
-	}
-
-	ownerUserID := strings.TrimSpace(req.OwnerUserID)
+	ownerUserID := ""
 	requesterUserID := ""
-	isRequesterAdmin := !s.requireAuth
+	isRequesterAdmin := false
 	if user, ok := s.adminUserFromCookie(r); ok {
 		isRequesterAdmin = user.IsAdmin
 		requesterUserID = user.ID
-		if ownerUserID == "" {
-			ownerUserID = user.ID
-		}
 	} else if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
 		tok, authErr := s.authenticateToken(r)
 		if authErr != nil {
@@ -1263,12 +1451,19 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		}
 		isRequesterAdmin = tok.IsAdmin
 		requesterUserID = tok.OwnerUserID
-		if ownerUserID == "" {
-			ownerUserID = tok.OwnerUserID
-		}
-	} else if s.requireAuth {
+	} else {
 		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "admin account or token required"), reqID))
 		return
+	}
+
+	var req TokenCreateRequest
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+
+	ownerUserID = strings.TrimSpace(req.OwnerUserID)
+	if ownerUserID == "" {
+		ownerUserID = requesterUserID
 	}
 	if !isRequesterAdmin {
 		if req.IsAdmin {
@@ -1350,11 +1545,8 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	actorUserID := strings.TrimPrefix(actor, "user:")
 	if actor == "" {
-		if s.requireAuth {
-			writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "auth required"), reqID))
-			return
-		}
-		isAdmin = true
+		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "login or bearer token required"), reqID))
+		return
 	}
 	if !isAdmin && actorUserID == "" {
 		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "user account required"), reqID))
@@ -1406,11 +1598,8 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	}
 	actorUserID := strings.TrimPrefix(actor, "user:")
 	if actor == "" {
-		if s.requireAuth {
-			writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "auth required"), reqID))
-			return
-		}
-		isAdmin = true
+		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "login or bearer token required"), reqID))
+		return
 	}
 	if !isAdmin && actorUserID == "" {
 		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "user account required"), reqID))
@@ -1509,13 +1698,16 @@ func (s *Server) adminUserFromCookie(r *http.Request) (store.AdminUser, bool) {
 	return user, err == nil
 }
 
-func (s *Server) siteAccessAllowed(r *http.Request, code string) bool {
+func (s *Server) siteAccessAllowed(r *http.Request, code string, versionPtr *int64) bool {
 	site, err := s.deployer.GetSite(r.Context(), code)
 	if err != nil || site.AccessPasswordHash == "" {
 		return true
 	}
 	if c, err := r.Cookie(siteAccessCookieName(code)); err == nil &&
 		validSiteAccessCookie(c.Value, code, site.AccessPasswordHash, time.Now()) {
+		return true
+	}
+	if s.validScreenAccessCookie(r, code, versionPtr, time.Now()) {
 		return true
 	}
 	if authErr := s.authorizeSiteWrite(r, code); authErr == nil {
@@ -1705,18 +1897,18 @@ func (s *Server) handleAgentGuideUI(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	base := strings.TrimRight(s.deployer.PublicBaseURL(), "/")
-	if base == "" {
-		base = strings.TrimRight(s.cfg.PublicBaseURL, "/")
+	_, _ = w.Write(bytes)
+}
+
+func (s *Server) handleScreenGuideUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	bytes, err := fs.ReadFile(web.UserSubFS(), "screens.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
 	}
-	skillURL := base + "/skill/hostctl-deploy.zip"
-	apiDocsURL := base + "/api-docs.html"
-	html := strings.NewReplacer(
-		"{{BASE_URL}}", html.EscapeString(base),
-		"{{SKILL_ZIP_URL}}", html.EscapeString(skillURL),
-		"{{API_DOCS_URL}}", html.EscapeString(apiDocsURL),
-	).Replace(string(bytes))
-	_, _ = w.Write([]byte(html))
+	_, _ = w.Write(bytes)
 }
 
 func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
@@ -1726,10 +1918,7 @@ func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	base := strings.TrimRight(s.deployer.PublicBaseURL(), "/")
-	if base == "" {
-		base = strings.TrimRight(s.cfg.PublicBaseURL, "/")
-	}
+	base := s.publicBaseURL()
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy-skill.zip"`)
 	zw := zip.NewWriter(w)
@@ -1797,11 +1986,9 @@ type adminSkillUpdateRequest struct {
 
 func (s *Server) handleAdminGetSkill(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.requireAuth {
-		if _, authErr := s.authenticateAdmin(r); authErr != nil {
-			writeError(w, apiErrWithReqID(authErr, reqID))
-			return
-		}
+	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
 	}
 	rel := strings.TrimSpace(r.URL.Query().Get("path"))
 	if rel == "" {
@@ -1833,11 +2020,9 @@ func (s *Server) handleAdminGetSkill(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminPutSkill(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.requireAuth {
-		if _, authErr := s.authenticateAdmin(r); authErr != nil {
-			writeError(w, apiErrWithReqID(authErr, reqID))
-			return
-		}
+	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
 	}
 	var req adminSkillUpdateRequest
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
@@ -1925,13 +2110,10 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !s.requireAuth && strings.TrimSpace(r.Header.Get("Authorization")) == "" {
-		writeJSON(w, http.StatusOK, AdminSessionResponse{
-			Success:    true,
+	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+		writeJSON(w, http.StatusUnauthorized, AdminSessionResponse{
+			Success:    false,
 			Mode:       mode,
-			TokenID:    "dev-owner",
-			Label:      "Development mode",
-			IsAdmin:    true,
 			NeedsSetup: !hasAdmin,
 		})
 		return
@@ -1954,10 +2136,16 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(apiErr, requestIDFromContext(r.Context())))
 		return
 	}
-	if !tok.IsAdmin {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "admin token required").
-			WithHint("Sign in with a token created using isAdmin=true."), requestIDFromContext(r.Context())))
-		return
+	var username string
+	isAdmin := tok.IsAdmin
+	if strings.TrimSpace(tok.OwnerUserID) != "" {
+		user, userErr := s.auth.GetUser(r.Context(), tok.OwnerUserID)
+		if userErr != nil || !user.IsActive {
+			writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "token owner is inactive or missing"), requestIDFromContext(r.Context())))
+			return
+		}
+		username = user.Username
+		isAdmin = isAdmin || user.IsAdmin
 	}
 
 	writeJSON(w, http.StatusOK, AdminSessionResponse{
@@ -1965,8 +2153,9 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 		Mode:        mode,
 		TokenID:     tok.ID,
 		UserID:      tok.OwnerUserID,
+		Username:    username,
 		Label:       tok.Label,
-		IsAdmin:     tok.IsAdmin,
+		IsAdmin:     isAdmin,
 		LoginMethod: "token",
 	})
 }
@@ -2156,7 +2345,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, ConfigResponse{
 		Success:          true,
-		PublicBaseURL:    s.deployer.PublicBaseURL(),
+		PublicBaseURL:    s.publicBaseURL(),
+		AppURL:           s.appURLConfig(),
 		Mode:             mode,
 		CORSAllowOrigins: s.cfg.CORSAllowOrigins,
 		CooldownSeconds:  s.cfg.CooldownSeconds,
@@ -2174,11 +2364,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminAnonymousSessions(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.requireAuth {
-		if _, authErr := s.authenticateAdmin(r); authErr != nil {
-			writeError(w, apiErrWithReqID(authErr, reqID))
-			return
-		}
+	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
 	}
 	limit := parseIntDefault(r.URL.Query().Get("limit"), 100)
 	sessions, err := s.deployer.ListAnonymousSessions(r.Context(), limit)
@@ -2217,12 +2405,10 @@ func (s *Server) handleAdminAnonymousSessions(w http.ResponseWriter, r *http.Req
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
-	// 鉴权：必须 admin token（或 dev 模式下放行，便于引导）
-	if s.requireAuth {
-		if _, authErr := s.authenticateAdmin(r); authErr != nil {
-			writeError(w, apiErrWithReqID(authErr, reqID))
-			return
-		}
+	// 鉴权：运行配置属于后台管理能力，dev 模式也必须登录管理员。
+	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
 	}
 
 	var req ConfigUpdateRequest
@@ -2243,6 +2429,47 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.logger.Printf("publicBaseURL updated to %s", v)
+	}
+	if req.AppURLMode != nil || req.AppDomainSuffix != nil || req.AppURLScheme != nil || req.AppURLPort != nil {
+		next := s.appURLConfig()
+		if req.AppURLMode != nil {
+			next.AppURLMode = normalizeAppURLMode(*req.AppURLMode)
+		}
+		if req.AppDomainSuffix != nil {
+			next.AppDomainSuffix = normalizeAppDomainSuffix(*req.AppDomainSuffix)
+		}
+		if req.AppURLScheme != nil {
+			next.AppURLScheme = normalizeAppURLScheme(*req.AppURLScheme)
+		}
+		if req.AppURLPort != nil {
+			rawPort := strings.TrimSpace(*req.AppURLPort)
+			next.AppURLPort = normalizeAppURLPort(rawPort)
+			if rawPort != "" && next.AppURLPort == "" {
+				writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
+					"appURLPort must be a number between 1 and 65535"), reqID))
+				return
+			}
+		}
+		if (next.AppURLMode == AppURLModeDomain || next.AppURLMode == AppURLModeDual) && next.AppDomainSuffix == "" {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
+				"appDomainSuffix is required when appURLMode is domain or dual"), reqID))
+			return
+		}
+		setter, ok := s.deployer.(appURLConfigSetter)
+		if !ok {
+			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
+				"deployer does not support app URL config"), reqID))
+			return
+		}
+		if err := setter.SetAppURLConfig(r.Context(), next); err != nil {
+			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
+				fmt.Sprintf("failed to persist app URL config: %v", err)), reqID))
+			return
+		}
+		s.cfg.AppURLMode = next.AppURLMode
+		s.cfg.AppDomainSuffix = next.AppDomainSuffix
+		s.cfg.AppURLScheme = next.AppURLScheme
+		s.cfg.AppURLPort = next.AppURLPort
 	}
 	if req.AnonymousDeployLimit != nil {
 		if *req.AnonymousDeployLimit < -1 {
@@ -2304,9 +2531,15 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.CORSAllowOrigins != nil {
 		origins := strings.TrimSpace(*req.CORSAllowOrigins)
-		if origins != "" && origins != "*" && !corsOriginsLookValid(origins) {
+		if origins == "*" {
 			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"corsAllowOrigins must be * or a comma/newline separated list of http(s) origins"), reqID))
+				"corsAllowOrigins no longer supports wildcard *; leave it blank to disable CORS"), reqID))
+			return
+		}
+		origins = config.NormalizeCORSAllowOrigins(origins)
+		if origins != "" && !corsOriginsLookValid(origins) {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
+				"corsAllowOrigins must be empty or a comma/newline separated list of http(s) origins"), reqID))
 			return
 		}
 		if err := s.deployer.SetCORSAllowOrigins(r.Context(), origins); err != nil {
@@ -2318,7 +2551,8 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, ConfigUpdateResponse{
 		Success:          true,
-		PublicBaseURL:    s.deployer.PublicBaseURL(),
+		PublicBaseURL:    s.publicBaseURL(),
+		AppURL:           s.appURLConfig(),
 		CORSAllowOrigins: s.cfg.CORSAllowOrigins,
 		CooldownSeconds:  s.cfg.CooldownSeconds,
 		Limits: Limits{
@@ -2510,11 +2744,8 @@ func (s *Server) handleAdminListSites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if actor == "" {
-		if s.requireAuth {
-			writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "auth required"), reqID))
-			return
-		}
-		isAdmin = true
+		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "login or bearer token required"), reqID))
+		return
 	}
 	sites, err := s.deployer.ListSites(r.Context())
 	if err != nil {
@@ -2550,6 +2781,7 @@ func (s *Server) handleAdminListSites(w http.ResponseWriter, r *http.Request) {
 			ViewCount:       site.ViewCount,
 			LikeCount:       site.LikeCount,
 			Status:          site.Status,
+			Visibility:      site.Visibility,
 			AccessProtected: site.AccessProtected,
 			IsPinned:        site.IsPinned,
 			PinnedAt:        site.PinnedAt,
@@ -2617,11 +2849,9 @@ func (s *Server) handleAdminDeleteSite(w http.ResponseWriter, r *http.Request) {
 			"missing code in path"), reqID))
 		return
 	}
-	if s.requireAuth {
-		if apiErr := s.authorizeSiteWrite(r, code); apiErr != nil {
-			writeError(w, apiErrWithReqID(apiErr, reqID))
-			return
-		}
+	if apiErr := s.authorizeSiteWrite(r, code); apiErr != nil {
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+		return
 	}
 	if apiErr := s.deployer.DeleteSite(r.Context(), code); apiErr != nil {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
@@ -2705,7 +2935,7 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 			"either 'code' or 'url' is required"), reqID))
 		return
 	}
-	actor, isActorAdmin, actorErr := s.authenticateActor(r)
+	actor, _, actorErr := s.authenticateActor(r)
 	if actorErr != nil {
 		writeError(w, apiErrWithReqID(actorErr, reqID))
 		return
@@ -2749,11 +2979,7 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 			userID = user.ID
 		}
 	} else {
-		if isActorAdmin {
-			ownerTokenID = "dev-owner"
-		} else {
-			ownerTokenID = actor
-		}
+		ownerTokenID = actor
 	}
 	clientIP := clientIPFromRequest(r)
 
@@ -2837,7 +3063,10 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 	sub := r.PathValue("path")
 	versionValue := strings.TrimSpace(r.PathValue("version"))
+	s.serveAppContent(w, r, code, sub, versionValue, false)
+}
 
+func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, sub, versionValue string, domainMode bool) {
 	if !routeCodeRe.MatchString(code) {
 		http.NotFound(w, r)
 		return
@@ -2858,7 +3087,11 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		target := *r.URL
-		target.Path = buildVersionServePath(code, versionNumber, sub)
+		if domainMode {
+			target.Path = buildDomainVersionServePath(versionNumber, sub)
+		} else {
+			target.Path = buildVersionServePath(code, versionNumber, sub)
+		}
 		query := target.Query()
 		query.Del("v")
 		target.RawQuery = query.Encode()
@@ -2869,14 +3102,18 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 	if sub == "" && !strings.HasSuffix(r.URL.Path, "/") {
 		u := *r.URL
 		if versionPtr != nil {
-			u.Path = buildVersionServePath(code, *versionPtr, "")
+			if domainMode {
+				u.Path = buildDomainVersionServePath(*versionPtr, "")
+			} else {
+				u.Path = buildVersionServePath(code, *versionPtr, "")
+			}
 		} else {
 			u.Path = r.URL.Path + "/"
 		}
 		http.Redirect(w, r, u.String(), http.StatusPermanentRedirect)
 		return
 	}
-	if !s.siteAccessAllowed(r, code) {
+	if !s.siteAccessAllowed(r, code, versionPtr) {
 		s.renderAccessPasswordPageV2(w, code)
 		return
 	}
@@ -2910,22 +3147,34 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rel, err := filepath.Rel(absBase, absFull)
-	if err != nil || (rel != "." && rel != ".." && strings.HasPrefix(rel, "..")) {
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		http.NotFound(w, r)
 		return
 	}
 
 	// 仅当前版本入口统计浏览量；历史版本预览不计数。
-	if versionPtr == nil && r.PathValue("path") == "" {
+	if versionPtr == nil && sub == mainEntry {
 		go func(c string) {
 			_ = s.deployer.IncrementViewCount(context.Background(), c)
 		}(code)
 	}
 
-	s.serveHostedFile(w, r, code, sub, absFull)
+	routePrefix := buildAppRoutePrefix(code)
+	if domainMode {
+		routePrefix = "/"
+	}
+	if versionPtr != nil {
+		if domainMode {
+			routePrefix = buildDomainVersionServePath(*versionPtr, "")
+		} else {
+			routePrefix = buildVersionServePath(code, *versionPtr, "")
+		}
+	}
+	s.serveHostedFile(w, r, sub, absFull, routePrefix)
 }
 
-func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code, sub, absFull string) {
+func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, sub, absFull, routePrefix string) {
+	setHostedContentSecurityHeaders(w)
 	lowerSub := strings.ToLower(sub)
 	if !strings.HasSuffix(lowerSub, ".html") && !strings.HasSuffix(lowerSub, ".htm") {
 		http.ServeFile(w, r, absFull)
@@ -2937,13 +3186,17 @@ func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code, s
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	routePrefix := buildAppRoutePrefix(code)
-	if versionValue := strings.TrimSpace(r.PathValue("version")); versionValue != "" {
-		if versionNumber, err := parseInt64(versionValue); err == nil && versionNumber > 0 {
-			routePrefix = buildVersionServePath(code, versionNumber, "")
-		}
-	}
 	http.ServeContent(w, r, filepath.Base(absFull), fileModTime(absFull), strings.NewReader(injectHostedHTMLCompat(body, routePrefix)))
+}
+
+func setHostedContentSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy",
+		"sandbox allow-scripts allow-forms allow-popups allow-downloads; "+
+			"default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; "+
+			"img-src * data: blob:; media-src * data: blob:; font-src * data:; "+
+			"connect-src *; frame-src *; child-src *")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 }
 
 func buildAppRoutePrefix(code string) string {
@@ -2952,6 +3205,14 @@ func buildAppRoutePrefix(code string) string {
 
 func buildVersionServePath(code string, version int64, sub string) string {
 	base := "/agent/" + code + "/versions/" + strconv.FormatInt(version, 10)
+	if sub == "" {
+		return base + "/"
+	}
+	return base + "/" + strings.TrimPrefix(sub, "/")
+}
+
+func buildDomainVersionServePath(version int64, sub string) string {
+	base := "/versions/" + strconv.FormatInt(version, 10)
 	if sub == "" {
 		return base + "/"
 	}

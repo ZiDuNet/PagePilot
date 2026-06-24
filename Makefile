@@ -1,4 +1,4 @@
-.PHONY: all build build-linux run test skill-test clean fmt vet tidy deps docker
+.PHONY: all build build-linux frontend frontend-user frontend-admin run test skill-test clean fmt vet tidy deps docker
 
 BIN_DIR := bin
 SERVER_BIN := $(BIN_DIR)/hostctl-server
@@ -15,8 +15,17 @@ deps:
 tidy:
 	go mod tidy
 
+# Build frontend assets embedded by the Go server.
+frontend: frontend-user frontend-admin
+
+frontend-user:
+	cd frontend/user && npm install && npm run build
+
+frontend-admin:
+	cd frontend/admin && npm install && npm run build
+
 # Build all binaries for the local platform.
-build: $(SERVER_BIN) $(CLI_BIN) $(MCP_BIN)
+build: frontend $(SERVER_BIN) $(CLI_BIN) $(MCP_BIN)
 
 $(SERVER_BIN):
 	@mkdir -p $(BIN_DIR)
@@ -31,7 +40,7 @@ $(MCP_BIN):
 	go build -o $(MCP_BIN) ./cmd/hostctl-mcp
 
 # Build Linux amd64 binaries for deployment.
-build-linux:
+build-linux: frontend
 	@mkdir -p $(BIN_DIR)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(SERVER_BIN)-linux-amd64 ./cmd/hostctl-server
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(CLI_BIN)-linux-amd64 ./cmd/hostctl

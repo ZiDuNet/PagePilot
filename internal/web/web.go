@@ -1,6 +1,6 @@
 // Package web 提供 hostctl 内置的 Web 资源：
 //   - user/：用户端站点
-//   - admin/：管理后台单页 + 子资源（独立简约风格）
+//   - admin/：管理后台 React 产物 + 旧单页 fallback
 //
 // 所有内容通过 go:embed 打进二进制，避免运行时磁盘依赖。
 package web
@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-//go:embed admin admin/admin.html
+//go:embed admin admin/app admin/app/index.html admin/admin.html
 var adminFS embed.FS
 
 //go:embed user
@@ -23,10 +23,13 @@ var (
 	adminHTMLErr   error
 )
 
-// AdminHTML 返回管理后台单页 HTML（admin/admin.html）。
+// AdminHTML 返回管理后台 HTML。优先使用 React 构建产物，未构建时回退到旧单页。
 func AdminHTML() []byte {
 	adminHTMLOnce.Do(func() {
-		adminHTMLBytes, adminHTMLErr = fs.ReadFile(adminFS, "admin/admin.html")
+		adminHTMLBytes, adminHTMLErr = fs.ReadFile(adminFS, "admin/app/index.html")
+		if adminHTMLErr != nil {
+			adminHTMLBytes, adminHTMLErr = fs.ReadFile(adminFS, "admin/admin.html")
+		}
 	})
 	if adminHTMLErr != nil {
 		panic(adminHTMLErr)
@@ -47,6 +50,15 @@ func UserSubFS() fs.FS {
 // 用于 /admin/static/* 路径下的额外资源（CSS/JS/图标等）。
 func AdminSubFS() fs.FS {
 	sub, err := fs.Sub(adminFS, "admin")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}
+
+// AdminAppFS 返回管理后台 React 构建产物子目录。
+func AdminAppFS() fs.FS {
+	sub, err := fs.Sub(adminFS, "admin/app")
 	if err != nil {
 		panic(err)
 	}

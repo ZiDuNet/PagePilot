@@ -29,6 +29,10 @@ class ScreenConfig(context: Context) {
     prefs.edit().remove("device_token").apply()
   }
 
+  fun clearPairing() {
+    prefs.edit().remove("device_token").apply()
+  }
+
   private fun normalizeServerUrl(url: String): String {
     return url.trim().trimEnd('/')
   }

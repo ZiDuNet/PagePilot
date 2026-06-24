@@ -3,7 +3,7 @@ package api
 import "net/http"
 
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
-	base := s.deployer.PublicBaseURL()
+	base := s.publicBaseURL()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
@@ -194,6 +194,57 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					},
 				},
 			},
+			"/api/screens/{screenId}/screenshot": map[string]any{
+				"post": map[string]any{
+					"summary":     "Request a screen screenshot",
+					"description": "Registered user token or login cookie required. The device uploads only after receiving this one-time command from its manifest.",
+					"parameters":  []map[string]any{pathParam("screenId", "string")},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Screenshot request queued", "content": jsonSchemaRef("ScreenScreenshotResponse")},
+						"401": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+				"get": map[string]any{
+					"summary":     "Read the latest screen screenshot",
+					"description": "Registered user token or login cookie required. Returns the last command-triggered image for the screen.",
+					"parameters":  []map[string]any{pathParam("screenId", "string")},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Screenshot image"},
+						"401": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+			},
+			"/api/screens/{screenId}/command": map[string]any{
+				"post": map[string]any{
+					"summary":     "Send an operational command to a screen",
+					"description": "Registered user token or login cookie required. Supported types are refresh, sleep, wake, and shutdown. Shutdown is a soft standby command unless the device has OEM power privileges.",
+					"parameters":  []map[string]any{pathParam("screenId", "string")},
+					"requestBody": jsonBodyRef("ScreenCommandRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Command queued", "content": jsonSchemaRef("ScreenCommandResponse")},
+						"401": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+			},
+			"/api/screens/{screenId}": map[string]any{
+				"delete": map[string]any{
+					"summary":     "Unbind a hardware screen",
+					"description": "Registered user token or login cookie required. Removes the long-lived device token from the server side.",
+					"parameters":  []map[string]any{pathParam("screenId", "string")},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Screen unbound", "content": jsonSchemaRef("ScreenDeleteResponse")},
+						"401": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+			},
 			"/api/device/pairing/start": map[string]any{
 				"post": map[string]any{
 					"summary":     "Start device pairing",
@@ -218,6 +269,33 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"description": "Requires Authorization: Device <deviceToken>.",
 					"security":    []any{},
 					"responses":   map[string]any{"200": map[string]any{"description": "Playback manifest", "content": jsonSchemaRef("ScreenManifestResponse")}, "401": errorResponse()},
+				},
+			},
+			"/api/device/heartbeat": map[string]any{
+				"post": map[string]any{
+					"summary":     "Send device heartbeat and capability details",
+					"description": "Requires Authorization: Device <deviceToken>. Device information may include model, Android version, resolution, orientation, density, and WebView runtime.",
+					"security":    []any{},
+					"requestBody": jsonBodyRef("DeviceHeartbeatRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "Heartbeat stored", "content": jsonSchemaRef("DeviceHeartbeatResponse")}, "401": errorResponse()},
+				},
+			},
+			"/api/device/screenshot": map[string]any{
+				"post": map[string]any{
+					"summary":     "Upload a requested screenshot",
+					"description": "Requires Authorization: Device <deviceToken>. The requestId must match the pending screenshot command in the manifest.",
+					"security":    []any{},
+					"requestBody": jsonBodyRef("DeviceScreenshotRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "Screenshot stored", "content": jsonSchemaRef("DeviceScreenshotResponse")}, "409": errorResponse()},
+				},
+			},
+			"/api/device/command/ack": map[string]any{
+				"post": map[string]any{
+					"summary":     "Acknowledge a screen command",
+					"description": "Requires Authorization: Device <deviceToken>. The requestId must match the pending command in the manifest.",
+					"security":    []any{},
+					"requestBody": jsonBodyRef("DeviceCommandAckRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "Command acknowledged", "content": jsonSchemaRef("DeviceCommandAckResponse")}, "409": errorResponse()},
 				},
 			},
 			"/api/deploys/{code}/versions": map[string]any{
@@ -381,6 +459,7 @@ func openAPISchemas() map[string]any {
 	boolSchema := map[string]any{"type": "boolean"}
 	intSchema := map[string]any{"type": "integer"}
 	timeSchema := map[string]any{"type": "string", "format": "date-time"}
+	objectSchema := map[string]any{"type": "object", "additionalProperties": true}
 
 	return map[string]any{
 		"APIError": map[string]any{"type": "object", "properties": map[string]any{
@@ -434,7 +513,12 @@ func openAPISchemas() map[string]any {
 		"PrimaryStrategyRequest": map[string]any{"type": "object", "properties": map[string]any{"primaryVersionStrategy": map[string]any{"type": "string", "enum": []string{"likes", "latest"}}}},
 		"ConfigResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "publicBaseURL": str, "mode": str, "corsAllowOrigins": str, "cooldownSeconds": intSchema,
+			"appURL": map[string]any{"$ref": "#/components/schemas/AppURLConfig"},
 			"limits": map[string]any{"$ref": "#/components/schemas/Limits"}, "anonymousPolicy": map[string]any{"$ref": "#/components/schemas/AnonymousPolicy"}, "version": str,
+		}},
+		"AppURLConfig": map[string]any{"type": "object", "properties": map[string]any{
+			"publicBaseURL": str, "appURLMode": map[string]any{"type": "string", "enum": []string{"path", "domain", "dual"}},
+			"appDomainSuffix": str, "appURLScheme": map[string]any{"type": "string", "enum": []string{"https", "http"}}, "appURLPort": str, "appPathBase": str,
 		}},
 		"Limits":          map[string]any{"type": "object", "properties": map[string]any{"maxSingleFileBytes": intSchema, "maxSiteTotalBytes": intSchema, "maxFilesPerSite": intSchema}},
 		"AnonymousPolicy": map[string]any{"type": "object", "properties": map[string]any{"deployLimit": intSchema}},
@@ -457,11 +541,12 @@ func openAPISchemas() map[string]any {
 			}}},
 		}},
 		"ConfigUpdateRequest": map[string]any{"type": "object", "properties": map[string]any{
-			"publicBaseURL": str, "anonymousDeployLimit": intSchema, "cooldownSeconds": intSchema,
+			"publicBaseURL": str, "appURLMode": str, "appDomainSuffix": str, "appURLScheme": str, "appURLPort": str,
+			"anonymousDeployLimit": intSchema, "cooldownSeconds": intSchema,
 			"maxSingleFileBytes": intSchema, "maxSiteTotalBytes": intSchema, "maxFilesPerSite": intSchema, "corsAllowOrigins": str,
 		}},
 		"ConfigUpdateResponse": map[string]any{"type": "object", "properties": map[string]any{
-			"success": boolSchema, "publicBaseURL": str, "corsAllowOrigins": str, "cooldownSeconds": intSchema,
+			"success": boolSchema, "publicBaseURL": str, "appURL": map[string]any{"$ref": "#/components/schemas/AppURLConfig"}, "corsAllowOrigins": str, "cooldownSeconds": intSchema,
 			"limits": map[string]any{"$ref": "#/components/schemas/Limits"}, "anonymousPolicy": map[string]any{"$ref": "#/components/schemas/AnonymousPolicy"},
 		}},
 		"AdminSessionResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "mode": str, "tokenId": str, "label": str, "userId": str, "username": str, "isAdmin": boolSchema}},
@@ -469,7 +554,11 @@ func openAPISchemas() map[string]any {
 		"SitePinRequest":       map[string]any{"type": "object", "required": []string{"pinned"}, "properties": map[string]any{"pinned": boolSchema}},
 		"SitePinResponse":      map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "code": str, "isPinned": boolSchema, "pinnedAt": timeSchema}},
 		"ScreenItem": map[string]any{"type": "object", "properties": map[string]any{
-			"id": str, "ownerUserId": str, "name": str, "deviceName": str, "status": str, "currentSiteCode": str, "currentVersion": intSchema, "lastSeenAt": timeSchema, "appVersion": str, "runtime": str, "createdAt": timeSchema, "updatedAt": timeSchema,
+			"id": str, "ownerUserId": str, "ownerUsername": str, "name": str, "deviceName": str, "status": str,
+			"currentSiteCode": str, "currentVersion": intSchema, "lastSeenAt": timeSchema, "appVersion": str,
+			"runtime": str, "deviceInfo": objectSchema, "screenshotRequestedAt": timeSchema, "screenshotAt": timeSchema,
+			"commandType": str, "commandRequestedAt": timeSchema, "commandCompletedAt": timeSchema,
+			"createdAt": timeSchema, "updatedAt": timeSchema,
 		}},
 		"ScreenListResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "screens": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/ScreenItem"}},
@@ -486,8 +575,20 @@ func openAPISchemas() map[string]any {
 		"ScreenPublishResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "screen": map[string]any{"$ref": "#/components/schemas/ScreenItem"},
 		}},
+		"ScreenDeleteResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "id": str,
+		}},
+		"ScreenCommandRequest": map[string]any{"type": "object", "required": []string{"type"}, "properties": map[string]any{
+			"type": map[string]any{"type": "string", "enum": []string{"refresh", "sleep", "wake", "shutdown"}}, "payload": objectSchema,
+		}},
+		"ScreenCommandResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screen": map[string]any{"$ref": "#/components/schemas/ScreenItem"}, "command": map[string]any{"$ref": "#/components/schemas/ScreenDeviceCommand"},
+		}},
+		"ScreenScreenshotResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screen": map[string]any{"$ref": "#/components/schemas/ScreenItem"}, "screenshot": map[string]any{"$ref": "#/components/schemas/ScreenScreenshotCommand"},
+		}},
 		"DevicePairingStartRequest": map[string]any{"type": "object", "properties": map[string]any{
-			"deviceName": str, "appVersion": str, "runtime": str,
+			"deviceName": str, "appVersion": str, "runtime": str, "deviceInfo": objectSchema,
 		}},
 		"DevicePairingStartResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "screenId": str, "pairingId": str, "pairingCode": str, "pairingSecret": str, "expiresAt": timeSchema, "serverTime": timeSchema,
@@ -499,7 +600,40 @@ func openAPISchemas() map[string]any {
 			"success": boolSchema, "paired": boolSchema, "deviceToken": str, "screen": map[string]any{"$ref": "#/components/schemas/ScreenItem"},
 		}},
 		"ScreenManifestResponse": map[string]any{"type": "object", "properties": map[string]any{
-			"success": boolSchema, "screenId": str, "mode": str, "baseUrl": str, "entryUrl": str, "siteCode": str, "version": intSchema, "mainEntry": str, "assets": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+			"success": boolSchema, "screenId": str, "screenName": str, "ownerUserId": str, "ownerUsername": str,
+			"mode": str, "baseUrl": str, "entryUrl": str, "siteCode": str, "version": intSchema, "mainEntry": str,
+			"title": str, "description": str, "assets": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+			"accessCookie": map[string]any{"$ref": "#/components/schemas/ScreenAccessCookie"},
+			"screenshot":   map[string]any{"$ref": "#/components/schemas/ScreenScreenshotCommand"},
+			"command":      map[string]any{"$ref": "#/components/schemas/ScreenDeviceCommand"},
+			"updatedAt":    timeSchema,
+		}},
+		"ScreenAccessCookie": map[string]any{"type": "object", "properties": map[string]any{
+			"name": str, "value": str, "path": str, "maxAgeSeconds": intSchema, "expiresAt": timeSchema,
+		}},
+		"ScreenScreenshotCommand": map[string]any{"type": "object", "properties": map[string]any{
+			"requestId": str, "requestedAt": timeSchema,
+		}},
+		"ScreenDeviceCommand": map[string]any{"type": "object", "properties": map[string]any{
+			"requestId": str, "type": str, "payload": objectSchema, "requestedAt": timeSchema,
+		}},
+		"DeviceHeartbeatRequest": map[string]any{"type": "object", "properties": map[string]any{
+			"appVersion": str, "runtime": str, "deviceInfo": objectSchema,
+		}},
+		"DeviceHeartbeatResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screen": map[string]any{"$ref": "#/components/schemas/ScreenItem"},
+		}},
+		"DeviceScreenshotRequest": map[string]any{"type": "object", "required": []string{"contentBase64", "requestId"}, "properties": map[string]any{
+			"contentBase64": str, "mimeType": str, "width": intSchema, "height": intSchema, "requestId": str,
+		}},
+		"DeviceScreenshotResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screenId": str, "updatedAt": timeSchema,
+		}},
+		"DeviceCommandAckRequest": map[string]any{"type": "object", "required": []string{"requestId"}, "properties": map[string]any{
+			"requestId": str, "type": str,
+		}},
+		"DeviceCommandAckResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screenId": str, "completedAt": timeSchema,
 		}},
 		"TokenCreateRequest":  map[string]any{"type": "object", "properties": map[string]any{"label": str, "ownerUserId": str, "isAdmin": boolSchema, "expiresAt": timeSchema, "ttlSeconds": intSchema}},
 		"TokenCreateResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "id": str, "token": str, "label": str, "ownerUserId": str, "isAdmin": boolSchema, "expiresAt": timeSchema, "createdAt": timeSchema}},

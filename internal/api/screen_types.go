@@ -1,20 +1,30 @@
 package api
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type ScreenItem struct {
-	ID              string     `json:"id"`
-	OwnerUserID     string     `json:"ownerUserId,omitempty"`
-	Name            string     `json:"name"`
-	DeviceName      string     `json:"deviceName"`
-	Status          string     `json:"status"`
-	CurrentSiteCode string     `json:"currentSiteCode,omitempty"`
-	CurrentVersion  *int64     `json:"currentVersion,omitempty"`
-	LastSeenAt      *time.Time `json:"lastSeenAt,omitempty"`
-	AppVersion      string     `json:"appVersion,omitempty"`
-	Runtime         string     `json:"runtime,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
+	ID                    string          `json:"id"`
+	OwnerUserID           string          `json:"ownerUserId,omitempty"`
+	Name                  string          `json:"name"`
+	DeviceName            string          `json:"deviceName"`
+	Status                string          `json:"status"`
+	CurrentSiteCode       string          `json:"currentSiteCode,omitempty"`
+	CurrentVersion        *int64          `json:"currentVersion,omitempty"`
+	LastSeenAt            *time.Time      `json:"lastSeenAt,omitempty"`
+	AppVersion            string          `json:"appVersion,omitempty"`
+	Runtime               string          `json:"runtime,omitempty"`
+	DeviceInfo            json.RawMessage `json:"deviceInfo,omitempty"`
+	ScreenshotRequestedAt *time.Time      `json:"screenshotRequestedAt,omitempty"`
+	ScreenshotAt          *time.Time      `json:"screenshotAt,omitempty"`
+	CommandType           string          `json:"commandType,omitempty"`
+	CommandRequestedAt    *time.Time      `json:"commandRequestedAt,omitempty"`
+	CommandCompletedAt    *time.Time      `json:"commandCompletedAt,omitempty"`
+	CreatedAt             time.Time       `json:"createdAt"`
+	UpdatedAt             time.Time       `json:"updatedAt"`
+	OwnerUsername         string          `json:"ownerUsername,omitempty"`
 }
 
 type ScreenListResponse struct {
@@ -48,9 +58,10 @@ type ScreenDeleteResponse struct {
 }
 
 type DevicePairingStartRequest struct {
-	DeviceName string `json:"deviceName,omitempty"`
-	AppVersion string `json:"appVersion,omitempty"`
-	Runtime    string `json:"runtime,omitempty"`
+	DeviceName string          `json:"deviceName,omitempty"`
+	AppVersion string          `json:"appVersion,omitempty"`
+	Runtime    string          `json:"runtime,omitempty"`
+	DeviceInfo json.RawMessage `json:"deviceInfo,omitempty"`
 }
 
 type DevicePairingStartResponse struct {
@@ -83,26 +94,95 @@ type ScreenManifestAsset struct {
 }
 
 type ScreenManifestResponse struct {
-	Success     bool                  `json:"success"`
-	ScreenID    string                `json:"screenId"`
-	Mode        string                `json:"mode"`
-	BaseURL     string                `json:"baseUrl"`
-	EntryURL    string                `json:"entryUrl,omitempty"`
-	SiteCode    string                `json:"siteCode,omitempty"`
-	Version     int64                 `json:"version,omitempty"`
-	MainEntry   string                `json:"mainEntry,omitempty"`
-	Title       string                `json:"title,omitempty"`
-	Description string                `json:"description,omitempty"`
-	Assets      []ScreenManifestAsset `json:"assets,omitempty"`
-	UpdatedAt   time.Time             `json:"updatedAt"`
+	Success       bool                     `json:"success"`
+	ScreenID      string                   `json:"screenId"`
+	ScreenName    string                   `json:"screenName,omitempty"`
+	OwnerUserID   string                   `json:"ownerUserId,omitempty"`
+	OwnerUsername string                   `json:"ownerUsername,omitempty"`
+	Mode          string                   `json:"mode"`
+	BaseURL       string                   `json:"baseUrl"`
+	EntryURL      string                   `json:"entryUrl,omitempty"`
+	SiteCode      string                   `json:"siteCode,omitempty"`
+	Version       int64                    `json:"version,omitempty"`
+	MainEntry     string                   `json:"mainEntry,omitempty"`
+	Title         string                   `json:"title,omitempty"`
+	Description   string                   `json:"description,omitempty"`
+	Assets        []ScreenManifestAsset    `json:"assets,omitempty"`
+	AccessCookie  *ScreenAccessCookie      `json:"accessCookie,omitempty"`
+	Screenshot    *ScreenScreenshotCommand `json:"screenshot,omitempty"`
+	Command       *ScreenDeviceCommand     `json:"command,omitempty"`
+	UpdatedAt     time.Time                `json:"updatedAt"`
 }
 
 type DeviceHeartbeatRequest struct {
-	AppVersion string `json:"appVersion,omitempty"`
-	Runtime    string `json:"runtime,omitempty"`
+	AppVersion string          `json:"appVersion,omitempty"`
+	Runtime    string          `json:"runtime,omitempty"`
+	DeviceInfo json.RawMessage `json:"deviceInfo,omitempty"`
 }
 
 type DeviceHeartbeatResponse struct {
 	Success bool       `json:"success"`
 	Screen  ScreenItem `json:"screen"`
+}
+
+type DeviceScreenshotRequest struct {
+	ContentBase64 string `json:"contentBase64"`
+	MimeType      string `json:"mimeType,omitempty"`
+	Width         int    `json:"width,omitempty"`
+	Height        int    `json:"height,omitempty"`
+	RequestID     string `json:"requestId"`
+}
+
+type DeviceScreenshotResponse struct {
+	Success   bool      `json:"success"`
+	ScreenID  string    `json:"screenId"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type ScreenAccessCookie struct {
+	Name          string    `json:"name"`
+	Value         string    `json:"value"`
+	Path          string    `json:"path"`
+	MaxAgeSeconds int       `json:"maxAgeSeconds"`
+	ExpiresAt     time.Time `json:"expiresAt"`
+}
+
+type ScreenScreenshotCommand struct {
+	RequestID   string    `json:"requestId"`
+	RequestedAt time.Time `json:"requestedAt"`
+}
+
+type ScreenScreenshotResponse struct {
+	Success    bool                     `json:"success"`
+	Screen     ScreenItem               `json:"screen"`
+	Screenshot *ScreenScreenshotCommand `json:"screenshot,omitempty"`
+}
+
+type ScreenCommandRequest struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+type ScreenDeviceCommand struct {
+	RequestID   string          `json:"requestId"`
+	Type        string          `json:"type"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+	RequestedAt time.Time       `json:"requestedAt"`
+}
+
+type ScreenCommandResponse struct {
+	Success bool                 `json:"success"`
+	Screen  ScreenItem           `json:"screen"`
+	Command *ScreenDeviceCommand `json:"command,omitempty"`
+}
+
+type DeviceCommandAckRequest struct {
+	RequestID string `json:"requestId"`
+	Type      string `json:"type,omitempty"`
+}
+
+type DeviceCommandAckResponse struct {
+	Success     bool      `json:"success"`
+	ScreenID    string    `json:"screenId"`
+	CompletedAt time.Time `json:"completedAt"`
 }

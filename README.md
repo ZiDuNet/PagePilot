@@ -10,11 +10,12 @@ hostctl 是 PagePilot 的静态站点控制平面。它让用户和 AI Agent 都
 
 - 公共首页和市场位于 `/`，展示可搜索、可点赞、可访问密码保护的作品。
 - 首页支持全屏弹幕动画。
-- 手动部署页面位于 `/deploy.html`，API 文档页面位于 `/api-docs.html`，两者都是内置静态页面。
-- 管理员控制台位于 `/admin`，包含登录、仪表盘、部署、站点、令牌、配置和版本控制。
+- 手动部署页面位于 `/deploy.html`，API 文档页面位于 `/api-docs.html`，屏幕介绍页位于 `/screens/`，它们都是内置静态页面。
+- 用户端页面由 `frontend/user` 的 React + Vite 工程构建，产物输出到 `internal/web/user/app`，并由 Go `embed` 打包进服务端二进制。
+- 管理员控制台位于 `/admin`，由 `frontend/admin` 的 React + Vite 工程构建，包含登录、仪表盘、部署、站点、屏幕、令牌、用户、匿名、配置和版本控制。
 - JSON API，并对外提供 `/openapi.json` 供 Agent 与外部集成使用。
 - 版本化静态托管，访问路径为 `/agent/{code}`，并提供应用访问 URL `/agent/{code}/`。
-- Go CLI（`hostctl`）、MCP 服务器（`hostctl-mcp`）以及一个独立可用的 Codex/Claude 技能脚本。
+- Go CLI（`hostctl`）、MCP 服务器（`hostctl-mcp`）以及一个独立可用的通用 Agent 技能脚本。
 - 匿名部署配额、用户所有的 Agent Token，以及按用户的部署上限。
 - 硬件屏幕绑定与投放：注册用户可以绑定多个广告屏，屏幕端 APP 通过 X5 WebView 播放 PagePilot 应用。
 - 元数据存储使用 SQLite，静态资源托管在文件系统上。
@@ -42,6 +43,7 @@ docker compose up -d --build
 ```
 
 部署前请把 `docker-compose.yml` 中的 `HOSTCTL_PUBLIC_BASE_URL` 改成用户真实访问地址。完整 Docker 说明请见 [deploy/DOCKER.md](deploy/DOCKER.md)。
+应用访问地址默认保持 `/agent/{code}/` 路径模式；如需启用 `https://{code}.example.com/` 泛域名模式，请参考 [deploy/APP_URL_MODE.md](deploy/APP_URL_MODE.md)。
 
 Docker 首次启动会在空数据库中自动创建默认管理员：
 
@@ -82,9 +84,16 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 | `GET` | `/api/screens` | 列出当前注册用户绑定的硬件屏幕 |
 | `POST` | `/api/screens/bind` | 使用短期配对码绑定硬件屏幕 |
 | `POST` | `/api/screens/{screenId}/publish` | 将自己的应用投放到自己的屏幕 |
+| `POST` | `/api/screens/{screenId}/screenshot` | 下发屏幕截图指令 |
+| `GET` | `/api/screens/{screenId}/screenshot` | 查看屏幕最近一次截图 |
+| `POST` | `/api/screens/{screenId}/command` | 下发刷新、休眠、唤醒、软关机指令 |
+| `DELETE` | `/api/screens/{screenId}` | 解绑自己的屏幕 |
 | `POST` | `/api/device/pairing/start` | 屏幕 APP 创建短期配对码 |
 | `POST` | `/api/device/pairing/complete` | 屏幕 APP 换取 Device Token |
 | `GET` | `/api/device/manifest` | 屏幕 APP 使用 Device Token 拉取播放清单 |
+| `POST` | `/api/device/heartbeat` | 屏幕 APP 上报在线状态和设备信息 |
+| `POST` | `/api/device/screenshot` | 屏幕 APP 按指令回传截图 |
+| `POST` | `/api/device/command/ack` | 屏幕 APP 确认指令已完成 |
 | `GET` | `/api/deploys` | 公共市场搜索 |
 | `GET` | `/api/deploys/{publicId}` | 通过 UUID 或 code 获取公共部署详情 |
 | `POST` | `/api/deploys/{code}/like` | 公开点赞 |
@@ -95,7 +104,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 | `POST` | `/api/deploys/{code}/versions/{version}/lock` | 锁定 / 解锁某个版本 |
 | `GET/PATCH` | `/api/deploys/{code}/primary-strategy` | 读取或设置 `likes` / `latest` 策略 |
 | `PATCH` | `/api/admin/sites/{code}/pin` | 管理员置顶 / 取消置顶首页应用 |
-| `GET` | `/api/admin/session` | 校验管理员登录 |
+| `GET` | `/api/admin/session` | 校验后台登录会话 |
 | `GET` | `/api/admin/anonymous-sessions` | 查看匿名会话使用情况 |
 | `GET` | `/api/admin/sites` | 管理员站点清单 |
 | `DELETE` | `/api/admin/sites/{code}` | 删除整个站点 |
@@ -106,8 +115,9 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 
 生产环境认证规则：
 
-- 匿名部署允许在配置的配额内进行，默认每个会话可部署 5 次。Agent 先调用 `/api/session`，再在写请求中携带 `X-Hostctl-Session`。
-- 匿名会话可以设置访问密码、删除和修改自己发布的站点；匿名统计按 session 记录，未发布的空 session 不计入后台列表。
+- 匿名部署允许在配置的配额内进行，默认每个会话可部署 5 次。Agent 可以先调用 `/api/session` 并在写请求中携带 `X-Hostctl-Session`；如果未登录发布没有携带 session，服务端也会自动创建并记录匿名 session。
+- 匿名身份分两类入口但底层统一：网页匿名使用浏览器 `hostctl_anon_session` HttpOnly cookie；Agent 匿名使用本地 `~/.hostctl/session.json` 中的 `sessionId` 并发送 `X-Hostctl-Session`。两者在服务端都映射为 `anon:{sessionId}` owner，`X-Hostctl-Agent-Id`、`X-Hostctl-Agent-Label`、IP 和 UA 只用于后台展示和排查。
+- 匿名会话可以设置访问密码、删除和修改自己发布的站点；匿名统计只按实际未登录发布记录，未发布的空 session 不计入后台列表。
 - 用户注册 / 登录或使用 Bearer Token 后，可以调用 `/api/session/claim` 认领当前匿名 session。认领后该 session 已发布的站点会迁移到 `user:{userId}`，一个用户可以认领多个匿名 session。
 - Token 必须归属到用户。创建 Token 时默认永久有效，也可传 `expiresAt` 或 `ttlSeconds` 创建临时 Token。
 - 管理员控制台、令牌管理、配置写入以及整站删除都需要管理员权限（`isAdmin=true`）。
@@ -117,7 +127,18 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 屏幕投放只允许注册用户 Token 或登录用户会话调用；匿名 session 不能绑定屏幕或投屏。
 - 屏幕 APP 不持有用户 Token，只持有可吊销的 Device Token；Device Token 只能拉取自己的 manifest 和上报心跳。
 - 屏幕配对码是 5 分钟一次性短码，只用于首次绑定，不是长期权限。
-- 内置页面 `/deploy.html`、`/api-docs.html`、`/agents/` 由 Go 服务内嵌返回；反向代理应把这些路径原样转发给 PagePilot。
+- 内置页面 `/deploy.html`、`/api-docs.html`、`/agents/`、`/screens/` 由 Go 服务内嵌返回；反向代理应把这些路径原样转发给 PagePilot。
+
+## 手动部署与多文件站点
+
+手动部署页面和后台“发布应用”都支持两种模式：
+
+- 单 HTML：粘贴或上传一个 HTML 文件，入口默认为 `index.html`。
+- 多文件项目：上传多个文件或目录，PagePilot 按相对路径保存 `HTML/CSS/JS/图片/字体/JSON` 等资源，并优先选择 `index.html` 作为入口；如果没有 `index.html`，会选择第一个 HTML 文件。
+
+多文件站点应使用相对链接，例如 `./assets/app.css`、`settings.html`。默认兼容入口是 `/agent/{code}/`，所以不要在路径模式下把资源写成 `/assets/app.css` 这种根路径，除非已经启用泛域名模式。
+
+更新已有发布时必须填写已有 `code` 并选择“追加为新版本”。`code` 可以从返回链接 `/agent/{code}/`、应用详情页、后台站点列表、Skill `list_sites` 或 MCP `list_sites` 获取。追加版本不会创建新访问地址，也不会改变原站点的公开方式和访问密码。
 
 结构化错误格式如下：
 
@@ -161,7 +182,7 @@ bin/hostctl admin pin-site my-landing --unpin
 ```bash
 python skill/hostctl-deploy/scripts/hostctl_deploy.py doctor --server http://127.0.0.1:8787
 python skill/hostctl-deploy/scripts/hostctl_deploy.py deploy ./site --code demo --description "Shareable demo site."
-python skill/hostctl-deploy/scripts/hostctl_deploy.py deploy ./site --update --description "Revised demo site."
+python skill/hostctl-deploy/scripts/hostctl_deploy.py deploy ./site --code demo --update --title "演示站点" --description "Revised demo site."
 python skill/hostctl-deploy/scripts/hostctl_deploy.py token create --label ci-bot
 python skill/hostctl-deploy/scripts/hostctl_deploy.py token create --label temp-runner --ttl-seconds 86400
 python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
@@ -176,9 +197,14 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py --server https://host.exam
 python skill/hostctl-deploy/scripts/hostctl_deploy.py screen bind 123456 --name "大厅屏"
 python skill/hostctl-deploy/scripts/hostctl_deploy.py screen publish --screen screen_xxx --app my-landing
 python skill/hostctl-deploy/scripts/hostctl_deploy.py screen publish --screen screen_xxx --source ./site --title "大屏展示" --description "Fullscreen display for the lobby."
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen screenshot screen_xxx --output ./screen-shot.jpg
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen refresh screen_xxx
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen sleep screen_xxx
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen wake screen_xxx
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen shutdown screen_xxx
 ```
 
-本项目还在 `cmd/hostctl-mcp` 提供了 MCP 服务器，供偏好通过 stdio 走 JSON-RPC 的工具使用；管理员置顶对应工具为 `set_site_pin`。
+本项目还在 `cmd/hostctl-mcp` 提供了 MCP 服务器，供偏好通过 stdio 走 JSON-RPC 的工具使用。MCP 支持部署、访问密码、匿名认领、管理员置顶，以及 `list_screens`、`bind_screen`、`publish_screen`、`request_screen_screenshot`、`send_screen_command`、`unbind_screen` 等屏幕工具。
 
 对已有项目，Agent 应在原 code 上追加版本，而不是创建新的访问地址。技能会把 `source -> code` 记在 `~/.hostctl/projects.json`；如果没有记录的 code，Agent 在部署更新前应向用户索要原始 code 或 URL。
 
@@ -191,6 +217,9 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py screen publish --screen sc
 - 一个注册用户可以绑定多个屏幕。
 - 投屏发布的是 manifest 播放清单，不是直接下发裸 HTML 字符串。
 - 第一版在线加载 `entryUrl`，manifest 已包含资源 hash，后续可实现离线缓存。
+- 屏幕端右上角连续点击 5 次打开隐藏设置，可查看绑定用户、设备信息、分辨率和横竖屏，也可切换服务器或清除绑定。
+- 后台、Skill 和 MCP 可下发截图、刷新、休眠、唤醒和软关机指令；截图只在后台指令触发时回传。
+- 软关机、开机自启和定时开关机依赖硬件或系统权限，通用 APP 侧只能做黑屏待机和刷新播放。
 
 ## 存储布局
 

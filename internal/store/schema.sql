@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS sites (
     owner_token_id             TEXT NOT NULL,
     current_version            INTEGER,                          -- 当前对外服务的版本号；NULL = 已下线
     primary_version_strategy   TEXT NOT NULL DEFAULT 'likes',    -- 'likes' | 'latest'
+    visibility                 TEXT NOT NULL DEFAULT 'public',   -- 'public' | 'unlisted'
     view_count                 INTEGER NOT NULL DEFAULT 0,       -- 访问数（页面 GET）
     like_count                 INTEGER NOT NULL DEFAULT 0,       -- 点赞数
     status                     TEXT NOT NULL DEFAULT 'active',   -- 'active' | 'inactive'
@@ -138,6 +139,15 @@ CREATE TABLE IF NOT EXISTS screens (
     last_seen_at        DATETIME,
     app_version         TEXT NOT NULL DEFAULT '',
     runtime             TEXT NOT NULL DEFAULT '',
+    device_info         TEXT NOT NULL DEFAULT '{}',
+    screenshot_request_id TEXT NOT NULL DEFAULT '',
+    screenshot_requested_at DATETIME,
+    screenshot_at       DATETIME,
+    command_request_id  TEXT NOT NULL DEFAULT '',
+    command_type        TEXT NOT NULL DEFAULT '',
+    command_payload     TEXT NOT NULL DEFAULT '{}',
+    command_requested_at DATETIME,
+    command_completed_at DATETIME,
     created_at          DATETIME NOT NULL,
     updated_at          DATETIME NOT NULL,
     revoked_at          DATETIME

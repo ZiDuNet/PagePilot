@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +108,10 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		return nil, api.NewError(api.CodeInvalidDescription, "validate",
 			"description must be at most 240 characters")
 	}
+	visibility, updateVisibility, visibilityErr := normalizeVisibility(req.Visibility)
+	if visibilityErr != nil {
+		return nil, visibilityErr
+	}
 
 	// 3. 解析 + 校验内容（content 或 files）
 	rfiles, apiErr := d.resolveContent(req, mainEntry)
@@ -179,6 +184,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			Code:                   code,
 			OwnerTokenID:           ownerTokenID,
 			PrimaryVersionStrategy: string(api.StrategyLikes),
+			Visibility:             visibility,
 			AccessPasswordHash:     accessHash,
 			CreatedAt:              now,
 			Source:                 normalizeSource(req.Source),
@@ -186,6 +192,12 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			_ = os.RemoveAll(d.versionDir(code, versionNumber))
 			return nil, api.NewError(api.CodeInternal, "create_site",
 				fmt.Sprintf("failed to create site: %v", err))
+		}
+	} else if updateVisibility {
+		if err := d.store.SetSiteVisibility(ctx, code, visibility); err != nil {
+			_ = os.RemoveAll(d.versionDir(code, versionNumber))
+			return nil, api.NewError(api.CodeInternal, "site_visibility",
+				fmt.Sprintf("failed to update site visibility: %v", err))
 		}
 	}
 
@@ -243,7 +255,8 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	site, _ := d.store.GetSite(ctx, code)
 	allVersions, _ := d.store.ListVersions(ctx, code)
 	base := strings.TrimRight(d.cfg.PublicBaseURL, "/")
-	publicURL := fmt.Sprintf("%s/agent/%s/", base, code)
+	appURLs := d.AppURLConfig()
+	publicURL := appURLs.PrimaryAppURL(code, nil)
 	strategy := api.StrategyLikes
 	if site.PrimaryVersionStrategy == string(api.StrategyLatest) {
 		strategy = api.StrategyLatest
@@ -259,8 +272,8 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		ID:                     versionID,
 		Code:                   code,
 		URL:                    publicURL,
-		DetailURL:              fmt.Sprintf("%s/agent/%s/", base, code),
-		VersionURL:             fmt.Sprintf("%s/agent/%s/versions/%d/", base, code, versionNumber),
+		DetailURL:              publicURL,
+		VersionURL:             appURLs.PrimaryAppURL(code, &versionNumber),
 		QRCode:                 generateQRCodeDataURL(publicURL),
 		Description:            desc,
 		VersionID:              versionID,
@@ -269,6 +282,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		PreserveHint:           preserveHint,
 		AgentGuideURL:          agentGuideURL,
 		PrimaryVersionStrategy: strategy,
+		Visibility:             site.Visibility,
 		CooldownSeconds:        d.cfg.CooldownSeconds,
 		NextAvailableAt:        time.Now().UTC().Add(retryAfter),
 		VersionCount:           len(allVersions),
@@ -518,6 +532,9 @@ func (d *Deployer) swapCurrentSymlink(code string, version int64) error {
 	// 用相对 symlink（便于迁移、备份）
 	tmpLink := filepath.Join(siteDir, ".current.tmp."+randomSuffix())
 	if err := os.Symlink(target, tmpLink); err != nil {
+		if runtime.GOOS == "windows" {
+			return d.replaceCurrentWithCopy(code, version)
+		}
 		return fmt.Errorf("create tmp symlink: %w", err)
 	}
 
@@ -527,15 +544,80 @@ func (d *Deployer) swapCurrentSymlink(code string, version int64) error {
 	}
 
 	// Fallback：删除旧的 + rename tmp。Windows 走这条。
-	if err := os.Remove(currentLink); err != nil && !os.IsNotExist(err) {
+	if err := removeCurrentPath(currentLink); err != nil {
 		_ = os.Remove(tmpLink)
-		return fmt.Errorf("remove old symlink: %w", err)
+		return fmt.Errorf("remove old current path: %w", err)
 	}
 	if err := os.Rename(tmpLink, currentLink); err != nil {
 		_ = os.Remove(tmpLink)
+		if runtime.GOOS == "windows" {
+			if copyErr := d.replaceCurrentWithCopy(code, version); copyErr == nil {
+				return nil
+			}
+		}
 		return fmt.Errorf("rename symlink (fallback): %w", err)
 	}
 	return nil
+}
+
+func removeCurrentPath(path string) error {
+	if err := os.Remove(path); err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	if err := os.RemoveAll(path); err == nil || os.IsNotExist(err) {
+		return nil
+	} else {
+		return err
+	}
+}
+
+// Windows 开发机常见场景没有创建目录 symlink 的权限，这里退化为复制目录。
+func (d *Deployer) replaceCurrentWithCopy(code string, version int64) error {
+	siteDir := d.siteDir(code)
+	currentDir := filepath.Join(siteDir, "current")
+	srcDir := d.versionDir(code, version)
+	tmpDir := filepath.Join(siteDir, ".current.dir."+randomSuffix())
+	_ = os.RemoveAll(tmpDir)
+	if err := copyDir(srcDir, tmpDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("copy version dir: %w", err)
+	}
+	if err := removeCurrentPath(currentDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("remove current dir: %w", err)
+	}
+	if err := os.Rename(tmpDir, currentDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("rename current dir: %w", err)
+	}
+	return nil
+}
+
+func copyDir(srcDir, dstDir string) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		target := dstDir
+		if rel != "." {
+			target = filepath.Join(dstDir, rel)
+		}
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
 }
 
 // 路径辅助方法
@@ -552,6 +634,20 @@ func normalizeSource(s string) string {
 		return "api"
 	}
 	return s
+}
+
+func normalizeVisibility(raw string) (string, bool, *api.APIError) {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	if value == "" {
+		return "public", false, nil
+	}
+	switch value {
+	case "public", "unlisted":
+		return value, true, nil
+	default:
+		return "", false, api.NewError(api.CodeInvalidInput, "visibility",
+			"visibility must be public or unlisted")
+	}
 }
 
 func sha256sum(b []byte) string {
@@ -657,6 +753,10 @@ func isValidAutoCode(code string) bool {
 // PublicBaseURL 暴露当前 baseURL（用于 GET /api/config）。
 func (d *Deployer) PublicBaseURL() string { return d.cfg.PublicBaseURL }
 
+func (d *Deployer) AppURLConfig() api.AppURLConfig {
+	return api.NewAppURLConfig(d.cfg)
+}
+
 // SetPublicBaseURL 把新的 baseURL 写入数据库并热更新内存。
 // 下一次部署就会用新值拼 URL。
 func (d *Deployer) SetPublicBaseURL(ctx context.Context, baseURL string) error {
@@ -665,6 +765,26 @@ func (d *Deployer) SetPublicBaseURL(ctx context.Context, baseURL string) error {
 		return fmt.Errorf("persist baseURL: %w", err)
 	}
 	d.cfg.PublicBaseURL = baseURL
+	return nil
+}
+
+func (d *Deployer) SetAppURLConfig(ctx context.Context, cfg api.AppURLConfig) error {
+	if err := d.store.SetSetting(ctx, "app_url_mode", api.NormalizeAppURLModeForConfig(cfg.AppURLMode)); err != nil {
+		return fmt.Errorf("persist app url mode: %w", err)
+	}
+	if err := d.store.SetSetting(ctx, "app_domain_suffix", api.NormalizeAppDomainSuffixForConfig(cfg.AppDomainSuffix)); err != nil {
+		return fmt.Errorf("persist app domain suffix: %w", err)
+	}
+	if err := d.store.SetSetting(ctx, "app_url_scheme", api.NormalizeAppURLSchemeForConfig(cfg.AppURLScheme)); err != nil {
+		return fmt.Errorf("persist app url scheme: %w", err)
+	}
+	if err := d.store.SetSetting(ctx, "app_url_port", api.NormalizeAppURLPortForConfig(cfg.AppURLPort)); err != nil {
+		return fmt.Errorf("persist app url port: %w", err)
+	}
+	d.cfg.AppURLMode = api.NormalizeAppURLModeForConfig(cfg.AppURLMode)
+	d.cfg.AppDomainSuffix = api.NormalizeAppDomainSuffixForConfig(cfg.AppDomainSuffix)
+	d.cfg.AppURLScheme = api.NormalizeAppURLSchemeForConfig(cfg.AppURLScheme)
+	d.cfg.AppURLPort = api.NormalizeAppURLPortForConfig(cfg.AppURLPort)
 	return nil
 }
 
@@ -702,7 +822,7 @@ func (d *Deployer) SetUploadLimits(ctx context.Context, singleFileBytes, siteTot
 }
 
 func (d *Deployer) SetCORSAllowOrigins(ctx context.Context, origins string) error {
-	origins = strings.TrimSpace(origins)
+	origins = config.NormalizeCORSAllowOrigins(origins)
 	if err := d.store.SetSetting(ctx, "cors_allow_origins", origins); err != nil {
 		return fmt.Errorf("persist CORS allow origins: %w", err)
 	}
@@ -726,6 +846,18 @@ func sanitizeSiteTitle(title string) string {
 func (d *Deployer) LoadPersistedSettings(ctx context.Context) config.Config {
 	if v, err := d.store.GetSetting(ctx, "public_base_url"); err == nil && v != "" {
 		d.cfg.PublicBaseURL = v
+	}
+	if v, err := d.store.GetSetting(ctx, "app_url_mode"); err == nil && v != "" {
+		d.cfg.AppURLMode = api.NormalizeAppURLModeForConfig(v)
+	}
+	if v, err := d.store.GetSetting(ctx, "app_domain_suffix"); err == nil {
+		d.cfg.AppDomainSuffix = api.NormalizeAppDomainSuffixForConfig(v)
+	}
+	if v, err := d.store.GetSetting(ctx, "app_url_scheme"); err == nil && v != "" {
+		d.cfg.AppURLScheme = api.NormalizeAppURLSchemeForConfig(v)
+	}
+	if v, err := d.store.GetSetting(ctx, "app_url_port"); err == nil {
+		d.cfg.AppURLPort = api.NormalizeAppURLPortForConfig(v)
 	}
 	if v, err := d.store.GetSetting(ctx, "anonymous_deploy_limit"); err == nil && v != "" {
 		if n, perr := strconv.Atoi(v); perr == nil && n >= -1 {
@@ -754,7 +886,7 @@ func (d *Deployer) LoadPersistedSettings(ctx context.Context) config.Config {
 		}
 	}
 	if v, err := d.store.GetSetting(ctx, "cors_allow_origins"); err == nil && v != "" {
-		d.cfg.CORSAllowOrigins = v
+		d.cfg.CORSAllowOrigins = config.NormalizeCORSAllowOrigins(v)
 	}
 	return d.cfg
 }
@@ -824,6 +956,14 @@ func (d *Deployer) GetSite(ctx context.Context, code string) (store.Site, error)
 
 func (d *Deployer) SetSitePinned(ctx context.Context, code string, pinned bool) error {
 	return d.store.SetSitePinned(ctx, code, pinned)
+}
+
+func (d *Deployer) SetSiteVisibility(ctx context.Context, code, visibility string) error {
+	value, _, apiErr := normalizeVisibility(visibility)
+	if apiErr != nil {
+		return errors.New(apiErr.Detail)
+	}
+	return d.store.SetSiteVisibility(ctx, code, value)
 }
 
 func (d *Deployer) SetSiteAccessPassword(ctx context.Context, code, password string) error {

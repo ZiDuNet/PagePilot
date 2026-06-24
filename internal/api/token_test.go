@@ -133,6 +133,86 @@ func TestDeployRejectsClaimedAnonymousSession(t *testing.T) {
 	}
 }
 
+func TestAnonymousDeployWithoutExistingSessionIsTracked(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	stub := newTrackingAnonymousDeployStub()
+	srv.deployer = stub
+	admin, err := authSvc.CreateUser(context.Background(), "admin", "password123", true, 20)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	token, err := authSvc.Generate(context.Background(), "admin-token", true, admin.ID, nil)
+	if err != nil {
+		t.Fatalf("generate admin token: %v", err)
+	}
+
+	body, _ := json.Marshal(DeployRequest{
+		Filename:          "index.html",
+		Title:             "匿名发布记录测试",
+		Description:       "匿名发布记录测试页面",
+		Content:           "<!doctype html><html><head><title>匿名发布记录测试</title></head><body><h1>ok</h1></body></html>",
+		Visibility:        "unlisted",
+		AccessPassword:    "secret123",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Hostctl-Agent-Id", "agent-abc")
+	req.Header.Set("X-Hostctl-Agent-Label", "匿名测试 Agent")
+	req.Header.Set("User-Agent", "PagePilotTest/1.0")
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("deploy status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+	}
+	if stub.deployOwner != "anon:"+stub.createdSessionID {
+		t.Fatalf("deploy owner = %q, want anon owner for generated session %q", stub.deployOwner, stub.createdSessionID)
+	}
+	cookies := rr.Result().Cookies()
+	var sessionID string
+	for _, c := range cookies {
+		if c.Name == "hostctl_anon_session" {
+			sessionID = c.Value
+			break
+		}
+	}
+	if !strings.HasPrefix(sessionID, "anon_") {
+		t.Fatalf("anonymous session cookie = %q, want generated anon_ id", sessionID)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/anonymous-sessions", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token.Plaintext)
+	listRR := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(listRR, listReq)
+
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s; want %d", listRR.Code, listRR.Body.String(), http.StatusOK)
+	}
+	var got AnonymousSessionListResponse
+	if err := json.Unmarshal(listRR.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(got.Sessions) != 1 {
+		t.Fatalf("anonymous sessions = %#v, want one tracked deploy", got.Sessions)
+	}
+	session := got.Sessions[0]
+	if session.ID != sessionID {
+		t.Fatalf("session id = %q, want %q", session.ID, sessionID)
+	}
+	if session.AgentID != "agent-abc" || session.AgentLabel != "匿名测试 Agent" {
+		t.Fatalf("agent meta = %#v, want request headers recorded", session)
+	}
+	if session.DeployCount != 1 {
+		t.Fatalf("deploy count = %d, want 1", session.DeployCount)
+	}
+	if session.Remaining != 49 {
+		t.Fatalf("remaining = %d, want 49", session.Remaining)
+	}
+}
+
 type marketplaceDeploysStub struct {
 	DeployerPort
 	deploys []store.MarketplaceDeploy
@@ -202,6 +282,122 @@ func (s *claimedAnonymousDeployStub) Deploy(
 	}, nil
 }
 
+type trackingAnonymousDeployStub struct {
+	DeployerPort
+	sessions         map[string]store.AnonymousSession
+	createdSessionID string
+	deployOwner      string
+}
+
+func newTrackingAnonymousDeployStub() *trackingAnonymousDeployStub {
+	return &trackingAnonymousDeployStub{
+		sessions: map[string]store.AnonymousSession{},
+	}
+}
+
+func (s *trackingAnonymousDeployStub) PublicBaseURL() string {
+	return "http://example.test"
+}
+
+func (s *trackingAnonymousDeployStub) CreateAnonymousSession(
+	_ context.Context,
+	id string,
+) (store.AnonymousSession, error) {
+	now := time.Now()
+	sess := store.AnonymousSession{ID: id, CreatedAt: now, LastUsedAt: now}
+	s.sessions[id] = sess
+	s.createdSessionID = id
+	return sess, nil
+}
+
+func (s *trackingAnonymousDeployStub) GetAnonymousSession(
+	_ context.Context,
+	id string,
+) (store.AnonymousSession, error) {
+	sess, ok := s.sessions[id]
+	if !ok {
+		return store.AnonymousSession{}, store.ErrNotFound
+	}
+	return sess, nil
+}
+
+func (s *trackingAnonymousDeployStub) UpdateAnonymousSessionMeta(
+	_ context.Context,
+	id string,
+	agentID string,
+	agentLabel string,
+	deviceIP string,
+	userAgent string,
+) error {
+	sess, ok := s.sessions[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if agentID != "" {
+		sess.AgentID = agentID
+	}
+	if agentLabel != "" {
+		sess.AgentLabel = agentLabel
+	}
+	if deviceIP != "" {
+		sess.DeviceIP = deviceIP
+	}
+	if userAgent != "" {
+		sess.UserAgent = userAgent
+	}
+	sess.LastUsedAt = time.Now()
+	s.sessions[id] = sess
+	return nil
+}
+
+func (s *trackingAnonymousDeployStub) IncrementAnonymousSessionDeployCount(
+	_ context.Context,
+	id string,
+) (store.AnonymousSession, error) {
+	sess, ok := s.sessions[id]
+	if !ok {
+		return store.AnonymousSession{}, store.ErrNotFound
+	}
+	sess.DeployCount++
+	sess.LastUsedAt = time.Now()
+	s.sessions[id] = sess
+	return sess, nil
+}
+
+func (s *trackingAnonymousDeployStub) ListAnonymousSessions(
+	context.Context,
+	int,
+) ([]store.AnonymousSession, error) {
+	out := make([]store.AnonymousSession, 0, len(s.sessions))
+	for _, sess := range s.sessions {
+		if sess.DeployCount > 0 {
+			out = append(out, sess)
+		}
+	}
+	return out, nil
+}
+
+func (s *trackingAnonymousDeployStub) Deploy(
+	_ context.Context,
+	_ DeployRequest,
+	ownerTokenID string,
+	_ string,
+) (*DeployResponse, *APIError) {
+	s.deployOwner = ownerTokenID
+	return &DeployResponse{
+		Success:                true,
+		Code:                   "anon-track-test",
+		URL:                    "http://example.test/agent/anon-track-test/",
+		DetailURL:              "http://example.test/agent/anon-track-test/",
+		VersionURL:             "http://example.test/agent/anon-track-test/versions/1/",
+		VersionID:              "version-1",
+		CurrentVersionID:       "version-1",
+		VersionNumber:          1,
+		PrimaryVersionStrategy: StrategyLikes,
+		Visibility:             "unlisted",
+	}, nil
+}
+
 func newTokenTestServer(t *testing.T) (*Server, *auth.Service, func()) {
 	t.Helper()
 	tmp := t.TempDir()
@@ -214,6 +410,7 @@ func newTokenTestServer(t *testing.T) (*Server, *auth.Service, func()) {
 	cfg.DBPath = filepath.Join(tmp, "hostctl.db")
 	cfg.PublicBaseURL = "http://example.test"
 	cfg.CooldownSeconds = 0
+	cfg.AnonymousDeployLimit = 50
 	authSvc := auth.New(st)
 	srv := New(cfg, nil, authSvc, true, log.New(bytes.NewBuffer(nil), "", 0)).
 		WithVersion("test")

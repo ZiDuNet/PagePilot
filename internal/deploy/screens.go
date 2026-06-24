@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"time"
 
 	"github.com/yourorg/hostctl/internal/store"
 )
@@ -38,8 +39,24 @@ func (d *Deployer) PublishScreen(ctx context.Context, screenID, ownerUserID, sit
 	return d.store.PublishScreen(ctx, screenID, ownerUserID, siteCode, version)
 }
 
-func (d *Deployer) TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime string) (store.Screen, error) {
-	return d.store.TouchScreenHeartbeat(ctx, screenID, appVersion, runtime)
+func (d *Deployer) TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime, deviceInfo string) (store.Screen, error) {
+	return d.store.TouchScreenHeartbeat(ctx, screenID, appVersion, runtime, deviceInfo)
+}
+
+func (d *Deployer) RequestScreenScreenshot(ctx context.Context, screenID, requestID string) (store.Screen, error) {
+	return d.store.RequestScreenScreenshot(ctx, screenID, requestID)
+}
+
+func (d *Deployer) CompleteScreenScreenshot(ctx context.Context, screenID, requestID string, screenshotAt time.Time) (store.Screen, error) {
+	return d.store.CompleteScreenScreenshot(ctx, screenID, requestID, screenshotAt)
+}
+
+func (d *Deployer) RequestScreenCommand(ctx context.Context, screenID, requestID, commandType, payload string) (store.Screen, error) {
+	return d.store.RequestScreenCommand(ctx, screenID, requestID, commandType, payload)
+}
+
+func (d *Deployer) CompleteScreenCommand(ctx context.Context, screenID, requestID string, completedAt time.Time) (store.Screen, error) {
+	return d.store.CompleteScreenCommand(ctx, screenID, requestID, completedAt)
 }
 
 func (d *Deployer) UnbindScreen(ctx context.Context, screenID, ownerUserID string) error {

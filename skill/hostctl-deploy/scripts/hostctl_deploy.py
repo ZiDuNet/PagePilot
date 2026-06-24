@@ -13,6 +13,7 @@ import os
 import pathlib
 import platform
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -282,6 +283,44 @@ def ensure_description(args) -> None:
         die("--description must be at most 240 characters.")
 
 
+def ensure_title(args) -> None:
+    title = str(getattr(args, "title", "") or "").strip()
+    if not title:
+        die("--title is required. Use a meaningful Chinese display name, not a filename.")
+    lowered = title.lower()
+    generic = {"index", "index.html", "index.htm", "untitled", "demo", "test", "page", "app"}
+    if lowered in generic or lowered.endswith(".html") or lowered.endswith(".htm"):
+        die("--title must be a meaningful display name, not index.html, demo, test, or a filename.")
+    if not any("\u4e00" <= ch <= "\u9fff" for ch in title):
+        die("--title must contain a meaningful Chinese name for the PagePilot listing.")
+
+
+def add_deploy_options(payload: dict, args) -> None:
+    if getattr(args, "title", ""):
+        payload["title"] = args.title
+    if getattr(args, "visibility", ""):
+        payload["visibility"] = args.visibility
+    if getattr(args, "access_password", ""):
+        payload["accessPassword"] = args.access_password
+
+
+def apply_access_password_after_deploy(args, base: str, token: str, code: str) -> None:
+    password = getattr(args, "access_password", "") or ""
+    if not password:
+        return
+    status, data = request_json(
+        base,
+        token or auth_token(args),
+        f"/api/deploys/{urllib.parse.quote(code, safe='')}/access",
+        "PATCH",
+        {"password": password},
+        "" if token or auth_token(args) else load_session_id(base),
+    )
+    if not (200 <= status < 300 and data.get("success", True) is not False):
+        die("Deploy succeeded but setting access password failed: " +
+            json.dumps({"httpStatus": status, **data}, ensure_ascii=False))
+
+
 def cmd_doctor(args) -> int:
     base = server_url(args)
     token = auth_token(args)
@@ -336,14 +375,13 @@ def cmd_claim_session(args) -> int:
 
 def cmd_deploy(args) -> int:
     ensure_description(args)
+    ensure_title(args)
     base = server_url(args)
+    token = auth_token(args)
     code = args.code or remembered_code(base, args.source)
     files, main_entry = read_source(args.source)
     payload = {"description": args.description, "filename": args.filename or main_entry, "files": files}
-    if args.title:
-        payload["title"] = args.title
-    if getattr(args, "access_password", ""):
-        payload["accessPassword"] = args.access_password
+    add_deploy_options(payload, args)
     if code:
         payload["enableCustomCode"] = True
         payload["customCode"] = code
@@ -355,11 +393,15 @@ def cmd_deploy(args) -> int:
     status, data = request_write(args, "/api/deploy", "POST", payload)
     if 200 <= status < 300 and data.get("code"):
         remember_project(base, args.source, data["code"])
+        apply_access_password_after_deploy(args, base, token, str(data["code"]))
     return print_result(status, data)
 
 
 def cmd_append(args) -> int:
     ensure_description(args)
+    ensure_title(args)
+    base = server_url(args)
+    token = auth_token(args)
     files, main_entry = read_source(args.source)
     payload = {
         "description": args.description,
@@ -369,11 +411,11 @@ def cmd_append(args) -> int:
         "customCode": args.code,
         "createVersion": True,
     }
-    if args.title:
-        payload["title"] = args.title
+    add_deploy_options(payload, args)
     status, data = request_write(args, "/api/deploy", "POST", payload)
     if 200 <= status < 300 and data.get("code"):
-        remember_project(server_url(args), args.source, data["code"])
+        remember_project(base, args.source, data["code"])
+        apply_access_password_after_deploy(args, base, token, str(data["code"]))
     return print_result(status, data)
 
 
@@ -438,11 +480,11 @@ def _ensure_unlocked(args, action: str) -> None:
 
 def cmd_overwrite(args) -> int:
     ensure_description(args)
+    ensure_title(args)
     _ensure_unlocked(args, "overwrite")
     files, main_entry = read_source(args.source)
     payload = {"description": args.description, "filename": args.filename or main_entry, "files": files}
-    if args.title:
-        payload["title"] = args.title
+    add_deploy_options(payload, args)
     code = urllib.parse.quote(args.code, safe="")
     version = urllib.parse.quote(str(args.version), safe="")
     status, data = request_write(args, f"/api/deploys/{code}/versions/{version}", "PATCH", payload)
@@ -581,6 +623,17 @@ def cmd_config_set_base(args) -> int:
     return print_result(status, data)
 
 
+def cmd_config_set_app_url(args) -> int:
+    payload = {
+        "appURLMode": args.mode,
+        "appDomainSuffix": args.domain_suffix,
+        "appURLScheme": args.scheme,
+        "appURLPort": args.port,
+    }
+    status, data = request_json(server_url(args), auth_token(args), "/api/config", "PUT", payload)
+    return print_result(status, data)
+
+
 def cmd_screen_list(args) -> int:
     token = registered_token(args, "screen list")
     status, data = request_json(server_url(args), token, "/api/screens")
@@ -603,15 +656,16 @@ def cmd_screen_publish(args) -> int:
     if args.source:
         if not args.description:
             die("--description is required when publishing a local path to a screen.")
+        ensure_title(args)
         files, main_entry = read_source(args.source)
         payload = {"description": args.description, "filename": args.filename or main_entry, "files": files}
-        if args.title:
-            payload["title"] = args.title
+        add_deploy_options(payload, args)
         deploy_status, deploy_data = request_json(base, token, "/api/deploy", "POST", payload)
         if not (200 <= deploy_status < 300 and deploy_data.get("code")):
             return print_result(deploy_status, deploy_data)
         code = str(deploy_data["code"])
         remember_project(base, args.source, code)
+        apply_access_password_after_deploy(args, base, token, code)
     if not code:
         die("Pass --app <code> to publish an existing app, or --source <path> to deploy and publish.")
     payload = {"code": code}
@@ -638,6 +692,53 @@ def cmd_screen_unbind(args) -> int:
     return print_result(status, data)
 
 
+def cmd_screen_command(args) -> int:
+    token = registered_token(args, f"screen {args.command}")
+    screen_id = urllib.parse.quote(args.screen, safe="")
+    payload = {"type": args.command}
+    status, data = request_json(server_url(args), token, f"/api/screens/{screen_id}/command", "POST", payload)
+    return print_result(status, data)
+
+
+def fetch_screen_screenshot(base: str, token: str, screen: str, output: str) -> bool:
+    screen_id = urllib.parse.quote(screen, safe="")
+    headers = {"User-Agent": UA, "Accept": "image/png,image/jpeg,image/webp,*/*", "Authorization": "Bearer " + token}
+    req = urllib.request.Request(f"{base}/api/screens/{screen_id}/screenshot?ts={int(time.time() * 1000)}", headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            body = resp.read()
+            pathlib.Path(output).write_bytes(body)
+            print(json.dumps({
+                "success": True,
+                "screen": screen,
+                "output": output,
+                "bytes": len(body),
+                "contentType": resp.headers.get("Content-Type", ""),
+            }, ensure_ascii=False, indent=2))
+            return True
+    except urllib.error.HTTPError:
+        return False
+
+
+def cmd_screen_screenshot(args) -> int:
+    token = registered_token(args, "screen screenshot")
+    base = server_url(args)
+    screen_id = urllib.parse.quote(args.screen, safe="")
+    status, data = request_json(base, token, f"/api/screens/{screen_id}/screenshot", "POST")
+    if not (200 <= status < 300 and data.get("success", True) is not False):
+        return print_result(status, data)
+    if not args.output:
+        return print_result(status, data)
+    deadline = time.time() + max(0, args.timeout)
+    while time.time() <= deadline:
+        if fetch_screen_screenshot(base, token, args.screen, args.output):
+            return 0
+        time.sleep(2)
+    print(json.dumps({"httpStatus": status, **data}, ensure_ascii=False, indent=2))
+    print(f"Screenshot command was sent, but no image was available within {args.timeout} seconds.", file=sys.stderr)
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deploy and manage static sites on a hostctl server")
     parser.add_argument("--server", help="hostctl server URL (default: $HOSTCTL_SERVER or http://localhost:8787)")
@@ -658,14 +759,15 @@ def build_parser() -> argparse.ArgumentParser:
     def add_common_deploy_flags(p, *, with_code: bool, with_create_version: bool):
         p.add_argument("source", help="Path to an HTML file or a site directory")
         p.add_argument("--description", "-d", required=True, help="Required concise description, max 240 chars")
-        p.add_argument("--title", "-t", help="Optional site/version title")
+        p.add_argument("--title", "-t", required=True, help="Required meaningful Chinese site/version title")
         p.add_argument("--filename", "-f", help="Main entry filename (default: source or index.html)")
         if with_code:
             p.add_argument("--code", "-c", help="Stable custom short code. If it exists, deploy appends a new version.")
             p.add_argument("--update", action="store_true", help="Require updating an existing remembered/explicit code; refuse to create a new link.")
         if with_create_version:
             p.add_argument("--create-version", action="store_true", help="Deprecated: deploy now appends automatically when --code is present")
-        p.add_argument("--access-password", help="Optional visit password for a new site.")
+        p.add_argument("--visibility", choices=["public", "unlisted"], default="", help="public enters marketplace; unlisted is link-only")
+        p.add_argument("--access-password", help="Optional visit password. Existing codes are updated after deploy.")
 
     p = sub.add_parser("deploy", help="Deploy a new site from a file or directory")
     add_common_deploy_flags(p, with_code=True, with_create_version=True)
@@ -775,6 +877,12 @@ def build_parser() -> argparse.ArgumentParser:
     pc = config_sub.add_parser("set-base-url", help="Update publicBaseURL")
     pc.add_argument("public_base_url")
     pc.set_defaults(func=cmd_config_set_base)
+    pc = config_sub.add_parser("set-app-url", help="Update hosted app URL mode and wildcard domain settings")
+    pc.add_argument("--mode", choices=["path", "domain", "dual"], required=True, help="path keeps /agent/{code}; domain uses {code}.suffix; dual enables both")
+    pc.add_argument("--domain-suffix", default="", help="Wildcard app host suffix, e.g. apps.pagepilot.example.com")
+    pc.add_argument("--scheme", choices=["https", "http"], default="https")
+    pc.add_argument("--port", default="", help="Optional external app URL port, e.g. 1143")
+    pc.set_defaults(func=cmd_config_set_app_url)
 
     p_screen = sub.add_parser("screen", help="Manage and publish to hardware screens (registered users only)")
     screen_sub = p_screen.add_subparsers(dest="screen_cmd", required=True)
@@ -789,10 +897,26 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--app", default="", help="Existing PagePilot app code")
     ps.add_argument("--source", default="", help="Optional local HTML file or site directory to deploy before publishing")
     ps.add_argument("--description", "-d", default="", help="Required when --source is used")
-    ps.add_argument("--title", "-t", default="", help="Optional title when --source is used")
+    ps.add_argument("--title", "-t", default="", help="Required meaningful Chinese title when --source is used")
     ps.add_argument("--filename", "-f", default="", help="Main entry filename when --source is used")
+    ps.add_argument("--visibility", choices=["public", "unlisted"], default="", help="Visibility for --source deploy")
+    ps.add_argument("--access-password", default="", help="Optional visit password for --source deploy")
     ps.add_argument("--version-number", type=int, help="Optional version number for an existing app")
     ps.set_defaults(func=cmd_screen_publish)
+    ps = screen_sub.add_parser("screenshot", help="Request a device screenshot and optionally save the returned image")
+    ps.add_argument("screen")
+    ps.add_argument("--output", "-o", default="", help="Save latest screenshot to this image file after requesting")
+    ps.add_argument("--timeout", type=int, default=30, help="Seconds to wait when --output is set")
+    ps.set_defaults(func=cmd_screen_screenshot)
+    for command, help_text in [
+        ("refresh", "Refresh the screen WebView"),
+        ("sleep", "Put the screen into black-screen standby"),
+        ("wake", "Wake the screen and resume playback"),
+        ("shutdown", "Request soft shutdown or black-screen standby"),
+    ]:
+        ps = screen_sub.add_parser(command, help=help_text)
+        ps.add_argument("screen")
+        ps.set_defaults(func=cmd_screen_command, command=command)
     ps = screen_sub.add_parser("status", help="Show bound screen status")
     ps.add_argument("screen", nargs="?", default="", help="Optional screen id to filter")
     ps.set_defaults(func=cmd_screen_status)

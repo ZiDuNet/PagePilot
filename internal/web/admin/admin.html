@@ -54,6 +54,10 @@
   button:disabled { cursor: not-allowed; opacity: 0.5; }
   .mono, code { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   .hidden { display: none !important; }
+  body.auth-checking #login-screen,
+  body.auth-checking #app-shell {
+    visibility: hidden;
+  }
 
   .login-screen {
     min-height: 100vh;
@@ -434,6 +438,13 @@
     transition: background 160ms ease, border-color 160ms ease;
   }
   .file-zone.dragover { border-color: var(--accent); background: var(--accent-soft); }
+  .upload-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 12px;
+  }
   .file-list {
     max-height: 176px;
     overflow: auto;
@@ -485,6 +496,98 @@
     border-bottom: 1px solid #e6edf3;
   }
   .modal-body { overflow: auto; max-height: calc(100vh - 150px); }
+  .modal-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .modal-tab {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fff;
+    color: #475569;
+    cursor: pointer;
+    font-weight: 800;
+    padding: 8px 12px;
+  }
+  .modal-tab.active {
+    border-color: rgba(15,118,110,0.28);
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+  .section-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface-soft);
+    padding: 4px;
+  }
+  .section-tab {
+    min-height: 32px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--muted);
+    padding: 0 12px;
+    font-size: 13px;
+    font-weight: 800;
+  }
+  .section-tab.active {
+    background: #fff;
+    color: var(--accent-strong);
+    box-shadow: 0 4px 12px rgba(15,23,42,0.08);
+  }
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .info-tile {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    padding: 14px;
+  }
+  .info-tile strong {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--ink);
+    font-size: 14px;
+  }
+  .info-tile span {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .code-block {
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #0f172a;
+    color: #dbeafe;
+    padding: 14px;
+    line-height: 1.65;
+  }
+  .choice-list { display: grid; gap: 10px; }
+  .choice-card {
+    display: grid;
+    grid-template-columns: minmax(0,1fr) auto;
+    gap: 12px;
+    align-items: center;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    padding: 12px;
+  }
+  .choice-card small, .device-meta { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .device-meta code { color: #334155; }
+  .screenshot-image {
+    display: block;
+    width: 100%;
+    max-height: calc(100vh - 220px);
+    object-fit: contain;
+    border-radius: 12px;
+    background: #020617;
+    border: 1px solid var(--line);
+  }
   .version-card {
     display: grid;
     gap: 8px;
@@ -549,7 +652,7 @@
   }
 </style>
 </head>
-<body>
+<body class="auth-checking">
 <section id="login-screen" class="login-screen">
   <div class="login-card">
     <div class="login-art">
@@ -618,13 +721,13 @@
       <button class="nav-item" data-tab="deploy" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"></path><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"></path></svg><span>部署</span></button>
       <button class="nav-item" data-tab="sites" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"></rect><rect width="7" height="7" x="14" y="3" rx="1"></rect><rect width="7" height="7" x="14" y="14" rx="1"></rect><rect width="7" height="7" x="3" y="14" rx="1"></rect></svg><span>站点</span></button>
       <button class="nav-item" data-tab="screens" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"></rect><path d="M8 21h8"></path><path d="M12 17v4"></path></svg><span>屏幕</span></button>
-      <div class="nav-section-label">Agent</div>
+      <div class="nav-section-label">Skill & MCP</div>
       <button class="nav-item" data-tab="tokens" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 1 1"></path><path d="m11.5 11.5 1 1"></path><path d="m7.5 15.5 1 1"></path><path d="M3 21l6.2-6.2"></path><path d="M15.8 8.2A4.5 4.5 0 1 0 12 12l-6.5 6.5L3 21l2.5-2.5L12 12a4.5 4.5 0 0 0 3.8-3.8z"></path></svg><span>Token</span></button>
       <div class="nav-section-label" data-admin-only="true">运营</div>
       <button class="nav-item" data-tab="users" data-admin-only="true" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg><span>用户</span></button>
       <button class="nav-item" data-tab="anonymous" data-admin-only="true" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7a4 4 0 0 1-8 0"></path><path d="M12 3v4"></path><path d="M6 21v-4a6 6 0 0 1 12 0v4"></path><path d="M4 11h16"></path></svg><span>匿名 Agent</span></button>
       <div class="nav-section-label" data-admin-only="true">系统</div>
-      <button class="nav-item" data-tab="skill" data-admin-only="true" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg><span>Skill</span></button>
+      <button class="nav-item" data-tab="skill" data-admin-only="true" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg><span>Skill & MCP</span></button>
       <button class="nav-item" data-tab="config" data-admin-only="true" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg><span>设置</span></button>
     </nav>
     <div class="nav-footer">
@@ -698,14 +801,20 @@
           </div>
           <div class="field"><label>一句话描述</label><input id="d-desc" class="input" maxlength="240" placeholder="例如：产品发布页 v1"></div>
           <div class="field"><label>标题</label><input id="d-title" class="input" placeholder="Product Launch"></div>
-          <div class="field"><label>自定义 code</label><input id="d-code" class="input mono" placeholder="my-landing"><div class="hint"><label><input id="d-append" type="checkbox"> code 已存在时追加为新版本（只能追加你拥有的站点）</label></div></div>
+          <div class="field"><label>自定义 / 更新 code</label><input id="d-code" class="input mono" placeholder="my-landing"><div class="hint"><label><input id="d-append" type="checkbox"> 更新现有发布，追加为新版本</label><br>勾选后必须填写已有 code。code 可从 /agent/{code}/ 链接、站点管理或部署结果里查看；追加版本不会创建新链接，只能更新你拥有的站点。</div></div>
+          <div class="field"><label>可见性</label><select id="d-visibility" class="select"><option value="public">公开进应用商城</option><option value="unlisted">未公开，仅链接访问</option></select><div class="hint">可见性只控制是否进入应用商城；访问密码在下方单独设置。</div></div>
           <div class="field"><label>访问密码</label><input id="d-access-password" class="input" type="password" autocomplete="new-password" placeholder="可选，至少 4 位"><div class="hint">创建新站点时生效；追加版本不会修改原访问密码，可在站点管理里调整。</div></div>
           <div id="drop-zone" class="file-zone">
             <div>
               <strong>点击或拖拽上传文件/目录</strong>
-              <div class="hint">支持 HTML、CSS、JS、图片、字体、JSON 等静态资源。</div>
+              <div class="hint">支持 HTML、CSS、JS、图片、字体、JSON 等静态资源。多文件项目会按相对路径保存，优先使用 index.html 作为入口。</div>
+              <div class="upload-actions">
+                <button class="btn btn-light" id="pick-files" type="button">选择多个文件</button>
+                <button class="btn btn-light" id="pick-directory" type="button">选择目录</button>
+              </div>
             </div>
-            <input id="file-input" type="file" multiple webkitdirectory class="hidden">
+            <input id="file-input" type="file" multiple class="hidden">
+            <input id="directory-input" type="file" multiple webkitdirectory class="hidden">
           </div>
           <div id="file-list" class="file-list hidden"></div>
           <div class="field" style="margin-top:14px"><label>或粘贴单 HTML</label><textarea id="d-paste" class="textarea mono" placeholder="<!doctype html>..."></textarea></div>
@@ -756,7 +865,7 @@
           <div><h2 class="panel-title">硬件屏幕</h2><p class="panel-subtitle" id="screen-list-subtitle">查看已绑定屏幕、在线状态和当前播放内容。</p></div>
           <button class="btn btn-light" id="screens-refresh" type="button">刷新</button>
         </div>
-        <div class="table-wrap"><table><thead><tr><th>屏幕</th><th>状态</th><th>当前播放</th><th>运行时</th><th>最近心跳</th><th>操作</th></tr></thead><tbody id="screens-table"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>屏幕</th><th>状态</th><th>当前播放</th><th>设备信息</th><th>运行时</th><th>最近心跳</th><th>操作</th></tr></thead><tbody id="screens-table"></tbody></table></div>
       </div>
     </section>
 
@@ -798,12 +907,12 @@
     <section id="tab-anonymous" class="tab-panel hidden">
       <div class="table-panel panel">
         <div class="panel-head">
-          <div><h2 class="panel-title">匿名 Agent</h2><p class="panel-subtitle">未登录、未绑定 Token 的 Agent 会落在这里；达到额度后必须登录或绑定用户 Token。</p></div>
+          <div><h2 class="panel-title">匿名 Agent</h2><p class="panel-subtitle">所有未登录发布都会进入这里。网页匿名按浏览器 cookie 识别；Agent 匿名按本地 sessionId 与 X-Hostctl-Session 识别，Agent-Id/Label、IP、UA 只做辅助展示。</p></div>
           <button class="btn btn-light" id="anonymous-refresh" type="button">刷新</button>
         </div>
         <div class="stats-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:16px">
           <div class="stat-card"><div class="stat-label">Policy</div><div class="stat-value" id="anon-limit">5</div><div class="stat-note">每个匿名 Agent 可部署次数</div></div>
-          <div class="stat-card"><div class="stat-label">Current</div><div class="stat-value" id="anon-current">-</div><div class="stat-note" id="anon-current-note">当前浏览器 Agent</div></div>
+          <div class="stat-card"><div class="stat-label">Scope</div><div class="stat-value" id="anon-current">发布</div><div class="stat-note" id="anon-current-note">网页匿名与 Agent 匿名统一统计</div></div>
           <div class="stat-card"><div class="stat-label">Agents</div><div class="stat-value" id="anon-total">0</div><div class="stat-note">最近活跃匿名 Agent</div></div>
         </div>
         <div class="table-wrap"><table><thead><tr><th>Agent</th><th>设备 ID</th><th>IP / UA</th><th>已部署</th><th>剩余额度</th><th>最近使用</th></tr></thead><tbody id="anonymous-table"></tbody></table></div>
@@ -813,12 +922,17 @@
     <section id="tab-skill" class="tab-panel hidden">
       <div class="panel">
         <div class="panel-head">
-          <div><h2 class="panel-title">Skill 编辑</h2><p class="panel-subtitle">维护 Agent 使用的说明和脚本。</p></div>
+          <div><h2 class="panel-title">Skill & MCP</h2><p class="panel-subtitle">维护 Agent 下载包，并查看 MCP 的接入方式。</p></div>
           <div class="actions">
             <a class="btn btn-light" href="/skill/hostctl-deploy.zip" target="_blank">下载预览</a>
             <button class="btn btn-primary" id="skill-save" type="button">保存 Skill</button>
           </div>
         </div>
+        <div class="section-tabs" role="tablist" aria-label="Skill MCP">
+          <button class="section-tab active" id="skill-subtab-skill" type="button" data-skill-subtab="skill">Skill</button>
+          <button class="section-tab" id="skill-subtab-mcp" type="button" data-skill-subtab="mcp">MCP</button>
+        </div>
+        <div id="skill-pane-skill" class="skill-subpane" style="margin-top:16px">
         <div class="grid-2" style="grid-template-columns:260px minmax(0,1fr);gap:16px">
           <div>
             <div class="field">
@@ -832,12 +946,38 @@
             <textarea id="skill-content" class="textarea mono" style="min-height:520px;line-height:1.55" spellcheck="false"></textarea>
           </div>
         </div>
+        </div>
+        <div id="skill-pane-mcp" class="skill-subpane hidden" style="margin-top:16px">
+          <div class="info-grid">
+            <div class="info-tile"><strong>用途</strong><span>MCP 让通用 Agent 直接调用 PagePilot：发布、更新、管理屏幕、下发刷新/休眠/关机、请求截图。</span></div>
+            <div class="info-tile"><strong>权限</strong><span>发布可匿名或 Token；屏幕相关操作必须使用注册用户 Token，设备 Token 不会暴露给 Agent。</span></div>
+            <div class="info-tile"><strong>服务器</strong><span>安装后保存 PagePilot 服务器地址，Token 可永久或按有效期自动失效。</span></div>
+          </div>
+          <div class="field" style="margin-top:16px">
+            <label>MCP 启动示例</label>
+            <pre class="code-block mono">hostctl-mcp --server https://pagepilot.example.com --token YOUR_TOKEN</pre>
+          </div>
+          <div class="field">
+            <label>常用能力</label>
+            <div class="file-row"><span>发布/更新</span><strong>deploy_site 支持单 HTML、多文件、公开/未公开、访问密码；更新必须传已有 code 并追加版本</strong></div>
+            <div class="file-row"><span>匿名绑定</span><strong>claim_anonymous_session 把 anon:{sessionId} 发布的站点迁移到当前注册用户</strong></div>
+            <div class="file-row"><span>站点管理</span><strong>list_sites、set_access_password、版本查询、可见性和删除等能力沿用同一套权限</strong></div>
+            <div class="file-row"><span>屏幕</span><strong>list_screens、publish_screen、request_screen_screenshot、send_screen_command refresh/sleep/wake/shutdown</strong></div>
+            <div class="file-row"><span>身份依据</span><strong>Agent 匿名以 X-Hostctl-Session 为准；Agent-Id、Agent-Label、IP、UA 只用于后台展示</strong></div>
+          </div>
+        </div>
       </div>
     </section>
     <section id="tab-config" class="tab-panel hidden">
       <div class="panel" style="max-width:760px">
         <div class="panel-head"><div><h2 class="panel-title">运行设置</h2><p class="panel-subtitle">调整对外 URL 和查看当前限制。</p></div></div>
         <div class="field"><label>Public Base URL</label><input id="config-base-url" class="input mono" placeholder="https://pagepilot.example.com"></div>
+        <div class="field"><label>应用访问模式</label><select id="config-app-url-mode" class="input"><option value="path">路径模式 /agent/{code}</option><option value="domain">泛域名模式 {code}.domain</option><option value="dual">双模式兼容</option></select><div class="hint">/agent/{code} 始终保留。domain 模式会优先生成泛域名访问链接；dual 用于灰度。</div></div>
+        <div class="field"><label>应用域名后缀</label><input id="config-app-domain" class="input mono" placeholder="apps.pagepilot.example.com 或 pagepilot.example.com"><div class="hint">只填写 host 后缀，不填 * 和协议。Nginx 需要透传 Host。</div></div>
+        <div class="grid two">
+          <div class="field"><label>应用协议</label><select id="config-app-scheme" class="input"><option value="https">https</option><option value="http">http</option></select></div>
+          <div class="field"><label>应用端口（可选）</label><input id="config-app-port" class="input mono" placeholder="443 / 1143 / 留空"></div>
+        </div>
         <div class="field"><label>匿名免费部署额度</label><input id="config-anon-limit" class="input" type="number" min="0" placeholder="5"></div>
         <div class="field"><label>部署冷却时间（秒）</label><input id="config-cooldown" class="input" type="number" min="0" max="3600" placeholder="10"></div>
         <div class="grid-2" style="grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
@@ -845,7 +985,7 @@
           <div class="field"><label>整站上限（MB）</label><input id="config-total-mb" class="input" type="number" min="0.1" step="0.1" placeholder="10"></div>
           <div class="field"><label>文件数上限</label><input id="config-max-files" class="input" type="number" min="1" step="1" placeholder="100"></div>
         </div>
-        <div class="field"><label>CORS 允许来源</label><textarea id="config-cors" class="textarea mono" placeholder="* 或 https://pagepilot.example.com, https://admin.example.com"></textarea><div class="hint">控制哪些网页可以在浏览器里跨域调用 API。Agent/CLI 不受浏览器 CORS 限制。</div></div>
+        <div class="field"><label>CORS 允许来源</label><textarea id="config-cors" class="textarea mono" placeholder="留空关闭；多个来源用逗号或换行分隔"></textarea><div class="hint">只有确实需要给其他网页前端跨域调用 API 时才填写白名单，不建议使用 *。Agent/CLI 不受浏览器 CORS 限制。</div></div>
         <div id="config-limits" class="stats-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:16px"></div>
         <button id="config-save" class="btn btn-primary" type="button">保存设置</button>
       </div>
@@ -860,6 +1000,36 @@
       <button class="btn btn-ghost" id="version-close" type="button">关闭</button>
     </div>
     <div id="version-body" class="modal-body"></div>
+  </div>
+</div>
+
+<div id="publish-modal" class="modal">
+  <div class="modal-card" style="width:min(980px,100%)">
+    <div class="modal-head">
+      <div><strong>选择投放站点</strong> <code id="publish-screen-id"></code></div>
+      <button class="btn btn-ghost" id="publish-close" type="button">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-tabs">
+        <button class="modal-tab active" type="button" data-publish-tab="mine">我的站点</button>
+        <button class="modal-tab" type="button" data-publish-tab="market">应用商城</button>
+      </div>
+      <div class="toolbar" style="margin-top:0">
+        <input id="publish-search" class="input" placeholder="搜索 code / 标题">
+        <select id="publish-status" class="select" style="max-width:180px"><option value="">全部</option><option value="public">公开</option><option value="unlisted">未公开</option><option value="protected">加密</option></select>
+      </div>
+      <div id="publish-list" class="choice-list"></div>
+    </div>
+  </div>
+</div>
+
+<div id="screenshot-modal" class="modal">
+  <div class="modal-card" style="width:min(1120px,100%)">
+    <div class="modal-head">
+      <div><strong>屏幕截图</strong> <code id="screenshot-screen-id"></code></div>
+      <button class="btn btn-ghost" id="screenshot-close" type="button">关闭</button>
+    </div>
+    <div id="screenshot-body" class="modal-body"></div>
   </div>
 </div>
 
@@ -884,6 +1054,11 @@
     screens: [],
     users: [],
     tokens: [],
+    marketplaceSites: [],
+    skillSubtab: "skill",
+    publishTargetScreenId: "",
+    publishTab: "mine",
+    screenshotObjectUrl: "",
     selectedFiles: new Map()
   };
 
@@ -895,8 +1070,8 @@
     screens: ["硬件屏幕", "绑定广告屏并把你的 PagePilot 应用投放到屏幕。"],
     users: ["用户管理", "管理账号、角色、启用状态和部署额度。"],
     tokens: ["Agent Token", "创建永久或临时访问令牌，管理 Agent 接入。"],
-    anonymous: ["匿名 Agent", "查看未登录 Agent 的设备、IP 和免登录额度。"],
-    skill: ["Skill 编辑", "维护 Agent 下载包里的说明和脚本。"],
+    anonymous: ["匿名 Agent", "查看未登录发布产生的 Agent、设备、IP 和免登录额度。"],
+    skill: ["Skill & MCP", "维护 Agent 下载包，并查看 MCP 的接入方式。"],
     config: ["运行设置", "查看生产参数并调整公网 Base URL。"]
   };
 
@@ -990,7 +1165,18 @@
       state.config = cfg;
     } catch {}
     try {
-      state.token = "";
+      const storedToken = state.token.trim();
+      if (storedToken) {
+        try {
+          await checkSession(storedToken);
+          enterApp();
+          return;
+        } catch {
+          localStorage.removeItem("hostctl-admin-token");
+          state.token = "";
+        }
+      }
+
       await checkSession("");
       if (state.session?.loginMethod === "password") {
         enterApp();
@@ -999,15 +1185,12 @@
       state.needsSetup = !!state.session?.needsSetup;
       renderLoginMode();
       await loadCaptcha();
-    } catch {}
-    if (state.token) {
-      try {
-        await checkSession();
-        enterApp();
-      } catch {
-        localStorage.removeItem("hostctl-admin-token");
-        state.token = "";
-      }
+    } catch {
+      state.needsSetup = false;
+      renderLoginMode();
+      loadCaptcha().catch(() => {});
+    } finally {
+      document.body.classList.remove("auth-checking");
     }
   }
 
@@ -1106,6 +1289,7 @@
   });
 
   function enterApp() {
+    document.body.classList.remove("auth-checking");
     $("login-screen").classList.add("hidden");
     $("app-shell").classList.remove("hidden");
     const label = state.session?.username || state.session?.label || state.session?.tokenId || "dev session";
@@ -1195,6 +1379,19 @@
   $("anonymous-refresh").addEventListener("click", loadAnonymousSessions);
   $("screens-refresh").addEventListener("click", loadScreens);
   $("skill-file").addEventListener("change", () => loadSkill($("skill-file").value));
+  document.querySelectorAll("[data-skill-subtab]").forEach(btn => {
+    btn.addEventListener("click", () => switchSkillSubtab(btn.dataset.skillSubtab));
+  });
+
+  function switchSkillSubtab(tab) {
+    state.skillSubtab = tab === "mcp" ? "mcp" : "skill";
+    document.querySelectorAll("[data-skill-subtab]").forEach(btn => {
+      btn.classList.toggle("active", btn.dataset.skillSubtab === state.skillSubtab);
+    });
+    if ($("skill-pane-skill")) $("skill-pane-skill").classList.toggle("hidden", state.skillSubtab !== "skill");
+    if ($("skill-pane-mcp")) $("skill-pane-mcp").classList.toggle("hidden", state.skillSubtab !== "mcp");
+    if ($("skill-save")) $("skill-save").classList.toggle("hidden", state.skillSubtab !== "skill");
+  }
 
   async function refreshAll() {
       const tasks = [loadConfig(), loadSites(), loadScreens()];
@@ -1223,8 +1420,13 @@
       renderScreens();
     } catch (err) {
       state.screens = [];
-      if ($("screens-table")) $("screens-table").innerHTML = `<tr><td colspan="6"><div class="empty">${escapeHtml(err.message)}</div></td></tr>`;
+      if ($("screens-table")) $("screens-table").innerHTML = `<tr><td colspan="7"><div class="empty">${escapeHtml(err.message)}</div></td></tr>`;
     }
+  }
+  async function loadMarketplaceSites() {
+    const data = await api("/api/deploys?pageSize=100&sort=newest");
+    state.marketplaceSites = data.deploys || [];
+    return state.marketplaceSites;
   }
   async function loadTokens() {
     try {
@@ -1263,7 +1465,6 @@
       return;
     }
     try {
-      if (!state.token) await ensureAnonymousSession();
       const data = await api("/api/admin/anonymous-sessions");
       state.anonymousSessions = data.sessions || [];
       renderAnonymous();
@@ -1422,10 +1623,10 @@
     if ($("anon-limit")) $("anon-limit").textContent = limit < 0 ? "∞" : limit;
     if ($("anon-total")) $("anon-total").textContent = state.anonymousSessions.length;
     if ($("anon-current")) {
-      $("anon-current").textContent = state.token ? "token" : (state.anonymousSession ? `${state.anonymousSession.remaining}/${state.anonymousSession.deployLimit}` : "-");
+      $("anon-current").textContent = "发布";
     }
     if ($("anon-current-note")) {
-      $("anon-current-note").textContent = state.token ? "当前使用 Bearer Token" : (state.anonymousSession?.sessionId || "未创建匿名 Agent");
+      $("anon-current-note").textContent = "仅统计未登录发布";
     }
     if (!$("anonymous-table")) return;
     const rows = state.anonymousSessions;
@@ -1474,6 +1675,16 @@
   function statusBadge(status) {
     return status === "inactive" ? `<span class="badge badge-rose">已下架</span>` : `<span class="badge badge-green">运行中</span>`;
   }
+  function visibilityBadge(visibility) {
+    return visibility === "unlisted"
+      ? `<span class="badge badge-slate">未公开</span>`
+      : `<span class="badge badge-green">公开</span>`;
+  }
+  function accessBadge(accessProtected) {
+    return accessProtected
+      ? `<span class="badge badge-amber">加密</span>`
+      : `<span class="badge badge-slate">无密码</span>`;
+  }
 
   $("site-search").addEventListener("input", renderSites);
   $("site-status-filter").addEventListener("change", renderSites);
@@ -1488,7 +1699,7 @@
         <td><code>${escapeHtml(s.code)}</code><div style="color:#94a3b8;font-size:12px">${escapeHtml(s.publicId || "")}</div></td>
         <td>${escapeHtml(s.title || s.code || "-")}</td>
         <td>${ownerBadge(s)}</td>
-        <td>${statusBadge(s.status)} ${s.isPinned ? '<span class="badge badge-amber">置顶</span>' : ''} ${s.accessProtected ? '<span class="badge badge-amber">加密</span>' : '<span class="badge badge-slate">公开</span>'}</td>
+        <td>${statusBadge(s.status)} ${visibilityBadge(s.visibility)} ${accessBadge(s.accessProtected)} ${s.isPinned ? '<span class="badge badge-amber">置顶</span>' : ''}</td>
         <td>v${s.currentVersion || "-"} · ${s.versionCount || 0} 个</td>
         <td>${s.viewCount || 0} / ${s.likeCount || 0}</td>
         <td>${fmtSize(s.totalSize)}</td>
@@ -1498,6 +1709,7 @@
           <button class="btn btn-light" data-action="versions" data-code="${escapeHtml(s.code)}">版本</button>
           <a class="btn btn-light" href="/deploy/${encodeURIComponent(s.publicId || s.code)}" target="_blank">详情</a>
           <button class="btn btn-light" data-action="password" data-code="${escapeHtml(s.code)}" data-protected="${s.accessProtected ? "1" : "0"}">${s.accessProtected ? "改密码" : "加密"}</button>
+          <button class="btn btn-light" data-action="visibility" data-code="${escapeHtml(s.code)}" data-visibility="${escapeHtml(s.visibility || "public")}">${(s.visibility || "public") === "unlisted" ? "设为公开" : "设为未公开"}</button>
           ${isAdminSession() ? `<button class="btn btn-light" data-action="pin" data-code="${escapeHtml(s.code)}" data-pinned="${s.isPinned ? "1" : "0"}">${s.isPinned ? "取消置顶" : "置顶"}</button>` : ""}
           <button class="btn ${s.status === "inactive" ? "btn-light" : "btn-danger"}" data-action="toggle" data-code="${escapeHtml(s.code)}" data-status="${escapeHtml(s.status || "active")}">${s.status === "inactive" ? "上架" : "下架"}</button>
           <button class="btn btn-danger" data-action="delete" data-code="${escapeHtml(s.code)}">删除</button>
@@ -1506,6 +1718,7 @@
     tbody.querySelectorAll("[data-action='password']").forEach(b => b.addEventListener("click", () => setSitePassword(b.dataset.code, b.dataset.protected === "1")));
     tbody.querySelectorAll("[data-action='versions']").forEach(b => b.addEventListener("click", () => openVersions(b.dataset.code)));
     tbody.querySelectorAll("[data-action='pin']").forEach(b => b.addEventListener("click", () => setSitePinned(b.dataset.code, b.dataset.pinned === "1")));
+    tbody.querySelectorAll("[data-action='visibility']").forEach(b => b.addEventListener("click", () => setSiteVisibility(b.dataset.code, b.dataset.visibility || "public")));
     tbody.querySelectorAll("[data-action='toggle']").forEach(b => b.addEventListener("click", () => toggleSiteStatus(b.dataset.code, b.dataset.status)));
     tbody.querySelectorAll("[data-action='delete']").forEach(b => b.addEventListener("click", () => deleteSite(b.dataset.code)));
   }
@@ -1540,29 +1753,112 @@
     const tbody = $("screens-table");
     if (!tbody) return;
     if (!state.screens.length) {
-      tbody.innerHTML = `<tr><td colspan="6"><div class="empty">还没有绑定硬件屏幕。打开屏幕 APP，配置服务器地址后输入配对码即可绑定。</div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7"><div class="empty">还没有绑定硬件屏幕。打开屏幕 APP，配置服务器地址后输入配对码即可绑定。</div></td></tr>`;
       return;
     }
     tbody.innerHTML = state.screens.map(screen => `
       <tr>
-        <td><strong>${escapeHtml(screen.name || screen.deviceName || screen.id)}</strong><div style="color:#94a3b8;font-size:12px"><code>${escapeHtml(screen.id)}</code>${isAdminSession() ? ` · ${escapeHtml(screen.ownerUserId || "未归属")}` : ""}</div></td>
+        <td><strong>${escapeHtml(screen.name || screen.deviceName || screen.id)}</strong><div style="color:#94a3b8;font-size:12px"><code>${escapeHtml(screen.id)}</code>${(screen.ownerUsername || isAdminSession()) ? ` · ${escapeHtml(screen.ownerUsername || screen.ownerUserId || "未归属")}` : ""}</div></td>
         <td>${screenStatusBadge(screen.status)}</td>
         <td>${screen.currentSiteCode ? `<code>${escapeHtml(screen.currentSiteCode)}</code>${screen.currentVersion ? ` · v${screen.currentVersion}` : ""}` : `<span class="badge badge-slate">空闲</span>`}</td>
-        <td>${escapeHtml(screen.runtime || "X5 WebView")}<div style="color:#94a3b8;font-size:12px">${escapeHtml(screen.appVersion || "")}</div></td>
+        <td>${screenDeviceSummary(screen)}</td>
+        <td>${escapeHtml(screen.runtime || "X5 WebView")}<div style="color:#94a3b8;font-size:12px">${escapeHtml(screen.appVersion || "")}${screen.commandType ? `<br>待执行 ${escapeHtml(screenCommandLabel(screen.commandType))}` : ""}${screen.screenshotRequestedAt ? `<br>等待截图 ${escapeHtml(fmtTime(screen.screenshotRequestedAt))}` : ""}${screen.screenshotAt ? `<br>截图 ${escapeHtml(fmtTime(screen.screenshotAt))}` : ""}</div></td>
         <td>${fmtTime(screen.lastSeenAt)}</td>
         <td><div class="actions">
           <button class="btn btn-primary" data-screen-publish="${escapeHtml(screen.id)}">投放</button>
+          <button class="btn btn-light" data-screen-command="refresh" data-screen-id="${escapeHtml(screen.id)}">刷新</button>
+          <button class="btn btn-light" data-screen-shot="${escapeHtml(screen.id)}">截屏</button>
+          <button class="btn btn-light" data-screen-view-shot="${escapeHtml(screen.id)}" ${screen.screenshotAt ? "" : "disabled"}>查看</button>
+          <button class="btn btn-light" data-screen-command="sleep" data-screen-id="${escapeHtml(screen.id)}">休眠</button>
+          <button class="btn btn-light" data-screen-command="wake" data-screen-id="${escapeHtml(screen.id)}">唤醒</button>
+          <button class="btn btn-danger" data-screen-command="shutdown" data-screen-id="${escapeHtml(screen.id)}">软关机</button>
           <button class="btn btn-danger" data-screen-unbind="${escapeHtml(screen.id)}">解绑</button>
         </div></td>
       </tr>`).join("");
-    tbody.querySelectorAll("[data-screen-publish]").forEach(b => b.addEventListener("click", () => publishToScreen(b.dataset.screenPublish)));
+    tbody.querySelectorAll("[data-screen-publish]").forEach(b => b.addEventListener("click", () => openPublishModal(b.dataset.screenPublish)));
+    tbody.querySelectorAll("[data-screen-shot]").forEach(b => b.addEventListener("click", () => requestScreenScreenshot(b.dataset.screenShot)));
+    tbody.querySelectorAll("[data-screen-view-shot]").forEach(b => b.addEventListener("click", () => openScreenScreenshot(b.dataset.screenViewShot)));
+    tbody.querySelectorAll("[data-screen-command]").forEach(b => b.addEventListener("click", () => requestScreenCommand(b.dataset.screenId, b.dataset.screenCommand)));
     tbody.querySelectorAll("[data-screen-unbind]").forEach(b => b.addEventListener("click", () => unbindScreen(b.dataset.screenUnbind)));
   }
-  async function publishToScreen(screenId) {
-    const code = prompt("输入要投放的 PagePilot 应用 code");
-    if (code === null) return;
-    const trimmed = code.trim();
-    if (!trimmed) return toast("请输入应用 code", "error");
+  function screenCommandLabel(type) {
+    return ({ refresh: "刷新", sleep: "休眠", wake: "唤醒", shutdown: "软关机" })[type] || type || "-";
+  }
+  function screenDeviceSummary(screen) {
+    const info = screen.deviceInfo && typeof screen.deviceInfo === "object" ? screen.deviceInfo : {};
+    const width = Number(info.screenWidthPx || info.widthPx || 0);
+    const height = Number(info.screenHeightPx || info.heightPx || 0);
+    const orientation = info.orientation === "landscape" || (width && height && width > height) ? "横屏" : (info.orientation === "portrait" || (width && height) ? "竖屏" : "-");
+    const size = width && height ? `${width}×${height}` : "-";
+    const model = [info.manufacturer || info.brand, info.model].filter(Boolean).join(" ") || screen.deviceName || "-";
+    const android = info.androidRelease ? `Android ${info.androidRelease}${info.androidSdk ? ` / API ${info.androidSdk}` : ""}` : "";
+    const density = info.densityDpi ? `${info.densityDpi}dpi` : "";
+    const locale = [info.locale, info.timeZone].filter(Boolean).join(" · ");
+    return `<strong>${escapeHtml(model)}</strong><div class="device-meta">${escapeHtml(orientation)} · ${escapeHtml(size)}${density ? ` · ${escapeHtml(density)}` : ""}${android ? `<br>${escapeHtml(android)}` : ""}${locale ? `<br>${escapeHtml(locale)}` : ""}</div>`;
+  }
+  async function openPublishModal(screenId) {
+    state.publishTargetScreenId = screenId;
+    state.publishTab = "mine";
+    $("publish-screen-id").textContent = screenId || "";
+    $("publish-search").value = "";
+    $("publish-status").value = "";
+    $("publish-modal").classList.add("show");
+    document.querySelectorAll("[data-publish-tab]").forEach(btn => btn.classList.toggle("active", btn.dataset.publishTab === state.publishTab));
+    renderPublishList();
+    if (!state.marketplaceSites.length) {
+      try {
+        await loadMarketplaceSites();
+        renderPublishList();
+      } catch (err) {
+        if (state.publishTab === "market") $("publish-list").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+  }
+  function closePublishModal() {
+    $("publish-modal").classList.remove("show");
+    state.publishTargetScreenId = "";
+  }
+  function publishCandidates() {
+    const list = state.publishTab === "market" ? state.marketplaceSites : state.sites;
+    const q = $("publish-search").value.trim().toLowerCase();
+    const filter = $("publish-status").value;
+    return list.filter(site => {
+      const hay = `${site.code || ""} ${site.title || ""} ${site.description || ""}`.toLowerCase();
+      if (q && !hay.includes(q)) return false;
+      if (filter === "public" && (site.visibility || "public") !== "public") return false;
+      if (filter === "unlisted" && (site.visibility || "public") !== "unlisted") return false;
+      if (filter === "protected" && !site.accessProtected) return false;
+      return true;
+    });
+  }
+  function renderPublishList() {
+    const box = $("publish-list");
+    if (!box) return;
+    document.querySelectorAll("[data-publish-tab]").forEach(btn => btn.classList.toggle("active", btn.dataset.publishTab === state.publishTab));
+    const rows = publishCandidates();
+    if (!rows.length) {
+      box.innerHTML = `<div class="empty">${state.publishTab === "market" ? "应用商城没有匹配站点。" : "没有匹配的我的站点。"}</div>`;
+      return;
+    }
+    box.innerHTML = rows.map(site => {
+      const code = site.code || "";
+      const owned = state.publishTab === "mine" || site.owned;
+      const blocked = state.publishTab === "market" && site.accessProtected && !owned;
+      const visibility = site.visibility || "public";
+      return `<div class="choice-card">
+        <div>
+          <strong>${escapeHtml(site.title || code)}</strong>
+          <div class="device-meta"><code>${escapeHtml(code)}</code> · ${visibilityBadge(visibility)} ${accessBadge(site.accessProtected)} ${site.isPinned ? '<span class="badge badge-amber">置顶</span>' : ''}</div>
+          <small>${escapeHtml(site.description || "")}</small>
+        </div>
+        <button class="btn ${blocked ? "btn-light" : "btn-primary"}" type="button" data-publish-code="${escapeHtml(code)}" ${blocked ? "disabled title=\"加密站点只有 owner 或管理员可投放\"" : ""}>${blocked ? "需权限" : "投放"}</button>
+      </div>`;
+    }).join("");
+    box.querySelectorAll("[data-publish-code]").forEach(btn => btn.addEventListener("click", () => publishToScreen(state.publishTargetScreenId, btn.dataset.publishCode)));
+  }
+  async function publishToScreen(screenId, code) {
+    const trimmed = String(code || "").trim();
+    if (!screenId || !trimmed) return toast("请选择屏幕和站点", "error");
     try {
       await api(`/api/screens/${encodeURIComponent(screenId)}/publish`, {
         method: "POST",
@@ -1570,8 +1866,94 @@
         body: JSON.stringify({ code: trimmed })
       });
       toast("已投放到屏幕", "success");
+      closePublishModal();
       await loadScreens();
     } catch (err) { toast("投放失败：" + err.message, "error"); }
+  }
+  function closeScreenshotModal() {
+    $("screenshot-modal").classList.remove("show");
+    $("screenshot-screen-id").textContent = "";
+    $("screenshot-body").innerHTML = "";
+    if (state.screenshotObjectUrl) {
+      URL.revokeObjectURL(state.screenshotObjectUrl);
+      state.screenshotObjectUrl = "";
+    }
+  }
+  async function openScreenScreenshot(screenId) {
+    const screen = state.screens.find(item => item.id === screenId);
+    if (!screen) return toast("未找到屏幕", "error");
+    $("screenshot-screen-id").textContent = screen.name || screen.deviceName || screen.id;
+    $("screenshot-body").innerHTML = `<div class="empty">加载中...</div>`;
+    $("screenshot-modal").classList.add("show");
+    try {
+      const resp = await fetch(`/api/screens/${encodeURIComponent(screenId)}/screenshot?ts=${Date.now()}`, {
+        headers: authHeaders()
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      if (state.screenshotObjectUrl) URL.revokeObjectURL(state.screenshotObjectUrl);
+      state.screenshotObjectUrl = URL.createObjectURL(blob);
+      const updated = state.screens.find(item => item.id === screenId);
+      const shotTime = updated?.screenshotAt ? fmtTime(updated.screenshotAt) : "";
+      const requestedTime = updated?.screenshotRequestedAt ? fmtTime(updated.screenshotRequestedAt) : "";
+      $("screenshot-body").innerHTML = `
+        <div class="file-row"><span>屏幕</span><strong>${escapeHtml(screen.name || screen.deviceName || screen.id)}</strong></div>
+        <div class="file-row"><span>截图时间</span><strong>${escapeHtml(shotTime || "-")}</strong></div>
+        <div class="file-row"><span>指令时间</span><strong>${escapeHtml(requestedTime || "-")}</strong></div>
+        <div style="margin-top:12px"><img class="screenshot-image" src="${state.screenshotObjectUrl}" alt="屏幕截图"></div>`;
+    } catch (err) {
+      $("screenshot-body").innerHTML = `<div class="empty">加载失败：${escapeHtml(err.message)}</div>`;
+    }
+  }
+  async function requestScreenScreenshot(screenId) {
+    const screen = state.screens.find(item => item.id === screenId);
+    if (!screen) return toast("未找到屏幕", "error");
+    try {
+      const data = await api(`/api/screens/${encodeURIComponent(screenId)}/screenshot`, { method: "POST" });
+      if (data.screenshot?.requestId) {
+        toast("截图指令已下发", "success");
+      } else {
+        toast("截图指令已下发", "success");
+      }
+      await loadScreens();
+      await waitForScreenshot(screenId, screen.screenshotAt || null);
+    } catch (err) {
+      toast("下发截图失败：" + err.message, "error");
+    }
+  }
+  async function waitForScreenshot(screenId, previousAt) {
+    const prev = previousAt ? String(previousAt) : "";
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      try {
+        await loadScreens();
+      } catch {}
+      const current = state.screens.find(item => item.id === screenId);
+      const currentAt = current?.screenshotAt ? String(current.screenshotAt) : "";
+      if (currentAt && currentAt !== prev) {
+        await openScreenScreenshot(screenId);
+        return;
+      }
+    }
+    toast("截图指令已下发，设备在线后会回传", "success");
+  }
+  async function requestScreenCommand(screenId, type) {
+    if (!screenId || !type) return toast("请选择屏幕和指令", "error");
+    if (type === "shutdown" && !confirm("确定让这个屏幕进入软关机/黑屏待机？真实断电取决于设备系统能力。")) return;
+    try {
+      await api(`/api/screens/${encodeURIComponent(screenId)}/command`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type })
+      });
+      toast(`${screenCommandLabel(type)}指令已下发`, "success");
+      await loadScreens();
+    } catch (err) {
+      toast("下发指令失败：" + err.message, "error");
+    }
   }
   async function unbindScreen(screenId) {
     if (!confirm("确定解绑这个屏幕？屏幕端需要重新配对后才能继续播放。")) return;
@@ -1591,6 +1973,18 @@
       toast(pinnedNow ? "已取消置顶" : "已置顶", "success");
       await loadSites();
     } catch (err) { toast("置顶失败：" + err.message, "error"); }
+  }
+  async function setSiteVisibility(code, current) {
+    const next = current === "unlisted" ? "public" : "unlisted";
+    try {
+      await api(`/api/deploys/${encodeURIComponent(code)}/visibility`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ visibility: next })
+      });
+      toast(next === "public" ? "已进入应用商城" : "已设为未公开", "success");
+      await loadSites();
+    } catch (err) { toast("可见性设置失败：" + err.message, "error"); }
   }
   async function toggleSiteStatus(code, current) {
     try {
@@ -1630,8 +2024,15 @@
 
   const dropZone = $("drop-zone");
   const fileInput = $("file-input");
-  dropZone.addEventListener("click", () => fileInput.click());
+  const directoryInput = $("directory-input");
+  $("pick-files").addEventListener("click", e => { e.stopPropagation(); fileInput.click(); });
+  $("pick-directory").addEventListener("click", e => { e.stopPropagation(); directoryInput.click(); });
+  dropZone.addEventListener("click", e => {
+    if (e.target.closest("button")) return;
+    fileInput.click();
+  });
   fileInput.addEventListener("change", e => { addFiles(e.target.files); fileInput.value = ""; });
+  directoryInput.addEventListener("change", e => { addFiles(e.target.files); directoryInput.value = ""; });
   dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragover"); });
   dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
   dropZone.addEventListener("drop", e => { e.preventDefault(); dropZone.classList.remove("dragover"); addFiles(e.dataTransfer.files); });
@@ -1653,6 +2054,7 @@
   }
   function clearDeploy() {
     ["d-desc","d-title","d-code","d-access-password","d-paste"].forEach(id => $(id).value = "");
+    $("d-visibility").value = "public";
     $("d-append").checked = false;
     state.selectedFiles.clear();
     renderFileList();
@@ -1665,13 +2067,16 @@
     if (!desc) return toast("请填写描述", "error");
     const payload = { description: desc, title: $("d-title").value.trim() || undefined };
     const code = $("d-code").value.trim();
-    if (code) {
+    const append = $("d-append").checked;
+    if (append && !code) return toast("更新现有发布必须填写已有 code", "error");
+    if (code || append) {
       payload.enableCustomCode = true;
       payload.customCode = code;
-      payload.createVersion = $("d-append").checked;
+      payload.createVersion = append;
     }
     const accessPassword = $("d-access-password").value.trim();
-    if (accessPassword) payload.accessPassword = accessPassword;
+    if (accessPassword && !append) payload.accessPassword = accessPassword;
+    if (!append) payload.visibility = $("d-visibility").value || "public";
     if (state.selectedFiles.size) {
       payload.filename = Array.from(state.selectedFiles.keys()).find(p => p.toLowerCase().endsWith("index.html")) || Array.from(state.selectedFiles.keys()).find(p => /\.html?$/i.test(p)) || "index.html";
       payload.files = [];
@@ -1693,7 +2098,6 @@
     }
     $("deploy-submit").disabled = true;
     try {
-      if (!state.token) await ensureAnonymousSession();
       const res = await api("/api/deploy", { method: "POST", headers: anonymousHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(payload) });
       $("deploy-result").className = "";
       $("deploy-result").innerHTML = `
@@ -1707,8 +2111,6 @@
       $("copy-result").addEventListener("click", () => navigator.clipboard.writeText(res.url).then(() => toast("已复制", "success")));
       $("versions-result").addEventListener("click", () => openVersions(res.code));
       toast("部署成功", "success");
-      if (!state.token) state.anonymousSession = null;
-      await ensureAnonymousSession();
       await loadSites();
       await loadAnonymousSessions();
     } catch (err) { toast("部署失败：" + err.message, "error"); }
@@ -1769,6 +2171,10 @@
       const mb = 1024 * 1024;
       const payload = {
         publicBaseURL: $("config-base-url").value.trim(),
+        appURLMode: $("config-app-url-mode").value,
+        appDomainSuffix: $("config-app-domain").value.trim(),
+        appURLScheme: $("config-app-scheme").value,
+        appURLPort: $("config-app-port").value.trim(),
         anonymousDeployLimit: Number($("config-anon-limit").value || 0),
         cooldownSeconds: Number($("config-cooldown").value || 0),
         maxSingleFileBytes: Math.round(Number($("config-single-mb").value || 0) * mb),
@@ -1783,7 +2189,12 @@
   });
   function renderConfig() {
     const c = state.config || {};
+    const app = c.appURL || {};
     if ($("config-base-url")) $("config-base-url").value = c.publicBaseURL || "";
+    if ($("config-app-url-mode")) $("config-app-url-mode").value = app.appURLMode || "path";
+    if ($("config-app-domain")) $("config-app-domain").value = app.appDomainSuffix || "";
+    if ($("config-app-scheme")) $("config-app-scheme").value = app.appURLScheme || "https";
+    if ($("config-app-port")) $("config-app-port").value = app.appURLPort || "";
     if ($("config-anon-limit")) $("config-anon-limit").value = c.anonymousPolicy?.deployLimit ?? 5;
     if ($("config-cooldown")) $("config-cooldown").value = c.cooldownSeconds ?? 0;
     if ($("config-single-mb")) $("config-single-mb").value = bytesToMBInput(c.limits?.maxSingleFileBytes);
@@ -1837,6 +2248,25 @@
       toast("保存失败：" + err.message, "error");
     }
   });
+
+  $("publish-close").addEventListener("click", closePublishModal);
+  $("publish-modal").addEventListener("click", e => { if (e.target.id === "publish-modal") closePublishModal(); });
+  $("screenshot-close").addEventListener("click", closeScreenshotModal);
+  $("screenshot-modal").addEventListener("click", e => { if (e.target.id === "screenshot-modal") closeScreenshotModal(); });
+  $("publish-search").addEventListener("input", renderPublishList);
+  $("publish-status").addEventListener("change", renderPublishList);
+  document.querySelectorAll("[data-publish-tab]").forEach(btn => btn.addEventListener("click", async () => {
+    state.publishTab = btn.dataset.publishTab || "mine";
+    renderPublishList();
+    if (state.publishTab === "market" && !state.marketplaceSites.length) {
+      try {
+        await loadMarketplaceSites();
+        renderPublishList();
+      } catch (err) {
+        $("publish-list").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      }
+    }
+  }));
 
   $("version-close").addEventListener("click", closeVersions);
   $("version-modal").addEventListener("click", e => { if (e.target.id === "version-modal") closeVersions(); });
