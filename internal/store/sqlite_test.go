@@ -214,6 +214,42 @@ func TestMarketplacePinnedDeploysStayAboveLikeRanking(t *testing.T) {
 	}
 }
 
+func TestSetCurrentVersionUpdatesSiteUpdatedAt(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	createdAt := time.Now().UTC().Add(-2 * time.Hour)
+
+	seedMarketplaceSite(t, store, "demo", 0, createdAt)
+	if err := store.CreateVersion(ctx, Version{
+		ID:            "demo-version-2",
+		SiteCode:      "demo",
+		VersionNumber: 2,
+		Title:         "demo v2",
+		Description:   "demo v2 description",
+		MainEntry:     "index.html",
+		TotalSize:     120,
+		FileCount:     1,
+		ContentSha256: "demo-v2-sha",
+		Status:        "active",
+		CreatedAt:     createdAt.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("create version 2: %v", err)
+	}
+
+	v := int64(2)
+	if err := store.SetCurrentVersion(ctx, "demo", &v); err != nil {
+		t.Fatalf("set current version: %v", err)
+	}
+
+	site, err := store.GetSite(ctx, "demo")
+	if err != nil {
+		t.Fatalf("get site: %v", err)
+	}
+	if !site.UpdatedAt.After(createdAt) {
+		t.Fatalf("updated_at = %s, want after %s", site.UpdatedAt, createdAt)
+	}
+}
+
 func TestSQLiteMigrationAddsSitePinColumns(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "hostctl.db")
 	db, err := sql.Open("sqlite", dbPath)

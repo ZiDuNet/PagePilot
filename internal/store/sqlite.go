@@ -512,7 +512,9 @@ func (s *SQLiteStore) SetCurrentVersion(ctx context.Context, code string, versio
 	if version != nil {
 		arg = *version
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE sites SET current_version = ? WHERE code = ?`, arg, code)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sites SET current_version = ?, updated_at = ? WHERE code = ?`,
+		arg, time.Now().UTC(), code)
 	if err != nil {
 		return fmt.Errorf("set current version: %w", err)
 	}
