@@ -617,6 +617,7 @@
       <button class="nav-item" data-tab="account" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"></circle><path d="M20 21a8 8 0 0 0-16 0"></path></svg><span>账号</span></button>
       <button class="nav-item" data-tab="deploy" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"></path><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"></path></svg><span>部署</span></button>
       <button class="nav-item" data-tab="sites" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"></rect><rect width="7" height="7" x="14" y="3" rx="1"></rect><rect width="7" height="7" x="14" y="14" rx="1"></rect><rect width="7" height="7" x="3" y="14" rx="1"></rect></svg><span>站点</span></button>
+      <button class="nav-item" data-tab="screens" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"></rect><path d="M8 21h8"></path><path d="M12 17v4"></path></svg><span>屏幕</span></button>
       <div class="nav-section-label">Agent</div>
       <button class="nav-item" data-tab="tokens" type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 1 1"></path><path d="m11.5 11.5 1 1"></path><path d="m7.5 15.5 1 1"></path><path d="M3 21l6.2-6.2"></path><path d="M15.8 8.2A4.5 4.5 0 1 0 12 12l-6.5 6.5L3 21l2.5-2.5L12 12a4.5 4.5 0 0 0 3.8-3.8z"></path></svg><span>Token</span></button>
       <div class="nav-section-label" data-admin-only="true">运营</div>
@@ -727,6 +728,35 @@
           <select id="site-status-filter" class="select" style="max-width:160px"><option value="">全部状态</option><option value="active">运行中</option><option value="inactive">已下架</option></select>
         </div>
         <div class="table-wrap"><table><thead><tr><th>Code</th><th>标题</th><th>归属</th><th>状态</th><th>版本</th><th>访问/点赞</th><th>大小</th><th>创建</th><th>操作</th></tr></thead><tbody id="sites-table"></tbody></table></div>
+      </div>
+    </section>
+
+    <section id="tab-screens" class="tab-panel hidden">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2 class="panel-title">绑定屏幕</h2><p class="panel-subtitle">屏幕 APP 首次启动后会显示 6 位配对码，5 分钟内有效。</p></div>
+          </div>
+          <div class="field"><label>配对码</label><input id="screen-pairing-code" class="input mono" maxlength="12" placeholder="123456"></div>
+          <div class="field"><label>屏幕名称</label><input id="screen-name" class="input" placeholder="大厅屏 / 门店一号屏"></div>
+          <button id="screen-bind" class="btn btn-primary" type="button">绑定屏幕</button>
+          <div class="hint">屏幕只会拿到 Device Token，不能发布内容，也不能读取用户 Token。</div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div><h2 class="panel-title">投放说明</h2><p class="panel-subtitle">投屏发布的是播放清单，设备在线加载 URL，后续可按清单缓存资源。</p></div>
+          </div>
+          <div class="file-row"><span>服务器地址</span><strong class="mono" id="screen-server-url">-</strong></div>
+          <div class="file-row"><span>设备内核</span><strong>X5 WebView</strong></div>
+          <div class="file-row"><span>权限</span><strong>仅注册用户可投屏</strong></div>
+        </div>
+      </div>
+      <div class="table-panel panel" style="margin-top:16px">
+        <div class="panel-head">
+          <div><h2 class="panel-title">硬件屏幕</h2><p class="panel-subtitle" id="screen-list-subtitle">查看已绑定屏幕、在线状态和当前播放内容。</p></div>
+          <button class="btn btn-light" id="screens-refresh" type="button">刷新</button>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>屏幕</th><th>状态</th><th>当前播放</th><th>运行时</th><th>最近心跳</th><th>操作</th></tr></thead><tbody id="screens-table"></tbody></table></div>
       </div>
     </section>
 
@@ -851,6 +881,7 @@
     skill: null,
     skillPath: "SKILL.md",
     sites: [],
+    screens: [],
     users: [],
     tokens: [],
     selectedFiles: new Map()
@@ -861,6 +892,7 @@
     account: ["账号设置", "管理你的登录信息和 Agent 接入入口。"],
     deploy: ["发布应用", "上传 HTML 或多文件静态站点，生成可访问站点。"],
     sites: ["我的站点", "查看、打开、加密、下架和管理版本。"],
+    screens: ["硬件屏幕", "绑定广告屏并把你的 PagePilot 应用投放到屏幕。"],
     users: ["用户管理", "管理账号、角色、启用状态和部署额度。"],
     tokens: ["Agent Token", "创建永久或临时访问令牌，管理 Agent 接入。"],
     anonymous: ["匿名 Agent", "查看未登录 Agent 的设备、IP 和免登录额度。"],
@@ -1112,6 +1144,7 @@
     const items = [
       ["发布应用", "上传新站点或追加版本", "deploy"],
       ["管理站点", "打开、加密、下架、版本", "sites"],
+      ["硬件屏幕", "绑定屏幕、投放应用", "screens"],
       ["Agent 接入", "创建或吊销 Token", "tokens"],
       ["账号设置", "修改密码和查看权限", "account"]
     ];
@@ -1147,6 +1180,7 @@
     $("page-title").textContent = titles[tab][0];
     $("page-subtitle").textContent = titles[tab][1];
     if (tab === "sites") renderSites();
+    if (tab === "screens") loadScreens();
     if (tab === "account") renderAccount();
     if (tab === "users") loadUsers();
     if (tab === "tokens") {
@@ -1159,10 +1193,11 @@
   }
   $("refresh-all").addEventListener("click", refreshAll);
   $("anonymous-refresh").addEventListener("click", loadAnonymousSessions);
+  $("screens-refresh").addEventListener("click", loadScreens);
   $("skill-file").addEventListener("change", () => loadSkill($("skill-file").value));
 
   async function refreshAll() {
-      const tasks = [loadConfig(), loadSites()];
+      const tasks = [loadConfig(), loadSites(), loadScreens()];
       if (isAdminSession()) tasks.push(loadUsers(), loadAnonymousSessions());
       await Promise.allSettled(tasks);
       await loadTokens();
@@ -1179,6 +1214,17 @@
     renderStats();
     renderOverview();
     renderSites();
+  }
+  async function loadScreens() {
+    try {
+      const data = await api("/api/screens");
+      state.screens = data.screens || [];
+      renderStats();
+      renderScreens();
+    } catch (err) {
+      state.screens = [];
+      if ($("screens-table")) $("screens-table").innerHTML = `<tr><td colspan="6"><div class="empty">${escapeHtml(err.message)}</div></td></tr>`;
+    }
   }
   async function loadTokens() {
     try {
@@ -1250,6 +1296,8 @@
     $("stat-size").textContent = fmtSize(size);
     $("stat-anonymous").textContent = state.anonymousSessions.length;
     $("stat-anonymous-note").textContent = isAdminSession() ? `每个 Agent ${state.config?.anonymousPolicy?.deployLimit ?? 5} 次` : "仅管理员可见";
+    if ($("screen-server-url")) $("screen-server-url").textContent = state.config?.publicBaseURL || location.origin;
+    if ($("screen-list-subtitle")) $("screen-list-subtitle").textContent = isAdminSession() ? `全站 ${state.screens.length} 个屏幕。` : `你已绑定 ${state.screens.length} 个屏幕。`;
   }
 
   function renderAccount() {
@@ -1465,6 +1513,73 @@
     const label = isAdminSession() ? (site.ownerUsername || (site.ownerTokenId || "").replace(/^user:/, "") || "未归属") : "我";
     const cls = site.ownerUsername ? "badge-slate" : "badge-amber";
     return `<span class="badge ${cls}">${escapeHtml(label)}</span>`;
+  }
+  $("screen-bind").addEventListener("click", async () => {
+    const pairingCode = $("screen-pairing-code").value.trim();
+    const name = $("screen-name").value.trim();
+    if (!pairingCode) return toast("请输入屏幕配对码", "error");
+    try {
+      await api("/api/screens/bind", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pairingCode, name })
+      });
+      $("screen-pairing-code").value = "";
+      $("screen-name").value = "";
+      toast("屏幕已绑定", "success");
+      await loadScreens();
+    } catch (err) { toast("绑定失败：" + err.message, "error"); }
+  });
+  function screenStatusBadge(status) {
+    if (status === "online") return `<span class="badge badge-green">在线</span>`;
+    if (status === "bound") return `<span class="badge badge-amber">已绑定</span>`;
+    if (status === "pairing") return `<span class="badge badge-slate">配对中</span>`;
+    return `<span class="badge badge-slate">${escapeHtml(status || "未知")}</span>`;
+  }
+  function renderScreens() {
+    const tbody = $("screens-table");
+    if (!tbody) return;
+    if (!state.screens.length) {
+      tbody.innerHTML = `<tr><td colspan="6"><div class="empty">还没有绑定硬件屏幕。打开屏幕 APP，配置服务器地址后输入配对码即可绑定。</div></td></tr>`;
+      return;
+    }
+    tbody.innerHTML = state.screens.map(screen => `
+      <tr>
+        <td><strong>${escapeHtml(screen.name || screen.deviceName || screen.id)}</strong><div style="color:#94a3b8;font-size:12px"><code>${escapeHtml(screen.id)}</code>${isAdminSession() ? ` · ${escapeHtml(screen.ownerUserId || "未归属")}` : ""}</div></td>
+        <td>${screenStatusBadge(screen.status)}</td>
+        <td>${screen.currentSiteCode ? `<code>${escapeHtml(screen.currentSiteCode)}</code>${screen.currentVersion ? ` · v${screen.currentVersion}` : ""}` : `<span class="badge badge-slate">空闲</span>`}</td>
+        <td>${escapeHtml(screen.runtime || "X5 WebView")}<div style="color:#94a3b8;font-size:12px">${escapeHtml(screen.appVersion || "")}</div></td>
+        <td>${fmtTime(screen.lastSeenAt)}</td>
+        <td><div class="actions">
+          <button class="btn btn-primary" data-screen-publish="${escapeHtml(screen.id)}">投放</button>
+          <button class="btn btn-danger" data-screen-unbind="${escapeHtml(screen.id)}">解绑</button>
+        </div></td>
+      </tr>`).join("");
+    tbody.querySelectorAll("[data-screen-publish]").forEach(b => b.addEventListener("click", () => publishToScreen(b.dataset.screenPublish)));
+    tbody.querySelectorAll("[data-screen-unbind]").forEach(b => b.addEventListener("click", () => unbindScreen(b.dataset.screenUnbind)));
+  }
+  async function publishToScreen(screenId) {
+    const code = prompt("输入要投放的 PagePilot 应用 code");
+    if (code === null) return;
+    const trimmed = code.trim();
+    if (!trimmed) return toast("请输入应用 code", "error");
+    try {
+      await api(`/api/screens/${encodeURIComponent(screenId)}/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: trimmed })
+      });
+      toast("已投放到屏幕", "success");
+      await loadScreens();
+    } catch (err) { toast("投放失败：" + err.message, "error"); }
+  }
+  async function unbindScreen(screenId) {
+    if (!confirm("确定解绑这个屏幕？屏幕端需要重新配对后才能继续播放。")) return;
+    try {
+      await api(`/api/screens/${encodeURIComponent(screenId)}`, { method: "DELETE" });
+      toast("屏幕已解绑", "success");
+      await loadScreens();
+    } catch (err) { toast("解绑失败：" + err.message, "error"); }
   }
   async function setSitePinned(code, pinnedNow) {
     try {

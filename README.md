@@ -16,6 +16,7 @@ hostctl 是 PagePilot 的静态站点控制平面。它让用户和 AI Agent 都
 - 版本化静态托管，访问路径为 `/agent/{code}`，并提供应用访问 URL `/agent/{code}/`。
 - Go CLI（`hostctl`）、MCP 服务器（`hostctl-mcp`）以及一个独立可用的 Codex/Claude 技能脚本。
 - 匿名部署配额、用户所有的 Agent Token，以及按用户的部署上限。
+- 硬件屏幕绑定与投放：注册用户可以绑定多个广告屏，屏幕端 APP 通过 X5 WebView 播放 PagePilot 应用。
 - 元数据存储使用 SQLite，静态资源托管在文件系统上。
 - 提供 Docker、Caddy 和 systemd 的生产环境模板。
 
@@ -78,6 +79,12 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 | `GET` | `/api/deploy/content?code=&version=&download=1` | 读取元数据或下载 HTML / zip |
 | `POST` | `/api/deploys/{code}/access` | 匿名或公开访客输入访问密码，获取 5 分钟查看票据 |
 | `PATCH` | `/api/deploys/{code}/access` | 站点 owner 或管理员设置 / 清除访问密码 |
+| `GET` | `/api/screens` | 列出当前注册用户绑定的硬件屏幕 |
+| `POST` | `/api/screens/bind` | 使用短期配对码绑定硬件屏幕 |
+| `POST` | `/api/screens/{screenId}/publish` | 将自己的应用投放到自己的屏幕 |
+| `POST` | `/api/device/pairing/start` | 屏幕 APP 创建短期配对码 |
+| `POST` | `/api/device/pairing/complete` | 屏幕 APP 换取 Device Token |
+| `GET` | `/api/device/manifest` | 屏幕 APP 使用 Device Token 拉取播放清单 |
 | `GET` | `/api/deploys` | 公共市场搜索 |
 | `GET` | `/api/deploys/{publicId}` | 通过 UUID 或 code 获取公共部署详情 |
 | `POST` | `/api/deploys/{code}/like` | 公开点赞 |
@@ -107,6 +114,9 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 公共市场、点赞、静态页面以及内容读取保持公开。
 - 首页应用商城保留点赞排行；管理员置顶会优先于所有排序，置顶分组内部仍按当前选择的排序（如 `likes_desc`）排列。
 - 访问密码输入入口保持公开，匿名访客也可以输入密码查看加密站点；验证通过后浏览器获得 5 分钟签名访问票据，站点改密码后旧票据立即失效。
+- 屏幕投放只允许注册用户 Token 或登录用户会话调用；匿名 session 不能绑定屏幕或投屏。
+- 屏幕 APP 不持有用户 Token，只持有可吊销的 Device Token；Device Token 只能拉取自己的 manifest 和上报心跳。
+- 屏幕配对码是 5 分钟一次性短码，只用于首次绑定，不是长期权限。
 - 内置页面 `/deploy.html`、`/api-docs.html`、`/agents/` 由 Go 服务内嵌返回；反向代理应把这些路径原样转发给 PagePilot。
 
 结构化错误格式如下：
@@ -159,9 +169,28 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py admin sites
 python skill/hostctl-deploy/scripts/hostctl_deploy.py admin pin-site my-landing
 ```
 
+屏幕投放命令仅支持注册用户 Token：
+
+```bash
+python skill/hostctl-deploy/scripts/hostctl_deploy.py --server https://host.example.com screen list
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen bind 123456 --name "大厅屏"
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen publish --screen screen_xxx --app my-landing
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen publish --screen screen_xxx --source ./site --title "大屏展示" --description "Fullscreen display for the lobby."
+```
+
 本项目还在 `cmd/hostctl-mcp` 提供了 MCP 服务器，供偏好通过 stdio 走 JSON-RPC 的工具使用；管理员置顶对应工具为 `set_site_pin`。
 
 对已有项目，Agent 应在原 code 上追加版本，而不是创建新的访问地址。技能会把 `source -> code` 记在 `~/.hostctl/projects.json`；如果没有记录的 code，Agent 在部署更新前应向用户索要原始 code 或 URL。
+
+## 硬件屏幕 APP
+
+屏幕端代码位于 [apps/screen-app](apps/screen-app)。当前路线是 Android Kotlin 壳 + X5 WebView：
+
+- 首次启动由现场人员输入 PagePilot 服务器地址，地址保存在设备本地。
+- 屏幕 APP 创建配对码，用户在后台“屏幕”页或 Skill 中输入配对码绑定。
+- 一个注册用户可以绑定多个屏幕。
+- 投屏发布的是 manifest 播放清单，不是直接下发裸 HTML 字符串。
+- 第一版在线加载 `entryUrl`，manifest 已包含资源 hash，后续可实现离线缓存。
 
 ## 存储布局
 

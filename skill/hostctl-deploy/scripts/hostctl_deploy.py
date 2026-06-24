@@ -209,6 +209,13 @@ def request_write(args, path: str, method: str, payload: dict | None = None) -> 
     return request_json(base, token, path, method, payload, sid)
 
 
+def registered_token(args, action: str = "screen command") -> str:
+    token = auth_token(args)
+    if not token:
+        die(f"{action} requires a registered user token. Set HOSTCTL_TOKEN, pass --token, or save one in {CONFIG_FILE}.")
+    return token
+
+
 def die(msg: str) -> None:
     raise SystemExit(msg)
 
@@ -574,6 +581,63 @@ def cmd_config_set_base(args) -> int:
     return print_result(status, data)
 
 
+def cmd_screen_list(args) -> int:
+    token = registered_token(args, "screen list")
+    status, data = request_json(server_url(args), token, "/api/screens")
+    return print_result(status, data)
+
+
+def cmd_screen_bind(args) -> int:
+    token = registered_token(args, "screen bind")
+    payload = {"pairingCode": args.pairing_code}
+    if args.name:
+        payload["name"] = args.name
+    status, data = request_json(server_url(args), token, "/api/screens/bind", "POST", payload)
+    return print_result(status, data)
+
+
+def cmd_screen_publish(args) -> int:
+    token = registered_token(args, "screen publish")
+    base = server_url(args)
+    code = args.app or ""
+    if args.source:
+        if not args.description:
+            die("--description is required when publishing a local path to a screen.")
+        files, main_entry = read_source(args.source)
+        payload = {"description": args.description, "filename": args.filename or main_entry, "files": files}
+        if args.title:
+            payload["title"] = args.title
+        deploy_status, deploy_data = request_json(base, token, "/api/deploy", "POST", payload)
+        if not (200 <= deploy_status < 300 and deploy_data.get("code")):
+            return print_result(deploy_status, deploy_data)
+        code = str(deploy_data["code"])
+        remember_project(base, args.source, code)
+    if not code:
+        die("Pass --app <code> to publish an existing app, or --source <path> to deploy and publish.")
+    payload = {"code": code}
+    if args.version_number is not None:
+        payload["versionNumber"] = args.version_number
+    screen_id = urllib.parse.quote(args.screen, safe="")
+    status, data = request_json(base, token, f"/api/screens/{screen_id}/publish", "POST", payload)
+    return print_result(status, data)
+
+
+def cmd_screen_status(args) -> int:
+    token = registered_token(args, "screen status")
+    status, data = request_json(server_url(args), token, "/api/screens")
+    if args.screen and 200 <= status < 300:
+        screens = [item for item in data.get("screens", []) if item.get("id") == args.screen]
+        data = {"success": True, "screens": screens}
+    return print_result(status, data)
+
+
+def cmd_screen_unbind(args) -> int:
+    token = registered_token(args, "screen unbind")
+    screen_id = urllib.parse.quote(args.screen, safe="")
+    status, data = request_json(server_url(args), token, f"/api/screens/{screen_id}", "DELETE")
+    return print_result(status, data)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deploy and manage static sites on a hostctl server")
     parser.add_argument("--server", help="hostctl server URL (default: $HOSTCTL_SERVER or http://localhost:8787)")
@@ -711,6 +775,30 @@ def build_parser() -> argparse.ArgumentParser:
     pc = config_sub.add_parser("set-base-url", help="Update publicBaseURL")
     pc.add_argument("public_base_url")
     pc.set_defaults(func=cmd_config_set_base)
+
+    p_screen = sub.add_parser("screen", help="Manage and publish to hardware screens (registered users only)")
+    screen_sub = p_screen.add_subparsers(dest="screen_cmd", required=True)
+    ps = screen_sub.add_parser("list", help="List screens bound to the current registered user")
+    ps.set_defaults(func=cmd_screen_list)
+    ps = screen_sub.add_parser("bind", help="Bind a screen using its short pairing code")
+    ps.add_argument("pairing_code")
+    ps.add_argument("--name", default="", help="Optional display name for the screen")
+    ps.set_defaults(func=cmd_screen_bind)
+    ps = screen_sub.add_parser("publish", help="Publish an app or local HTML project to a screen")
+    ps.add_argument("--screen", required=True, help="Target screen id")
+    ps.add_argument("--app", default="", help="Existing PagePilot app code")
+    ps.add_argument("--source", default="", help="Optional local HTML file or site directory to deploy before publishing")
+    ps.add_argument("--description", "-d", default="", help="Required when --source is used")
+    ps.add_argument("--title", "-t", default="", help="Optional title when --source is used")
+    ps.add_argument("--filename", "-f", default="", help="Main entry filename when --source is used")
+    ps.add_argument("--version-number", type=int, help="Optional version number for an existing app")
+    ps.set_defaults(func=cmd_screen_publish)
+    ps = screen_sub.add_parser("status", help="Show bound screen status")
+    ps.add_argument("screen", nargs="?", default="", help="Optional screen id to filter")
+    ps.set_defaults(func=cmd_screen_status)
+    ps = screen_sub.add_parser("unbind", help="Unbind a screen")
+    ps.add_argument("screen")
+    ps.set_defaults(func=cmd_screen_unbind)
 
     return parser
 

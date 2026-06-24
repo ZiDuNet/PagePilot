@@ -1,6 +1,6 @@
 ---
 name: hostctl-deploy
-description: Publish, update, inspect, and manage PagePilot static sites with the bundled hostctl_deploy.py script. Use when Codex needs to deploy generated HTML/CSS/JS, multi-file static demos, reports, dashboards, landing pages, append versions to existing PagePilot projects, claim anonymous sessions, manage access passwords, inspect versions, or perform token/admin/config operations.
+description: Publish, update, inspect, manage, and screen-cast PagePilot static sites with the bundled hostctl_deploy.py script. Use when Codex needs to deploy generated HTML/CSS/JS, multi-file static demos, reports, dashboards, landing pages, append versions to existing PagePilot projects, claim anonymous sessions, manage access passwords, inspect versions, publish to hardware screens, or perform token/admin/config operations.
 ---
 
 # hostctl Deploy
@@ -11,7 +11,7 @@ Use the bundled script instead of hand-written API calls:
 python skill/hostctl-deploy/scripts/hostctl_deploy.py doctor
 ```
 
-Set the target with `--server` or `HOSTCTL_SERVER`. If unset, the script uses `http://localhost:8787`.
+Set the target with `--server` or `HOSTCTL_SERVER`. If unset, the script uses `http://localhost:8787`. Server addresses are not fixed; save or pass the target server explicitly when working with a deployed PagePilot instance.
 
 ## Auth
 
@@ -25,6 +25,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 ```
 
 - Tokens are user-owned. Use `token create` for permanent tokens, or pass `--expires-at` / `--ttl-seconds` for temporary tokens.
+- Screen commands require a registered user Token. Anonymous sessions cannot bind screens or publish to hardware.
 
 ## Rules
 
@@ -48,6 +49,8 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - For private work, set or clear access with the `access` command. Do not expose protected content in summaries.
 - Access passwords protect browser viewing only. Anonymous visitors can enter the password; a successful check grants a signed 5-minute browser cookie, and changing the site password invalidates old cookies.
 - Marketplace like ranking is still available. Admin-pinned sites appear before all normal ranking results; only admins should pin or unpin sites from the admin console/API/script/MCP.
+- A registered user can bind multiple hardware screens. Use `screen list` to inspect the current user's screens, and publish only to screens owned by that user.
+- Screen publishing sends a playback manifest to the device. The screen loads the PagePilot App URL and can later cache assets from the manifest; do not send raw HTML strings directly to hardware.
 - After deploying or appending, verify the returned App URL and Version URL. If any URL returns 404, inspect `mainEntry`, current version, and the uploaded file list before reporting success.
 - Built-in PagePilot pages such as `/deploy.html`, `/api-docs.html`, and `/agents/` should be served by the hostctl server. If these return 404, ask the operator to deploy the latest server build and check reverse proxy forwarding.
 
@@ -102,4 +105,17 @@ Claim anonymous work after a user Token is available:
 
 ```bash
 python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
+```
+
+Configure server and publish to a screen:
+
+```bash
+python skill/hostctl-deploy/scripts/hostctl_deploy.py --server https://pagepilot.example.com screen list
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen bind 123456 --name "Lobby Screen"
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen publish --screen screen_xxx --app my-landing
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen publish --screen screen_xxx --source ./site \
+  --title "Lobby Demo" \
+  --description "Fullscreen demo for the lobby screen."
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen status screen_xxx
+python skill/hostctl-deploy/scripts/hostctl_deploy.py screen unbind screen_xxx
 ```

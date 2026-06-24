@@ -158,6 +158,68 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					},
 				},
 			},
+			"/api/screens": map[string]any{
+				"get": map[string]any{
+					"summary":     "List bound hardware screens",
+					"description": "Registered user token or login cookie required. Admins see all screens; normal users see their own screens.",
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Screen list", "content": jsonSchemaRef("ScreenListResponse")},
+						"401": errorResponse(),
+					},
+				},
+			},
+			"/api/screens/bind": map[string]any{
+				"post": map[string]any{
+					"summary":     "Bind a hardware screen",
+					"description": "Registered user token or login cookie required. Pairing codes are short-lived and one-time use.",
+					"requestBody": jsonBodyRef("ScreenBindRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Screen bound", "content": jsonSchemaRef("ScreenBindResponse")},
+						"401": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+			},
+			"/api/screens/{screenId}/publish": map[string]any{
+				"post": map[string]any{
+					"summary":     "Publish an app to a hardware screen",
+					"description": "Registered user token required. The target screen and app must both belong to the current user.",
+					"parameters":  []map[string]any{pathParam("screenId", "string")},
+					"requestBody": jsonBodyRef("ScreenPublishRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Screen manifest target updated", "content": jsonSchemaRef("ScreenPublishResponse")},
+						"401": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+			},
+			"/api/device/pairing/start": map[string]any{
+				"post": map[string]any{
+					"summary":     "Start device pairing",
+					"description": "Called by the screen app after the operator configures the PagePilot server address.",
+					"security":    []any{},
+					"requestBody": jsonBodyRef("DevicePairingStartRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "Pairing code created", "content": jsonSchemaRef("DevicePairingStartResponse")}},
+				},
+			},
+			"/api/device/pairing/complete": map[string]any{
+				"post": map[string]any{
+					"summary":     "Exchange a completed pairing for a device token",
+					"description": "Called by the screen app with pairingId and pairingSecret. Returns paired=false until a registered user binds the pairing code.",
+					"security":    []any{},
+					"requestBody": jsonBodyRef("DevicePairingCompleteRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "Device token issued", "content": jsonSchemaRef("DevicePairingCompleteResponse")}, "202": map[string]any{"description": "Not paired yet"}},
+				},
+			},
+			"/api/device/manifest": map[string]any{
+				"get": map[string]any{
+					"summary":     "Read the playback manifest for one screen",
+					"description": "Requires Authorization: Device <deviceToken>.",
+					"security":    []any{},
+					"responses":   map[string]any{"200": map[string]any{"description": "Playback manifest", "content": jsonSchemaRef("ScreenManifestResponse")}, "401": errorResponse()},
+				},
+			},
 			"/api/deploys/{code}/versions": map[string]any{
 				"get": map[string]any{
 					"summary":    "List versions for a code",
@@ -406,8 +468,41 @@ func openAPISchemas() map[string]any {
 		"SiteListResponse":     map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "sites": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
 		"SitePinRequest":       map[string]any{"type": "object", "required": []string{"pinned"}, "properties": map[string]any{"pinned": boolSchema}},
 		"SitePinResponse":      map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "code": str, "isPinned": boolSchema, "pinnedAt": timeSchema}},
-		"TokenCreateRequest":   map[string]any{"type": "object", "properties": map[string]any{"label": str, "ownerUserId": str, "isAdmin": boolSchema, "expiresAt": timeSchema, "ttlSeconds": intSchema}},
-		"TokenCreateResponse":  map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "id": str, "token": str, "label": str, "ownerUserId": str, "isAdmin": boolSchema, "expiresAt": timeSchema, "createdAt": timeSchema}},
-		"TokenListResponse":    map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "tokens": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
+		"ScreenItem": map[string]any{"type": "object", "properties": map[string]any{
+			"id": str, "ownerUserId": str, "name": str, "deviceName": str, "status": str, "currentSiteCode": str, "currentVersion": intSchema, "lastSeenAt": timeSchema, "appVersion": str, "runtime": str, "createdAt": timeSchema, "updatedAt": timeSchema,
+		}},
+		"ScreenListResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screens": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/ScreenItem"}},
+		}},
+		"ScreenBindRequest": map[string]any{"type": "object", "required": []string{"pairingCode"}, "properties": map[string]any{
+			"pairingCode": str, "name": str,
+		}},
+		"ScreenBindResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screen": map[string]any{"$ref": "#/components/schemas/ScreenItem"},
+		}},
+		"ScreenPublishRequest": map[string]any{"type": "object", "required": []string{"code"}, "properties": map[string]any{
+			"code": str, "versionNumber": intSchema,
+		}},
+		"ScreenPublishResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screen": map[string]any{"$ref": "#/components/schemas/ScreenItem"},
+		}},
+		"DevicePairingStartRequest": map[string]any{"type": "object", "properties": map[string]any{
+			"deviceName": str, "appVersion": str, "runtime": str,
+		}},
+		"DevicePairingStartResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screenId": str, "pairingId": str, "pairingCode": str, "pairingSecret": str, "expiresAt": timeSchema, "serverTime": timeSchema,
+		}},
+		"DevicePairingCompleteRequest": map[string]any{"type": "object", "required": []string{"pairingId", "pairingSecret"}, "properties": map[string]any{
+			"pairingId": str, "pairingSecret": str,
+		}},
+		"DevicePairingCompleteResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "paired": boolSchema, "deviceToken": str, "screen": map[string]any{"$ref": "#/components/schemas/ScreenItem"},
+		}},
+		"ScreenManifestResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screenId": str, "mode": str, "baseUrl": str, "entryUrl": str, "siteCode": str, "version": intSchema, "mainEntry": str, "assets": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+		}},
+		"TokenCreateRequest":  map[string]any{"type": "object", "properties": map[string]any{"label": str, "ownerUserId": str, "isAdmin": boolSchema, "expiresAt": timeSchema, "ttlSeconds": intSchema}},
+		"TokenCreateResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "id": str, "token": str, "label": str, "ownerUserId": str, "isAdmin": boolSchema, "expiresAt": timeSchema, "createdAt": timeSchema}},
+		"TokenListResponse":   map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "tokens": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
 	}
 }

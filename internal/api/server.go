@@ -80,6 +80,17 @@ type DeployerPort interface {
 	SiteExists(ctx context.Context, code string) (bool, error)
 	GetSite(ctx context.Context, code string) (store.Site, error)
 	SetSiteAccessPassword(ctx context.Context, code, password string) error
+
+	CreateScreenPairing(ctx context.Context, pairing store.ScreenPairing) error
+	BindScreenPairing(ctx context.Context, code, ownerUserID, name string) (store.Screen, error)
+	CompleteScreenPairing(ctx context.Context, pairingID, pairingSecretHash, deviceTokenHash string) error
+	GetScreen(ctx context.Context, id string) (store.Screen, error)
+	GetScreenByDeviceTokenHash(ctx context.Context, hash string) (store.Screen, error)
+	ListScreensByUser(ctx context.Context, ownerUserID string) ([]store.Screen, error)
+	ListScreens(ctx context.Context) ([]store.Screen, error)
+	PublishScreen(ctx context.Context, screenID, ownerUserID, siteCode string, version *int64) error
+	TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime string) (store.Screen, error)
+	UnbindScreen(ctx context.Context, screenID, ownerUserID string) error
 }
 
 // Server 是 HTTP 服务器。
@@ -140,6 +151,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/deploys/{code}/qr", s.handleQRCode)
 	s.mux.HandleFunc("POST /api/deploys/{code}/access", s.handleSiteAccessLogin)
 	s.mux.HandleFunc("PATCH /api/deploys/{code}/access", s.handleSetSiteAccessPassword)
+
+	// 屏幕投放：用户侧仅注册用户；设备侧仅 Device Token。
+	s.mux.HandleFunc("GET /api/screens", s.handleListScreens)
+	s.mux.HandleFunc("POST /api/screens/bind", s.handleBindScreen)
+	s.mux.HandleFunc("POST /api/screens/{screenId}/publish", s.handlePublishScreen)
+	s.mux.HandleFunc("DELETE /api/screens/{screenId}", s.handleUnbindScreen)
+	s.mux.HandleFunc("POST /api/device/pairing/start", s.handleDevicePairingStart)
+	s.mux.HandleFunc("POST /api/device/pairing/complete", s.handleDevicePairingComplete)
+	s.mux.HandleFunc("GET /api/device/manifest", s.handleDeviceManifest)
+	s.mux.HandleFunc("POST /api/device/heartbeat", s.handleDeviceHeartbeat)
 
 	// 版本管理（OpenAPI）
 	s.mux.HandleFunc("GET /api/deploys/{code}/versions", s.handleListVersions)

@@ -141,6 +141,34 @@ type AdminSession struct {
 	RevokedAt   *time.Time
 }
 
+type Screen struct {
+	ID              string
+	OwnerUserID     string
+	Name            string
+	DeviceName      string
+	DeviceTokenHash string
+	Status          string
+	CurrentSiteCode string
+	CurrentVersion  *int64
+	LastSeenAt      *time.Time
+	AppVersion      string
+	Runtime         string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	RevokedAt       *time.Time
+}
+
+type ScreenPairing struct {
+	ID                string
+	Code              string
+	PairingSecretHash string
+	ScreenID          string
+	DeviceName        string
+	ExpiresAt         time.Time
+	ConsumedAt        *time.Time
+	CreatedAt         time.Time
+}
+
 // SiteWithMeta 用于 admin UI 列表：site 主表 + 版本统计聚合。
 type SiteWithMeta struct {
 	Code            string
@@ -246,6 +274,17 @@ type Store interface {
 	GetAdminSessionByHash(ctx context.Context, hash string) (AdminSession, error)
 	TouchAdminSessionLastUsed(ctx context.Context, id string) error
 	RevokeAdminSession(ctx context.Context, id string) error
+
+	CreateScreenPairing(ctx context.Context, pairing ScreenPairing) error
+	BindScreenPairing(ctx context.Context, code, ownerUserID, name string) (Screen, error)
+	CompleteScreenPairing(ctx context.Context, pairingID, pairingSecretHash, deviceTokenHash string) error
+	GetScreen(ctx context.Context, id string) (Screen, error)
+	GetScreenByDeviceTokenHash(ctx context.Context, hash string) (Screen, error)
+	ListScreensByUser(ctx context.Context, ownerUserID string) ([]Screen, error)
+	ListScreens(ctx context.Context) ([]Screen, error)
+	PublishScreen(ctx context.Context, screenID, ownerUserID, siteCode string, version *int64) error
+	TouchScreenHeartbeat(ctx context.Context, screenID, appVersion, runtime string) (Screen, error)
+	UnbindScreen(ctx context.Context, screenID, ownerUserID string) error
 
 	// ===== 设置（Day 7：管理后台可写 baseURL） =====
 

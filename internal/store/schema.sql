@@ -125,3 +125,37 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_hash ON admin_sessions(session_hash);
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS screens (
+    id                  TEXT PRIMARY KEY,
+    owner_user_id       TEXT,
+    name                TEXT NOT NULL DEFAULT '',
+    device_name         TEXT NOT NULL DEFAULT '',
+    device_token_hash   TEXT UNIQUE,
+    status              TEXT NOT NULL DEFAULT 'pairing',
+    current_site_code   TEXT NOT NULL DEFAULT '',
+    current_version     INTEGER,
+    last_seen_at        DATETIME,
+    app_version         TEXT NOT NULL DEFAULT '',
+    runtime             TEXT NOT NULL DEFAULT '',
+    created_at          DATETIME NOT NULL,
+    updated_at          DATETIME NOT NULL,
+    revoked_at          DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_screens_owner ON screens(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_screens_device_token ON screens(device_token_hash);
+
+CREATE TABLE IF NOT EXISTS screen_pairings (
+    id                  TEXT PRIMARY KEY,
+    code                TEXT NOT NULL UNIQUE,
+    pairing_secret_hash TEXT NOT NULL,
+    screen_id           TEXT NOT NULL REFERENCES screens(id),
+    device_name         TEXT NOT NULL DEFAULT '',
+    expires_at          DATETIME NOT NULL,
+    consumed_at         DATETIME,
+    created_at          DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_screen_pairings_code ON screen_pairings(code);
+CREATE INDEX IF NOT EXISTS idx_screen_pairings_screen ON screen_pairings(screen_id);

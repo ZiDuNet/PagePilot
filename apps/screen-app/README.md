@@ -112,4 +112,34 @@ apps/screen-app/
   scripts/        # 打包、签名、调试脚本
 ```
 
-技术路线可以先按 Android WebView 壳 + PagePilot 播放清单实现。这样可以复用现有 HTML 应用能力，同时保留后续做原生缓存、开机自启、远程日志和设备守护的空间。
+## 当前 APP 路线
+
+当前屏幕端 APP 按 Android Kotlin + X5 WebView 骨架实现，源码位于 `apps/screen-app/app/`。
+
+关键约定：
+
+- 首次启动先配置 PagePilot 服务器地址，地址保存在本机 `SharedPreferences`。
+- 服务器地址不固定，不在 APP 中写死。
+- 无 Device Token 时，APP 调用 `/api/device/pairing/start` 获取配对码。
+- 用户在后台或 Skill 中输入配对码完成绑定。
+- APP 轮询 `/api/device/pairing/complete`，绑定成功后保存 Device Token。
+- 已绑定后，APP 使用 `Authorization: Device <token>` 拉取 `/api/device/manifest`。
+- manifest 中的 `entryUrl` 交给 X5 WebView 全屏播放。
+
+第一版先在线加载 URL。manifest 已包含 assets/hash 字段，后续可以继续实现本地缓存和断网播放。
+
+## 本地构建
+
+```bash
+cd apps/screen-app/app
+./gradlew :player:assembleDebug
+```
+
+Windows 可使用：
+
+```powershell
+cd apps\screen-app\app
+.\gradlew.bat :player:assembleDebug
+```
+
+如果本机没有 Android Gradle 环境，需要先安装 Android Studio 或命令行 SDK。
