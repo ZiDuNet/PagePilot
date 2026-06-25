@@ -1,5 +1,7 @@
 import {
   Bot,
+  ChevronLeft,
+  ChevronRight,
   Code2,
   Copy,
   Download,
@@ -237,17 +239,28 @@ function Logo() {
 }
 
 function HomePage({ config }: { config: RuntimeConfig | null }) {
+  const pageSize = 24;
   const [items, setItems] = useState<MarketplaceDeploy[]>([]);
   const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortMode>("newest");
   const [loading, setLoading] = useState(true);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const pageStart = total === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const pageEnd = Math.min(total, safePage * pageSize);
+  const pinnedCount = items.filter((item) => item.isPinned).length;
+  const marketplaceSummary = total === 0
+    ? "暂无匹配作品，管理员置顶优先展示。"
+    : `共 ${total} 个公开作品，当前显示 ${pageStart}-${pageEnd}，${pinnedCount ? `本页 ${pinnedCount} 个置顶，` : ""}点赞排行保留。`;
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({
-        pageSize: "24",
+        page: String(page),
+        pageSize: String(pageSize),
         sort,
         q: query
       });
@@ -257,12 +270,18 @@ function HomePage({ config }: { config: RuntimeConfig | null }) {
     } finally {
       setLoading(false);
     }
-  }, [query, sort]);
+  }, [page, query, sort]);
 
   useEffect(() => {
     const timer = window.setTimeout(load, 160);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  useEffect(() => {
+    if (!loading && page > pageCount) {
+      setPage(pageCount);
+    }
+  }, [loading, page, pageCount]);
 
   return (
     <div className="home-page">
@@ -299,14 +318,31 @@ function HomePage({ config }: { config: RuntimeConfig | null }) {
         <div className="section-head market-head">
           <div>
             <h2>应用商城</h2>
-            <p>{loading ? "正在加载作品" : `共 ${total} 个公开作品，点赞排行保留，管理员置顶优先展示。`}</p>
+            <p>
+              {loading
+                ? "正在加载作品"
+                : marketplaceSummary}
+            </p>
           </div>
           <div className="filters market-filters">
             <label className="search-box">
               <Search size={16} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、描述或 code" />
+              <input
+                value={query}
+                onChange={(event) => {
+                  setPage(1);
+                  setQuery(event.target.value);
+                }}
+                placeholder="搜索标题、描述或 code"
+              />
             </label>
-            <select value={sort} onChange={(event) => setSort(event.target.value as SortMode)}>
+            <select
+              value={sort}
+              onChange={(event) => {
+                setPage(1);
+                setSort(event.target.value as SortMode);
+              }}
+            >
               <option value="newest">最新优先</option>
               <option value="likes_desc">点赞最高</option>
               <option value="views_desc">访问最多</option>
@@ -320,6 +356,34 @@ function HomePage({ config }: { config: RuntimeConfig | null }) {
           <div className="card-grid">
             {items.map((item) => <MarketplaceCard key={item.code} item={item} onChanged={load} />)}
             {!items.length && <div className="empty-wide">还没有匹配作品。</div>}
+          </div>
+        )}
+        {!loading && total > 0 && (
+          <div className="market-pagination" aria-label="应用商城分页">
+            <div className="page-note">
+              管理员置顶优先展示，排序规则继续作用于其余作品。
+            </div>
+            <div className="pager">
+              <button
+                className="button compact"
+                type="button"
+                disabled={safePage <= 1}
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+              >
+                <ChevronLeft size={15} />
+                上一页
+              </button>
+              <span className="page-indicator">第 {safePage} / {pageCount} 页</span>
+              <button
+                className="button compact"
+                type="button"
+                disabled={safePage >= pageCount}
+                onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+              >
+                下一页
+                <ChevronRight size={15} />
+              </button>
+            </div>
           </div>
         )}
       </section>

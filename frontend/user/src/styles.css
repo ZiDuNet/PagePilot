@@ -393,7 +393,7 @@ h1, h2, h3, p { margin-top: 0; }
   z-index: 2;
   pointer-events: none;
   background:
-    linear-gradient(180deg, rgba(2, 6, 23, 0) 0%, rgba(2, 6, 23, 0) 44%, rgba(2, 6, 23, 0.12) 68%, rgba(2, 6, 23, 0.34) 100%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0) 42%, rgba(255, 255, 255, 0.28) 72%, rgba(255, 255, 255, 0.78) 100%);
 }
 .preview-pane iframe {
   width: 132%;
@@ -439,10 +439,9 @@ h1, h2, h3, p { margin-top: 0; }
   position: absolute;
   inset: auto 0 0;
   z-index: 3;
-  padding: 42px 14px 12px;
-  color: #fff;
-  background: linear-gradient(180deg, rgba(2, 6, 23, 0) 0%, rgba(2, 6, 23, 0.28) 24%, rgba(2, 6, 23, 0.68) 58%, rgba(2, 6, 23, 0.84) 100%);
-  backdrop-filter: blur(3px);
+  padding: 58px 14px 12px;
+  color: #0f172a;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.46) 38%, rgba(255, 255, 255, 0.88) 72%, rgba(255, 255, 255, 0.98) 100%);
 }
 .card-title-row {
   display: grid;
@@ -457,9 +456,10 @@ h1, h2, h3, p { margin-top: 0; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #fff;
+  color: #0f172a;
   font-size: 16px;
   line-height: 1.25;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.64);
 }
 .title-wrap code {
   display: block;
@@ -468,7 +468,7 @@ h1, h2, h3, p { margin-top: 0; }
   margin-top: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: rgba(226, 232, 240, 0.88);
+  color: rgba(51, 65, 85, 0.86);
   font-size: 11px;
   white-space: nowrap;
 }
@@ -501,7 +501,7 @@ h1, h2, h3, p { margin-top: 0; }
   min-height: 0;
   margin: 7px 0 9px;
   overflow: hidden;
-  color: rgba(248, 250, 252, 0.86);
+  color: rgba(51, 65, 85, 0.86);
   font-size: 12px;
   line-height: 1.48;
   -webkit-box-orient: vertical;
@@ -512,7 +512,7 @@ h1, h2, h3, p { margin-top: 0; }
   flex-wrap: wrap;
   gap: 5px;
   margin-bottom: 9px;
-  color: rgba(226, 232, 240, 0.86);
+  color: rgba(71, 85, 105, 0.92);
   font-size: 11px;
 }
 .meta-grid span {
@@ -520,11 +520,10 @@ h1, h2, h3, p { margin-top: 0; }
   min-height: 22px;
   display: inline-flex;
   align-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(15, 23, 42, 0.09);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.58);
   padding: 0 7px;
-  backdrop-filter: blur(10px);
   white-space: nowrap;
 }
 .icon-button {
@@ -545,16 +544,51 @@ h1, h2, h3, p { margin-top: 0; }
 .app-card .card-actions .icon-button {
   min-height: 31px;
   height: 31px;
-  border-color: rgba(255, 255, 255, 0.24);
-  background: rgba(255, 255, 255, 0.13);
-  color: #fff;
-  backdrop-filter: blur(12px);
+  border-color: rgba(15, 23, 42, 0.10);
+  background: rgba(255, 255, 255, 0.74);
+  color: #0f172a;
 }
 .app-card .card-actions .button.compact {
   padding: 0 9px;
 }
 .app-card .card-actions .icon-button.danger {
-  color: #fecdd3;
+  color: var(--rose);
+}
+
+.market-pagination {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 16px;
+  border-top: 1px solid rgba(14, 116, 144, 0.12);
+  padding-top: 14px;
+}
+.page-note {
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  flex: 0 0 auto;
+}
+.page-indicator {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(14, 116, 144, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #334155;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 850;
+  white-space: nowrap;
 }
 
 .skeleton {
@@ -971,6 +1005,14 @@ h1, h2, h3, p { margin-top: 0; }
     width: 100%;
     grid-template-columns: minmax(0, 1fr) 136px;
   }
+  .market-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .pager {
+    width: 100%;
+    justify-content: space-between;
+  }
   .skill-package-head,
   .package-url,
   .mcp-card {
@@ -1020,6 +1062,16 @@ h1, h2, h3, p { margin-top: 0; }
   }
   .market-filters {
     grid-template-columns: 1fr;
+  }
+  .pager {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .pager .button {
+    width: 100%;
+  }
+  .page-indicator {
+    justify-content: center;
   }
   .search-box { min-width: 0; width: 100%; }
   .filters { width: 100%; }
