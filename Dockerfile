@@ -1,9 +1,9 @@
 # PagePilot / hostctl multi-stage Dockerfile.
 # Build stage compiles static Go binaries; runtime stage keeps only binaries and small OS deps.
 
-ARG NODE_IMAGE=registry.cn-hangzhou.aliyuncs.com/library/node:22-alpine
-ARG GO_IMAGE=registry.cn-hangzhou.aliyuncs.com/library/golang:1.22-alpine
-ARG ALPINE_IMAGE=registry.cn-hangzhou.aliyuncs.com/library/alpine:3.20
+ARG NODE_IMAGE=node:22-alpine
+ARG GO_IMAGE=golang:1.22-alpine
+ARG ALPINE_IMAGE=alpine:3.20
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 # ===== Build =====

@@ -24,10 +24,10 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # 国内服务器默认走阿里云基础镜像，避免 Docker Hub 镜像源偶发 EOF。
-        NODE_IMAGE: registry.cn-hangzhou.aliyuncs.com/library/node:22-alpine
-        GO_IMAGE: registry.cn-hangzhou.aliyuncs.com/library/golang:1.22-alpine
-        ALPINE_IMAGE: registry.cn-hangzhou.aliyuncs.com/library/alpine:3.20
+        # 基础镜像保持 Docker Hub 官方名称；国内加速请配置 Docker daemon registry mirrors。
+        NODE_IMAGE: node:22-alpine
+        GO_IMAGE: golang:1.22-alpine
+        ALPINE_IMAGE: alpine:3.20
         NPM_REGISTRY: https://registry.npmmirror.com
         GOPROXY: https://mirrors.aliyun.com/goproxy/,direct
     image: pagepilot:latest
