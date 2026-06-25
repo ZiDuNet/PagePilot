@@ -25,6 +25,7 @@ import {
   Workflow
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { buildDeviceInfoRows, formatDeviceInfoSummary } from "./deviceInfo";
 
 declare module "react" {
   interface InputHTMLAttributes<T> {
@@ -112,6 +113,7 @@ interface MarketplaceItem {
 interface ScreenItem {
   id: string;
   name?: string;
+  deviceName?: string;
   ownerUsername?: string;
   status?: string;
   currentSiteCode?: string;
@@ -1248,7 +1250,7 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
               <div className="screen-head"><strong>{screen.name || screen.id}</strong>{statusBadge(screen.status || "unknown")}</div>
               <InfoRow label="当前应用" value={screen.currentSiteCode || "未投放"} />
               <InfoRow label="最后在线" value={formatDate(screen.lastSeenAt)} />
-              <InfoRow label="设备信息" value={formatDeviceInfo(screen.deviceInfo)} />
+              <DeviceInfoBlock screen={screen} />
               <div className="actions">
                 <button className="button compact primary" type="button" onClick={() => setPickScreen(screen)}>投放</button>
                 <button className="button compact" type="button" onClick={() => void command(screen, "refresh")}>刷新</button>
@@ -1701,6 +1703,42 @@ function InfoRow({ label, value, copy }: { label: string; value: string; copy?: 
   );
 }
 
+function DeviceInfoBlock({ screen }: { screen: ScreenItem }) {
+  const rows = buildDeviceInfoRows({
+    deviceName: screen.deviceName,
+    appVersion: screen.appVersion,
+    runtime: screen.runtime,
+    deviceInfo: screen.deviceInfo
+  });
+  const summary = formatDeviceInfoSummary({
+    deviceName: screen.deviceName,
+    appVersion: screen.appVersion,
+    runtime: screen.runtime,
+    deviceInfo: screen.deviceInfo
+  });
+
+  return (
+    <div className="device-info-block">
+      <div className="device-info-title">
+        <span>设备信息</span>
+        <strong>{summary}</strong>
+      </div>
+      {rows.length ? (
+        <div className="device-info-grid">
+          {rows.map((row) => (
+            <div className={row.priority ? "device-info-item priority" : "device-info-item"} key={row.key}>
+              <span>{row.label}</span>
+              <strong title={row.value}>{row.value}</strong>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="device-info-empty">暂无设备上报信息</div>
+      )}
+    </div>
+  );
+}
+
 function statusBadge(status: string, protectedSite = false) {
   if (protectedSite) return <span className="badge amber">加密</span>;
   if (status === "active") return <span className="badge green">运行中</span>;
@@ -1721,24 +1759,6 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
 
 function DocBlock({ title, lines }: { title: string; lines: string[] }) {
   return <div className="doc-block"><h3>{title}</h3><pre>{lines.join("\n")}</pre></div>;
-}
-
-function formatDeviceInfo(info: unknown) {
-  if (!info) return "-";
-  if (typeof info === "string") return info;
-  try {
-    const data = info as Record<string, unknown>;
-    const values = [
-      data.model,
-      data.androidVersion || data.sdk,
-      data.resolution,
-      data.orientation,
-      data.webView || data.x5Version
-    ].filter(Boolean);
-    return values.length ? values.join(" · ") : JSON.stringify(info);
-  } catch {
-    return "-";
-  }
 }
 
 function Logo() {
