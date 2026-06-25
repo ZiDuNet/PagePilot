@@ -1,17 +1,29 @@
 package cc.pagepilot.screen
 
 import android.app.Activity
+import android.app.Dialog
+import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
-import android.graphics.Canvas
+import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.hardware.display.DisplayManager
+import android.media.ImageReader
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Base64
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -33,6 +45,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -48,6 +61,10 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
+  companion object {
+    private const val SCREEN_CAPTURE_REQUEST_CODE = 7201
+  }
+
   private val scopeJob = SupervisorJob()
   private val scope = CoroutineScope(scopeJob + Dispatchers.Main)
   private val wsClient = OkHttpClient.Builder()
@@ -57,6 +74,7 @@ class MainActivity : Activity() {
   private var pairingJob: Job? = null
   private var playbackJob: Job? = null
   private var heartbeatJob: Job? = null
+  private var statusJob: Job? = null
   private var screenSocket: WebSocket? = null
   private var currentEntryUrl = ""
   private var currentManifest: ScreenManifest? = null
@@ -69,10 +87,21 @@ class MainActivity : Activity() {
   private var socketStatus = "未连接"
   private var socketLastEvent = "-"
   private var lastWebViewRuntime = "未检测"
+  private var lastX5Loaded = false
+  private var lastX5Version = 0
+  private var networkDot: View? = null
+  private var socketDot: View? = null
+  private var networkStatusLabel: String = "未连接"
+  private var socketStatusLabel: String = "未连接"
+  private var statusOverlay: View? = null
+  private var mediaProjectionManager: MediaProjectionManager? = null
+  private var mediaProjection: MediaProjection? = null
+  private var pendingProjection: CompletableDeferred<Boolean>? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     config = ScreenConfig(this)
+    mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
     keepFullscreen()
     route()
   }
@@ -86,11 +115,31 @@ class MainActivity : Activity() {
     pairingJob?.cancel()
     playbackJob?.cancel()
     heartbeatJob?.cancel()
+    statusJob?.cancel()
     screenSocket?.cancel()
+    mediaProjection?.stop()
     wsClient.dispatcher.executorService.shutdown()
     scopeJob.cancel()
     currentWebView?.destroy()
     super.onDestroy()
+  }
+
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode != SCREEN_CAPTURE_REQUEST_CODE) return
+    val granted = resultCode == RESULT_OK && data != null
+    if (granted) {
+      mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, data!!)?.also { projection ->
+        projection.registerCallback(object : MediaProjection.Callback() {
+          override fun onStop() {
+            mediaProjection = null
+          }
+        }, Handler(Looper.getMainLooper()))
+      }
+    }
+    pendingProjection?.complete(granted && mediaProjection != null)
+    pendingProjection = null
+    keepFullscreen()
   }
 
   private fun keepFullscreen() {
@@ -115,13 +164,20 @@ class MainActivity : Activity() {
     stopPlayback()
     val input = EditText(this).apply {
       hint = "https://pagepilot.example.com"
-      setSingleLine(true)
-      textSize = 18f
-      setText(config.load().serverUrl)
+      setSingleLine(false)
+      maxLines = 2
+      setHorizontallyScrolling(false)
+      textSize = 14f
+      setText(wrapServerUrlForInput(config.load().serverUrl))
+      setSelection(0)
+      post {
+        setSelection(0)
+        scrollTo(0, 0)
+      }
     }
     val save = Button(this).apply { text = "保存服务器地址" }
     save.setOnClickListener {
-      val url = input.text.toString().trim().trimEnd('/')
+      val url = normalizeServerInput(input.text.toString())
       if (!serverUrlAllowed(url)) {
         showServerConfig("生产服务器必须使用 HTTPS；本地调试可使用 localhost、10.0.2.2 或局域网 HTTP。")
         return@setOnClickListener
@@ -219,12 +275,15 @@ class MainActivity : Activity() {
       ViewGroup.LayoutParams.MATCH_PARENT,
       ViewGroup.LayoutParams.MATCH_PARENT,
     ))
-    root.addView(hiddenSettingsHotspot(), FrameLayout.LayoutParams(
-      dp(92),
-      dp(92),
+    root.addView(statusHotspot(), FrameLayout.LayoutParams(
+      dp(26),
+      dp(14),
       Gravity.TOP or Gravity.RIGHT,
-    ))
+    ).apply {
+      setMargins(0, dp(5), dp(5), 0)
+    })
     setContentView(root)
+    startStatusIndicatorUpdates()
     playbackJob?.cancel()
     playbackJob = scope.launch {
       val api = PagePilotApi(serverUrl)
@@ -345,7 +404,7 @@ class MainActivity : Activity() {
   ) {
     val shot = manifest.screenshot ?: return
     if (shot.requestId == lastScreenshotRequestId) return
-    val captured = captureWebView(webView)
+    val captured = captureSystemScreen()
     api.uploadScreenshot(
       deviceToken = deviceToken,
       requestId = shot.requestId,
@@ -419,11 +478,19 @@ class MainActivity : Activity() {
     if (!keepPairing) pairingJob?.cancel()
     playbackJob?.cancel()
     heartbeatJob?.cancel()
+    statusJob?.cancel()
     screenSocket?.cancel()
     screenSocket = null
     socketStatus = "未连接"
+    networkDot = null
+    socketDot = null
+    networkStatusLabel = "未连接"
+    socketStatusLabel = "未连接"
+    statusOverlay = null
     currentWebView?.let {
       lastWebViewRuntime = webViewRuntimeLabel()
+      lastX5Loaded = x5Loaded()
+      lastX5Version = x5VersionCode()
       runCatching { it.stopLoading() }
       runCatching { it.clearHistory() }
       runCatching { it.destroy() }
@@ -446,9 +513,13 @@ class MainActivity : Activity() {
     runCatching { manager.flush() }
   }
 
-  private fun hiddenSettingsHotspot(): View {
-    return View(this).apply {
-      setBackgroundColor(0x00000000)
+  private fun statusHotspot(): View {
+    val container = LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL
+      gravity = Gravity.CENTER
+      setPadding(dp(3), dp(1), dp(3), dp(1))
+      background = roundedDrawable(0x66020617, 0x26ffffff)
+      contentDescription = "网络与 WebSocket 状态"
       setOnClickListener {
         val now = System.currentTimeMillis()
         if (now - hiddenTapStartedAt > 2500) {
@@ -462,36 +533,105 @@ class MainActivity : Activity() {
         }
       }
     }
+    networkDot = statusDot()
+    socketDot = statusDot()
+    container.addView(networkDot, LinearLayout.LayoutParams(dp(5), dp(5)).apply {
+      setMargins(dp(2), 0, dp(2), 0)
+    })
+    container.addView(socketDot, LinearLayout.LayoutParams(dp(5), dp(5)).apply {
+      setMargins(dp(2), 0, dp(2), 0)
+    })
+    statusOverlay = container
+    updateStatusIndicators()
+    return container
+  }
+
+  private fun statusDot(): View {
+    return View(this).apply {
+      background = circleDrawable(0xff94a3b8.toInt())
+    }
+  }
+
+  private fun startStatusIndicatorUpdates() {
+    statusJob?.cancel()
+    statusJob = scope.launch {
+      while (isActive) {
+        updateStatusIndicators()
+        delay(1000)
+      }
+    }
+  }
+
+  private fun updateStatusIndicators() {
+    val networkOnline = isNetworkOnline()
+    val websocketOnline = socketStatus == "已连接"
+    networkStatusLabel = if (networkOnline) "在线" else "离线"
+    socketStatusLabel = socketStatus
+    networkDot?.background = circleDrawable(if (networkOnline) 0xff22c55e.toInt() else 0xfffb7185.toInt())
+    socketDot?.background = circleDrawable(when {
+      websocketOnline -> 0xff22c55e.toInt()
+      socketStatus == "连接中" || socketStatus == "重连等待" -> 0xfff59e0b.toInt()
+      else -> 0xfffb7185.toInt()
+    })
+    statusOverlay?.contentDescription =
+      "网络${if (networkOnline) "在线" else "离线"}，WebSocket $socketStatus。连续点击 5 次打开设置。"
+  }
+
+  private fun isNetworkOnline(): Boolean {
+    val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+      val network = manager.activeNetwork ?: return false
+      val caps = manager.getNetworkCapabilities(network) ?: return false
+      caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    } else {
+      @Suppress("DEPRECATION")
+      manager.activeNetworkInfo?.isConnected == true
+    }
   }
 
   private fun showSettings() {
-    stopPlayback()
+    val settingsDialog = Dialog(this)
+    settingsDialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
     val local = config.load()
     val serverInput = EditText(this).apply {
       hint = "服务器地址"
-      setSingleLine(true)
-      textSize = 16f
-      setText(local.serverUrl)
+      setSingleLine(false)
+      maxLines = 2
+      setHorizontallyScrolling(false)
+      textSize = 14f
+      setText(wrapServerUrlForInput(local.serverUrl))
+      setSelection(0)
+      post {
+        setSelection(0)
+        scrollTo(0, 0)
+      }
     }
     val saveServer = Button(this).apply { text = "保存服务器并重新配对" }
     saveServer.setOnClickListener {
-      val url = serverInput.text.toString().trim().trimEnd('/')
+      val url = normalizeServerInput(serverInput.text.toString())
       if (!serverUrlAllowed(url)) {
+        settingsDialog.dismiss()
         showServerConfig("服务器地址不合法")
         return@setOnClickListener
       }
+      settingsDialog.dismiss()
       config.saveServerUrl(url)
       config.clearDeviceToken()
       route()
     }
     val unbind = Button(this).apply { text = "清除本机绑定" }
     unbind.setOnClickListener {
+      settingsDialog.dismiss()
       config.clearDeviceToken()
       route()
     }
     val back = Button(this).apply { text = "返回播放" }
-    back.setOnClickListener { route() }
-    setContentView(ScrollView(this).apply {
+    back.setOnClickListener {
+      settingsDialog.dismiss()
+      keepFullscreen()
+    }
+    val content = ScrollView(this).apply {
+      isFillViewport = true
       addView(centerPanel(
         title = "屏幕设置",
         subtitle = "右上角连续点击 5 次可打开本页。",
@@ -499,9 +639,11 @@ class MainActivity : Activity() {
           serverInput,
           settingsSection("连接状态", listOf(
             "服务器" to local.serverUrl.ifBlank { "-" },
-            "WebSocket" to socketStatus,
+            "网络" to networkStatusLabel,
+            "WebSocket" to socketStatusLabel,
             "最近事件" to socketLastEvent,
             "心跳" to "每 15 秒上报一次，控制指令走 WebSocket 实时下发",
+            "截图权限" to if (mediaProjection == null) "未授权，首次后台截图会在屏幕端弹出授权" else "已授权系统截屏",
           )),
           settingsSection("账号与屏幕", listOf(
             "屏幕" to screenTitle(),
@@ -518,13 +660,16 @@ class MainActivity : Activity() {
           settingsSection("WebView 内核", listOf(
             "控件" to "腾讯 X5 WebView",
             "运行内核" to if (currentWebView == null) lastWebViewRuntime else webViewRuntimeLabel(),
+            "初始化" to X5RuntimeState.summary(),
             "X5 版本" to x5VersionCode().takeIf { it > 0 }?.toString().orEmpty().ifBlank { "未就绪或回退系统内核" },
-            "实际加载" to if (x5Loaded()) "X5 内核已加载" else "系统 WebView 回退",
+            "实际加载" to x5ActualLoadText(),
+            "CPU ABI" to supportedAbiText(),
           )),
           settingsSection("设备环境", listOf(
             "Android" to "${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})",
             "设备" to "${Build.MANUFACTURER} ${Build.MODEL}",
             "品牌" to Build.BRAND,
+            "CPU ABI" to supportedAbiText(),
             "系统语言" to Locale.getDefault().toLanguageTag(),
             "时区" to TimeZone.getDefault().id,
           )),
@@ -536,8 +681,19 @@ class MainActivity : Activity() {
           unbind,
           back,
         ),
+      ), FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT,
       ))
-    })
+    }
+    settingsDialog.setContentView(content)
+    settingsDialog.setOnDismissListener { keepFullscreen() }
+    settingsDialog.show()
+    settingsDialog.window?.setLayout(
+      ViewGroup.LayoutParams.MATCH_PARENT,
+      ViewGroup.LayoutParams.MATCH_PARENT,
+    )
+    settingsDialog.window?.decorView?.systemUiVisibility = window.decorView.systemUiVisibility
   }
 
   private fun configureWebView(webView: WebView) {
@@ -565,31 +721,99 @@ class MainActivity : Activity() {
     }
   }
 
-  private suspend fun captureWebView(webView: WebView): CapturedScreenshot {
-    val width = webView.width.coerceAtLeast(1)
-    val height = webView.height.coerceAtLeast(1)
-    val maxSide = 1920f
-    val scale = (maxSide / max(width, height).toFloat()).coerceAtMost(1f)
-    val outWidth = (width * scale).roundToInt().coerceAtLeast(1)
-    val outHeight = (height * scale).roundToInt().coerceAtLeast(1)
-    val bitmap = Bitmap.createBitmap(outWidth, outHeight, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-    canvas.scale(scale, scale)
-    webView.draw(canvas)
-    val bytes = withContext(Dispatchers.Default) {
-      val qualitySteps = listOf(78, 68, 58, 48)
-      var best = ByteArray(0)
-      for (quality in qualitySteps) {
-        val out = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
-        best = out.toByteArray()
-        if (best.size <= 2_800_000) break
+  private suspend fun captureSystemScreen(): CapturedScreenshot {
+    val projection = ensureMediaProjection()
+      ?: throw IllegalStateException("需要在屏幕端允许系统截屏权限")
+    return withContext(Dispatchers.Main) {
+      val metrics = resources.displayMetrics
+      val width = metrics.widthPixels.coerceAtLeast(1)
+      val height = metrics.heightPixels.coerceAtLeast(1)
+      val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+      val imageReady = CompletableDeferred<Unit>()
+      val handler = Handler(Looper.getMainLooper())
+      reader.setOnImageAvailableListener({
+        if (!imageReady.isCompleted) imageReady.complete(Unit)
+      }, handler)
+      val display = projection.createVirtualDisplay(
+        "PagePilotScreenCapture",
+        width,
+        height,
+        metrics.densityDpi,
+        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+        reader.surface,
+        null,
+        handler,
+      )
+      try {
+        withTimeoutOrNull(2500) { imageReady.await() }
+          ?: throw IllegalStateException("系统截屏超时")
+        val image = reader.acquireLatestImage()
+          ?: throw IllegalStateException("系统截屏未返回图片")
+        try {
+          val plane = image.planes[0]
+          val buffer = plane.buffer
+          val pixelStride = plane.pixelStride
+          val rowStride = plane.rowStride
+          val rowPadding = rowStride - pixelStride * width
+          val rawWidth = width + rowPadding / pixelStride
+          val raw = Bitmap.createBitmap(rawWidth, height, Bitmap.Config.ARGB_8888)
+          raw.copyPixelsFromBuffer(buffer)
+          val cropped = if (rawWidth == width) {
+            raw
+          } else {
+            Bitmap.createBitmap(raw, 0, 0, width, height).also { raw.recycle() }
+          }
+          compressScreenshotBitmap(cropped)
+        } finally {
+          image.close()
+        }
+      } finally {
+        display.release()
+        reader.close()
       }
-      best
     }
-    bitmap.recycle()
-    return CapturedScreenshot(
-      base64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
+  }
+
+  private suspend fun ensureMediaProjection(): MediaProjection? {
+    mediaProjection?.let { return it }
+    val manager = mediaProjectionManager ?: return null
+    pendingProjection?.let {
+      it.await()
+      return mediaProjection
+    }
+    val deferred = CompletableDeferred<Boolean>()
+    pendingProjection = deferred
+    withContext(Dispatchers.Main) {
+      runCatching {
+        startActivityForResult(manager.createScreenCaptureIntent(), SCREEN_CAPTURE_REQUEST_CODE)
+      }.onFailure {
+        if (!deferred.isCompleted) deferred.complete(false)
+      }
+    }
+    return if (deferred.await()) mediaProjection else null
+  }
+
+  private suspend fun compressScreenshotBitmap(source: Bitmap): CapturedScreenshot = withContext(Dispatchers.Default) {
+    val maxSide = 960f
+    val scale = (maxSide / max(source.width, source.height).toFloat()).coerceAtMost(1f)
+    val outWidth = (source.width * scale).roundToInt().coerceAtLeast(1)
+    val outHeight = (source.height * scale).roundToInt().coerceAtLeast(1)
+    val output = if (scale < 1f) {
+      Bitmap.createScaledBitmap(source, outWidth, outHeight, true).also { source.recycle() }
+    } else {
+      source
+    }
+    val qualitySteps = listOf(62, 54, 46, 38, 32)
+    var best = ByteArray(0)
+    for (quality in qualitySteps) {
+      val out = ByteArrayOutputStream()
+      output.compress(Bitmap.CompressFormat.JPEG, quality, out)
+      best = out.toByteArray()
+      if (best.size <= 420_000) break
+    }
+    output.recycle()
+    CapturedScreenshot(
+      base64 = Base64.encodeToString(best, Base64.NO_WRAP),
       mimeType = "image/jpeg",
       width = outWidth,
       height = outHeight,
@@ -600,24 +824,29 @@ class MainActivity : Activity() {
     return LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       gravity = Gravity.CENTER
-      setPadding(dp(32), dp(32), dp(32), dp(32))
+      val horizontalPadding = panelHorizontalPadding()
+      val verticalPadding = if (isCompactWidth()) dp(24) else dp(32)
+      setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
       setBackgroundColor(0xffeef7fb.toInt())
       addView(ImageView(context).apply {
         setImageResource(R.drawable.pagepilot_logo)
         contentDescription = "PagePilot"
-      }, LinearLayout.LayoutParams(dp(72), dp(72)).apply {
+      }, LinearLayout.LayoutParams(
+        if (isCompactWidth()) dp(64) else dp(72),
+        if (isCompactWidth()) dp(64) else dp(72),
+      ).apply {
         gravity = Gravity.CENTER_HORIZONTAL
         setMargins(0, 0, 0, dp(12))
       })
       addView(TextView(context).apply {
         text = title
-        textSize = 32f
+        textSize = if (isCompactWidth()) 28f else 32f
         gravity = Gravity.CENTER
         setTextColor(0xff07101f.toInt())
       }, panelParams())
       addView(TextView(context).apply {
         text = subtitle
-        textSize = 17f
+        textSize = if (isCompactWidth()) 15f else 17f
         gravity = Gravity.CENTER
         setTextColor(0xff5b6d82.toInt())
       }, panelParams())
@@ -640,7 +869,7 @@ class MainActivity : Activity() {
       setPadding(dp(16), dp(14), dp(16), dp(14))
       addView(TextView(context).apply {
         text = title
-        textSize = 17f
+        textSize = if (isCompactWidth()) 16f else 17f
         setTextColor(0xff0f172a.toInt())
         setTypeface(typeface, android.graphics.Typeface.BOLD)
       })
@@ -651,21 +880,31 @@ class MainActivity : Activity() {
   }
 
   private fun settingsRow(label: String, value: String): View {
+    val compact = isCompactWidth()
     return LinearLayout(this).apply {
-      orientation = LinearLayout.HORIZONTAL
-      gravity = Gravity.CENTER_VERTICAL
+      orientation = if (compact) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+      gravity = if (compact) Gravity.LEFT else Gravity.CENTER_VERTICAL
       setPadding(0, dp(10), 0, 0)
       addView(TextView(context).apply {
         text = label
-        textSize = 14f
+        textSize = if (compact) 13f else 14f
         setTextColor(0xff64748b.toInt())
-      }, LinearLayout.LayoutParams(dp(112), ViewGroup.LayoutParams.WRAP_CONTENT))
+      }, LinearLayout.LayoutParams(
+        if (compact) ViewGroup.LayoutParams.MATCH_PARENT else dp(112),
+        ViewGroup.LayoutParams.WRAP_CONTENT,
+      ))
       addView(TextView(context).apply {
         text = value.ifBlank { "-" }
         textSize = 14f
         setTextColor(0xff1e293b.toInt())
         setLineSpacing(2f, 1.0f)
-      }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+      }, LinearLayout.LayoutParams(
+        if (compact) ViewGroup.LayoutParams.MATCH_PARENT else 0,
+        ViewGroup.LayoutParams.WRAP_CONTENT,
+        if (compact) 0f else 1f,
+      ).apply {
+        if (compact) setMargins(0, dp(4), 0, 0)
+      })
     }
   }
 
@@ -678,14 +917,34 @@ class MainActivity : Activity() {
     }
   }
 
+  private fun circleDrawable(fill: Int): GradientDrawable {
+    return GradientDrawable().apply {
+      shape = GradientDrawable.OVAL
+      setColor(fill)
+    }
+  }
+
   private fun panelParams(): LinearLayout.LayoutParams {
     return LinearLayout.LayoutParams(
       ViewGroup.LayoutParams.MATCH_PARENT,
       ViewGroup.LayoutParams.WRAP_CONTENT,
     ).apply {
-      width = resources.displayMetrics.widthPixels.coerceAtMost(dp(760))
+      width = panelContentWidth()
       setMargins(0, dp(8), 0, dp(8))
     }
+  }
+
+  private fun panelHorizontalPadding(): Int {
+    return if (isCompactWidth()) dp(20) else dp(32)
+  }
+
+  private fun panelContentWidth(): Int {
+    val available = resources.displayMetrics.widthPixels - panelHorizontalPadding() * 2
+    return available.coerceAtLeast(1).coerceAtMost(dp(760))
+  }
+
+  private fun isCompactWidth(): Boolean {
+    return resources.configuration.screenWidthDp < 480
   }
 
   private fun deviceName(): String {
@@ -714,6 +973,9 @@ class MainActivity : Activity() {
       .put("webViewClass", currentWebView?.javaClass?.name ?: WebView::class.java.name)
       .put("x5Version", x5VersionCode())
       .put("x5Loaded", x5Loaded())
+      .put("x5Init", X5RuntimeState.summary())
+      .put("x5Diagnostic", x5ActualLoadText())
+      .put("cpuAbi", supportedAbiText())
       .put("socketStatus", socketStatus)
       .put("appVersion", BuildConfig.VERSION_NAME)
   }
@@ -727,12 +989,18 @@ class MainActivity : Activity() {
   }
 
   private fun x5VersionCode(): Int {
-    return QbSdk.getTbsVersion(this)
+    val version = QbSdk.getTbsVersion(this)
+    if (version > 0) {
+      lastX5Version = version
+    }
+    return version.takeIf { it > 0 } ?: lastX5Version
   }
 
   private fun x5Loaded(): Boolean {
-    val webView = currentWebView ?: return false
-    return runCatching { webView.x5WebViewExtension != null }.getOrDefault(false)
+    val webView = currentWebView ?: return lastX5Loaded
+    val loaded = runCatching { webView.x5WebViewExtension != null }.getOrDefault(false)
+    lastX5Loaded = loaded
+    return loaded
   }
 
   private fun webViewRuntimeLabel(): String {
@@ -740,10 +1008,34 @@ class MainActivity : Activity() {
     val label = when {
       x5Loaded() && version > 0 -> "X5 WebView $version"
       version > 0 -> "X5 已安装，等待加载 ($version)"
+      isX86Abi() -> "系统 WebView 回退（当前主 ABI 为 ${primaryAbiText()}）"
       else -> "系统 WebView 回退（X5 未就绪）"
     }
     lastWebViewRuntime = label
     return label
+  }
+
+  private fun x5ActualLoadText(): String {
+    if (x5Loaded()) return "X5 内核已加载"
+    val callbackState = X5RuntimeState.viewInitFinished
+    return when {
+      isX86Abi() -> "系统 WebView 回退；当前主 ABI 为 ${primaryAbiText()}，X5 通常需要 ARM 真机环境"
+      callbackState == false -> "X5 初始化回调未通过，已回退系统 WebView"
+      x5VersionCode() <= 0 -> "X5 内核未就绪，已回退系统 WebView"
+      else -> "系统 WebView 回退"
+    }
+  }
+
+  private fun supportedAbiText(): String {
+    return Build.SUPPORTED_ABIS.joinToString(", ").ifBlank { Build.CPU_ABI }
+  }
+
+  private fun primaryAbiText(): String {
+    return Build.SUPPORTED_ABIS.firstOrNull() ?: Build.CPU_ABI
+  }
+
+  private fun isX86Abi(): Boolean {
+    return primaryAbiText().contains("x86", ignoreCase = true)
   }
 
   private fun screenTitle(): String {
@@ -768,12 +1060,34 @@ class MainActivity : Activity() {
       host.matches(Regex("^172\\.(1[6-9]|2\\d|3[01])\\..+"))
   }
 
+  private fun normalizeServerInput(value: String): String {
+    return value.replace(Regex("\\s+"), "").trimEnd('/')
+  }
+
+  private fun wrapServerUrlForInput(value: String): String {
+    return value.replace("://", "://\n")
+  }
+
   private fun idleHtml(): String {
     return """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;height:100vh;display:grid;place-items:center;background:#082f49;color:#e0f2fe;font-family:sans-serif"><div style="text-align:center"><h1 style="font-size:42px;margin:0 0 12px">PagePilot Screen</h1><p style="font-size:20px;margin:0;color:#bae6fd">等待投放内容</p></div></body></html>"""
   }
 
   private fun standbyHtml(message: String): String {
-    return """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;height:100vh;background:#020617;color:#334155;font-family:sans-serif;display:grid;place-items:center"><div style="font-size:18px">${escapeHtml(message)}</div></body></html>"""
+    val safeMessage = escapeHtml(message)
+    return """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+html,body{margin:0;width:100%;height:100%;background:#020617;color:#e2e8f0;font-family:Arial,"Microsoft YaHei",sans-serif;overflow:hidden}
+body{display:table}
+.wrap{display:table-cell;text-align:center;vertical-align:middle}
+.time{font-size:13vw;font-weight:800;line-height:1;letter-spacing:0;text-shadow:0 10px 36px rgba(56,189,248,.18)}
+.date{margin-top:24px;color:#94a3b8;font-size:3vw}
+.state{margin-top:36px;color:#38bdf8;font-size:2.2vw;letter-spacing:0}
+@media (max-width:700px){.time{font-size:17vw}.date{font-size:4vw}.state{font-size:3.2vw}}
+@media (min-width:1500px){.time{font-size:168px}.date{font-size:36px}.state{font-size:26px}}
+</style></head><body><main class="wrap"><div class="time" id="time">--:--:--</div><div class="date" id="date">----</div><div class="state">$safeMessage</div></main><script>
+function pad(n){return n<10?"0"+n:String(n)}
+function tick(){var d=new Date();var weeks=["星期日","星期一","星期二","星期三","星期四","星期五","星期六"];document.getElementById("time").innerHTML=pad(d.getHours())+":"+pad(d.getMinutes())+":"+pad(d.getSeconds());document.getElementById("date").innerHTML=d.getFullYear()+"年"+pad(d.getMonth()+1)+"月"+pad(d.getDate())+"日 "+weeks[d.getDay()]}
+tick();setInterval(tick,1000)
+</script></body></html>"""
   }
 
   private fun errorHtml(message: String): String {
