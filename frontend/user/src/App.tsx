@@ -84,6 +84,30 @@ function formatDate(value?: string): string {
   return d.toLocaleString("zh-CN", { hour12: false });
 }
 
+function formatDeviceInfo(info: unknown): string {
+  if (!info) return "-";
+  if (typeof info === "string") return info || "-";
+  if (typeof info !== "object") return String(info);
+
+  const data = info as Record<string, unknown>;
+  const screenWidth = Number(data.screenWidthPx || data.widthPx || 0);
+  const screenHeight = Number(data.screenHeightPx || data.heightPx || 0);
+  const model = [data.manufacturer || data.brand, data.model].filter(Boolean).join(" ");
+  const android = data.androidRelease || data.androidVersion || data.androidSdk;
+  const resolution = screenWidth && screenHeight ? `${screenWidth} x ${screenHeight}` : data.resolution;
+  const runtime = data.webViewRuntime || data.webView || data.x5Diagnostic || data.x5Version;
+  const values = [model, android ? `Android ${android}` : "", resolution, data.orientation, runtime]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  if (values.length) return values.join(" / ");
+  try {
+    return JSON.stringify(info);
+  } catch {
+    return "-";
+  }
+}
+
 function fileTextSize(text: string): number {
   return new Blob([text]).size;
 }
@@ -1003,7 +1027,7 @@ function ScreensPage({ config }: { config: RuntimeConfig | null }) {
               <div className="screen-row" key={screen.id}>
                 <strong>{screen.name || screen.id}</strong>
                 <span>{screen.status || "未知"} · {screen.currentSiteCode || "空闲"}</span>
-                <code>{screen.deviceInfo || "-"}</code>
+                <code>{formatDeviceInfo(screen.deviceInfo)}</code>
               </div>
             ))}
             {!screens.length && <div className="empty-wide">还没有绑定屏幕。</div>}

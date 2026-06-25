@@ -118,6 +118,7 @@ class MainActivity : Activity() {
     statusJob?.cancel()
     screenSocket?.cancel()
     mediaProjection?.stop()
+    ScreenCaptureService.stop(this)
     wsClient.dispatcher.executorService.shutdown()
     scopeJob.cancel()
     currentWebView?.destroy()
@@ -128,17 +129,22 @@ class MainActivity : Activity() {
     super.onActivityResult(requestCode, resultCode, data)
     if (requestCode != SCREEN_CAPTURE_REQUEST_CODE) return
     val granted = resultCode == RESULT_OK && data != null
-    if (granted) {
-      mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, data!!)?.also { projection ->
-        projection.registerCallback(object : MediaProjection.Callback() {
-          override fun onStop() {
-            mediaProjection = null
-          }
-        }, Handler(Looper.getMainLooper()))
-      }
+    if (!granted) {
+      pendingProjection?.complete(false)
+      pendingProjection = null
+      ScreenCaptureState.readyDeferred = null
+      ScreenCaptureService.stop(this)
+      keepFullscreen()
+      return
     }
-    pendingProjection?.complete(granted && mediaProjection != null)
-    pendingProjection = null
+    runCatching {
+      ScreenCaptureService.start(this, resultCode, data!!)
+    }.onFailure {
+      pendingProjection?.complete(false)
+      pendingProjection = null
+      ScreenCaptureState.readyDeferred = null
+      ScreenCaptureService.stop(this)
+    }
     keepFullscreen()
   }
 
@@ -776,21 +782,37 @@ class MainActivity : Activity() {
 
   private suspend fun ensureMediaProjection(): MediaProjection? {
     mediaProjection?.let { return it }
+    ScreenCaptureState.mediaProjection?.let {
+      mediaProjection = it
+      return it
+    }
     val manager = mediaProjectionManager ?: return null
     pendingProjection?.let {
       it.await()
-      return mediaProjection
+      pendingProjection = null
+      return mediaProjection ?: ScreenCaptureState.mediaProjection?.also { stored ->
+        mediaProjection = stored
+      }
     }
     val deferred = CompletableDeferred<Boolean>()
     pendingProjection = deferred
+    ScreenCaptureState.readyDeferred = deferred
     withContext(Dispatchers.Main) {
       runCatching {
         startActivityForResult(manager.createScreenCaptureIntent(), SCREEN_CAPTURE_REQUEST_CODE)
       }.onFailure {
         if (!deferred.isCompleted) deferred.complete(false)
+        ScreenCaptureState.readyDeferred = null
       }
     }
-    return if (deferred.await()) mediaProjection else null
+    return if (deferred.await()) {
+      pendingProjection = null
+      mediaProjection = ScreenCaptureState.mediaProjection
+      mediaProjection
+    } else {
+      pendingProjection = null
+      null
+    }
   }
 
   private suspend fun compressScreenshotBitmap(source: Bitmap): CapturedScreenshot = withContext(Dispatchers.Default) {

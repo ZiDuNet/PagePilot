@@ -68,7 +68,7 @@ export interface ScreenInfo {
   status?: string;
   currentSiteCode?: string;
   currentVersion?: number;
-  deviceInfo?: string;
+  deviceInfo?: unknown;
   runtime?: string;
   lastHeartbeatAt?: string;
 }
