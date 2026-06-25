@@ -3175,6 +3175,7 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 
 func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, sub, absFull, routePrefix string) {
 	setHostedContentSecurityHeaders(w)
+	setHostedContentCORSHeaders(w, r)
 	lowerSub := strings.ToLower(sub)
 	if !strings.HasSuffix(lowerSub, ".html") && !strings.HasSuffix(lowerSub, ".htm") {
 		http.ServeFile(w, r, absFull)
@@ -3197,6 +3198,14 @@ func setHostedContentSecurityHeaders(w http.ResponseWriter) {
 			"connect-src *; frame-src *; child-src *")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+}
+
+func setHostedContentCORSHeaders(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(r.Header.Get("Origin")) != "null" {
+		return
+	}
+	w.Header().Set("Access-Control-Allow-Origin", "null")
+	w.Header().Add("Vary", "Origin")
 }
 
 func buildAppRoutePrefix(code string) string {

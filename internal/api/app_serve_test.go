@@ -57,6 +57,38 @@ func TestAppServeServesCurrentAndHistoricalVersion(t *testing.T) {
 	}
 }
 
+func TestAppServeAllowsSandboxedSameAppFetch(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+
+	srv.deployer = &appServeDeployerStub{
+		site: store.Site{Code: "demo"},
+	}
+	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "chapter.html"), []byte("<p>chapter</p>"), 0o644); err != nil {
+		t.Fatalf("write chapter: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/demo/chapter.html", nil)
+	req.Header.Set("Origin", "null")
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "null" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want null", got)
+	}
+	if got := rr.Header().Get("Vary"); !strings.Contains(got, "Origin") {
+		t.Fatalf("Vary = %q, want Origin", got)
+	}
+}
+
 func TestAppServeRedirectsLegacyVersionQuery(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
