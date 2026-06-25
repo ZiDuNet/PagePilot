@@ -438,7 +438,7 @@ function MarketplaceCard({ item, onChanged }: { item: MarketplaceDeploy; onChang
         {item.accessProtected ? (
           <div className="locked-preview"><Lock size={20} /><strong>需要访问密码</strong><span>加密站点不在首页加载预览。</span></div>
         ) : (
-          <iframe ref={previewRef} title={title} loading="lazy" sandbox="allow-scripts allow-forms allow-popups allow-downloads" />
+          <iframe ref={previewRef} title={title} loading="lazy" scrolling="no" sandbox="allow-scripts allow-forms allow-popups allow-downloads" />
         )}
         <a className="open-corner" href={appURL} target="_blank" rel="noreferrer"><ExternalLink size={15} />打开</a>
       </div>
