@@ -1036,41 +1036,53 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
 
   async function bind() {
     if (!pairingCode.trim()) return setError("请输入配对码");
-    await api("/api/screens/bind", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pairingCode: pairingCode.trim(), name: screenName.trim() || undefined })
-    });
-    setPairingCode("");
-    setScreenName("");
-    showToast("屏幕已绑定");
-    await load();
+    try {
+      await api("/api/screens/bind", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pairingCode: pairingCode.trim(), name: screenName.trim() || undefined })
+      });
+      setPairingCode("");
+      setScreenName("");
+      showToast("屏幕已绑定");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function publish(screen: ScreenItem, code: string) {
-    await api(`/api/screens/${encodeURIComponent(screen.id)}/publish`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code })
-    });
-    showToast("投放已下发");
-    setPickScreen(null);
-    await load();
+    try {
+      await api(`/api/screens/${encodeURIComponent(screen.id)}/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code })
+      });
+      showToast("投放已下发");
+      setPickScreen(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function command(screen: ScreenItem, type: string) {
-    if (type === "screenshot") {
-      await api(`/api/screens/${encodeURIComponent(screen.id)}/screenshot`, { method: "POST" });
-      showToast("截图指令已下发，请稍后查看");
-    } else {
-      await api(`/api/screens/${encodeURIComponent(screen.id)}/command`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type })
-      });
-      showToast(`指令已下发：${type}`);
+    try {
+      if (type === "screenshot") {
+        await api(`/api/screens/${encodeURIComponent(screen.id)}/screenshot`, { method: "POST" });
+        showToast("截图指令已下发，请稍后查看");
+      } else {
+        await api(`/api/screens/${encodeURIComponent(screen.id)}/command`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type })
+        });
+        showToast(`指令已下发：${type}`);
+      }
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
-    await load();
   }
 
   async function viewScreenshot(screen: ScreenItem) {
@@ -1093,9 +1105,13 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
 
   async function unbind(screen: ScreenItem) {
     if (!window.confirm(`确认解绑 ${screen.name || screen.id}？`)) return;
-    await api(`/api/screens/${encodeURIComponent(screen.id)}`, { method: "DELETE" });
-    showToast("屏幕已解绑");
-    await load();
+    try {
+      await api(`/api/screens/${encodeURIComponent(screen.id)}`, { method: "DELETE" });
+      showToast("屏幕已解绑");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   return (

@@ -62,11 +62,13 @@ func (s *Server) handleBindScreen(w http.ResponseWriter, r *http.Request) {
 	}
 	screen, err := s.deployer.BindScreenPairing(r.Context(), code, userID, strings.TrimSpace(req.Name))
 	if err != nil {
-		statusCode := CodeInvalidInput
 		if errors.Is(err, store.ErrNotFound) {
-			statusCode = CodeNotFound
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "pairingCode",
+				"配对码无效、已过期或已被使用，请在屏幕 APP 上重新生成配对码后再绑定").
+				WithHint("确认后台和屏幕 APP 配置的是同一个 PagePilot 服务器，配对码 5 分钟内有效且只能使用一次。"), reqID))
+			return
 		}
-		writeError(w, apiErrWithReqID(NewError(statusCode, "screen_pairing", err.Error()), reqID))
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen_pairing", err.Error()), reqID))
 		return
 	}
 	writeJSON(w, http.StatusOK, ScreenBindResponse{Success: true, Screen: s.toScreenItem(r.Context(), screen)})

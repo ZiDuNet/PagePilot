@@ -30,6 +30,34 @@ func TestScreensRejectAnonymousList(t *testing.T) {
 	}
 }
 
+func TestScreenBindInvalidPairingCodeReturnsActionableError(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+
+	_, token := createScreenAPIUser(t, srv, "alice")
+	bindBody, _ := json.Marshal(ScreenBindRequest{PairingCode: "000000"})
+	bindReq := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
+	bindReq.Header.Set("Content-Type", "application/json")
+	bindReq.Header.Set("Authorization", "Bearer "+token)
+	bindRR := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(bindRR, bindReq)
+
+	if bindRR.Code != http.StatusBadRequest {
+		t.Fatalf("bind status = %d, body = %s; want %d", bindRR.Code, bindRR.Body.String(), http.StatusBadRequest)
+	}
+	var apiErr APIError
+	if err := json.Unmarshal(bindRR.Body.Bytes(), &apiErr); err != nil {
+		t.Fatalf("decode bind error: %v", err)
+	}
+	if apiErr.ErrorCode != CodeInvalidInput || apiErr.Stage != "pairingCode" {
+		t.Fatalf("bind error = %+v, want invalid pairingCode", apiErr)
+	}
+	if apiErr.Detail == "" || apiErr.Detail == "not found" || apiErr.Hint == "" {
+		t.Fatalf("bind error should explain invalid pairing code, got %+v", apiErr)
+	}
+}
+
 func TestRegisteredUserCanBindPublishAndDeviceCanReadManifest(t *testing.T) {
 	srv, cleanup := newScreenAPITestServer(t)
 	defer cleanup()
