@@ -1,10 +1,18 @@
 # PagePilot / hostctl multi-stage Dockerfile.
 # Build stage compiles static Go binaries; runtime stage keeps only binaries and small OS deps.
 
+ARG NODE_IMAGE=registry.cn-hangzhou.aliyuncs.com/library/node:22-alpine
+ARG GO_IMAGE=registry.cn-hangzhou.aliyuncs.com/library/golang:1.22-alpine
+ARG ALPINE_IMAGE=registry.cn-hangzhou.aliyuncs.com/library/alpine:3.20
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
 # ===== Build =====
-FROM node:22-alpine AS frontend-builder
+FROM ${NODE_IMAGE} AS frontend-builder
 
 WORKDIR /src
+
+ARG NPM_REGISTRY
+RUN npm config set registry "${NPM_REGISTRY}"
 
 COPY frontend/user/package*.json ./frontend/user/
 RUN cd frontend/user && npm ci
@@ -16,14 +24,15 @@ RUN cd frontend/admin && npm ci
 COPY frontend/admin ./frontend/admin
 RUN cd frontend/admin && npm run build
 
-FROM golang:1.22-alpine AS builder
+FROM ${GO_IMAGE} AS builder
 
 # git is needed by go mod for VCS-backed modules.
-RUN apk add --no-cache git ca-certificates
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
+    apk add --no-cache git ca-certificates
 
 WORKDIR /src
 
-ARG GOPROXY=https://goproxy.cn,direct
+ARG GOPROXY=https://mirrors.aliyun.com/goproxy/,direct
 ARG GOSUMDB=sum.golang.google.cn
 ENV GOPROXY=${GOPROXY} \
     GOSUMDB=${GOSUMDB}
@@ -42,10 +51,11 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/hostctl-server ./cmd/hostctl-ser
     go build -trimpath -ldflags="-s -w" -o /out/hostctl        ./cmd/hostctl
 
 # ===== Runtime =====
-FROM alpine:3.20
+FROM ${ALPINE_IMAGE}
 
 # Runtime deps: CA certs for HTTPS, tzdata for local time display, curl for healthcheck.
-RUN apk add --no-cache ca-certificates tzdata curl
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
+    apk add --no-cache ca-certificates tzdata curl
 
 RUN addgroup -S hostctl && adduser -S -G hostctl -h /var/lib/hostctl hostctl
 
