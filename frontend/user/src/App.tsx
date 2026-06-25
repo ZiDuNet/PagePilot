@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, publicURL } from "./api";
+import { createPreviewScheduler } from "./previewScheduler";
 import type {
   DeployFilePayload,
   DeployResponse,
@@ -34,6 +35,7 @@ import type {
 type Page = "home" | "deploy" | "agents" | "screens" | "apiDocs";
 type SortMode = "newest" | "oldest" | "likes_desc" | "views_desc";
 type AgentDocTab = "skill" | "mcp";
+type PreviewStatus = "idle" | "queued" | "loading" | "slow" | "loaded";
 
 interface EditableDeployFile {
   path: string;
@@ -53,6 +55,10 @@ interface MarketplaceResponse {
 interface ScreensResponse {
   screens?: ScreenInfo[];
 }
+
+const marketplacePreviewScheduler = createPreviewScheduler(3);
+const previewSlowHintMs = 4200;
+const previewSlotReleaseMs = 8500;
 
 const navItems: Array<{ page: Page; label: string; href: string }> = [
   { page: "home", label: "首页", href: "/" },
@@ -478,21 +484,92 @@ function Metric({ label, value, note }: { label: string; value: string; note: st
 function MarketplaceCard({ item, onChanged }: { item: MarketplaceDeploy; onChanged: () => void }) {
   const previewRef = useRef<HTMLIFrameElement | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
   const title = item.title || item.code || "未命名应用";
   const appURL = item.filePath || `/agent/${encodeURIComponent(item.code)}/`;
   const detailURL = item.id || item.publicId ? `/deploy/${encodeURIComponent(item.id || item.publicId || "")}` : appURL;
+  const previewHint = previewStatus === "queued"
+    ? "排队预览"
+    : previewStatus === "loading"
+      ? "加载预览"
+      : previewStatus === "slow"
+        ? "网络较慢，点击打开查看"
+        : "";
 
   useEffect(() => {
     if (!cardRef.current || !previewRef.current || item.accessProtected) return;
+    const card = cardRef.current;
     const iframe = previewRef.current;
+    let stopped = false;
+    let cancelQueued: (() => void) | null = null;
+    let releaseSlot: (() => void) | null = null;
+    let slowTimer = 0;
+    let releaseTimer = 0;
+    let loadHandler: (() => void) | null = null;
+
+    setPreviewStatus("idle");
+    iframe.removeAttribute("src");
+
+    const clearTimers = () => {
+      if (slowTimer) window.clearTimeout(slowTimer);
+      if (releaseTimer) window.clearTimeout(releaseTimer);
+      slowTimer = 0;
+      releaseTimer = 0;
+    };
+    const releasePreviewSlot = () => {
+      if (!releaseSlot) return;
+      releaseSlot();
+      releaseSlot = null;
+      if (releaseTimer) window.clearTimeout(releaseTimer);
+      releaseTimer = 0;
+    };
+    const removeLoadHandler = () => {
+      if (!loadHandler) return;
+      iframe.removeEventListener("load", loadHandler);
+      loadHandler = null;
+    };
+
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting) && !iframe.src) {
+      if (!entries.some((entry) => entry.isIntersecting) || iframe.src || cancelQueued) return;
+      setPreviewStatus("queued");
+      cancelQueued = marketplacePreviewScheduler.enqueue((release) => {
+        if (stopped) {
+          release();
+          return;
+        }
+        releaseSlot = release;
+        setPreviewStatus("loading");
+        loadHandler = () => {
+          if (stopped) return;
+          setPreviewStatus("loaded");
+          if (slowTimer) window.clearTimeout(slowTimer);
+          slowTimer = 0;
+          releasePreviewSlot();
+        };
+        iframe.addEventListener("load", loadHandler, { once: true });
         iframe.src = `${appURL}?preview=1`;
-        observer.disconnect();
+        slowTimer = window.setTimeout(() => {
+          if (!stopped) {
+            setPreviewStatus((current) => current === "loaded" ? current : "slow");
+          }
+        }, previewSlowHintMs);
+        releaseTimer = window.setTimeout(releasePreviewSlot, previewSlotReleaseMs);
+      });
+      observer.disconnect();
+    }, { rootMargin: "320px" });
+    observer.observe(card);
+    return () => {
+      stopped = true;
+      observer.disconnect();
+      removeLoadHandler();
+      clearTimers();
+      if (releaseSlot) {
+        releasePreviewSlot();
+      } else {
+        cancelQueued?.();
       }
-    }, { rootMargin: "260px" });
-    observer.observe(cardRef.current);
-    return () => observer.disconnect();
+      iframe.removeAttribute("src");
+    };
   }, [appURL, item.accessProtected]);
 
   async function like() {
@@ -522,11 +599,14 @@ function MarketplaceCard({ item, onChanged }: { item: MarketplaceDeploy; onChang
 
   return (
     <article className="app-card" ref={cardRef}>
-      <div className="preview-pane">
+      <div className={`preview-pane ${item.accessProtected ? "is-locked" : `state-${previewStatus}`}`}>
         {item.accessProtected ? (
           <div className="locked-preview"><Lock size={20} /><strong>需要访问密码</strong><span>加密站点不在首页加载预览。</span></div>
         ) : (
-          <iframe ref={previewRef} title={title} loading="lazy" scrolling="no" sandbox="allow-scripts allow-forms allow-popups allow-downloads" />
+          <>
+            <iframe ref={previewRef} title={title} loading="eager" scrolling="no" sandbox="allow-scripts allow-forms allow-popups allow-downloads" />
+            {previewHint && <div className={`preview-status ${previewStatus}`}>{previewHint}</div>}
+          </>
         )}
         <a className="open-corner" href={appURL} target="_blank" rel="noreferrer"><ExternalLink size={15} />打开</a>
       </div>
