@@ -120,10 +120,31 @@ interface ScreenItem {
   runtime?: string;
   appVersion?: string;
   deviceInfo?: unknown;
+  screenshotRequestedAt?: string;
   screenshotAt?: string;
   commandType?: string;
   commandRequestedAt?: string;
   commandCompletedAt?: string;
+}
+
+interface ScreenScreenshotCommand {
+  requestId?: string;
+  requestedAt?: string;
+}
+
+interface ScreenScreenshotResponse {
+  success?: boolean;
+  screen?: ScreenItem;
+  screenshot?: ScreenScreenshotCommand;
+}
+
+interface ScreenshotDialog {
+  screenId: string;
+  screenName: string;
+  status: "waiting" | "ready" | "error";
+  message: string;
+  requestedAt?: string;
+  imageUrl?: string;
 }
 
 interface TokenItem {
@@ -247,6 +268,10 @@ function toBase64(buffer: ArrayBuffer) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   }
   return btoa(binary);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function siteURL(code: string) {
@@ -1015,7 +1040,8 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
   const [screenName, setScreenName] = useState("");
   const [pickScreen, setPickScreen] = useState<ScreenItem | null>(null);
   const [pickTab, setPickTab] = useState<ScreenPickTab>("mine");
-  const [screenshot, setScreenshot] = useState("");
+  const [screenshotDialog, setScreenshotDialog] = useState<ScreenshotDialog | null>(null);
+  const screenshotSeq = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -1066,11 +1092,94 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
     }
   }
 
+  function closeScreenshotDialog() {
+    screenshotSeq.current += 1;
+    setScreenshotDialog((current) => {
+      if (current?.imageUrl) URL.revokeObjectURL(current.imageUrl);
+      return null;
+    });
+  }
+
+  async function fetchScreenshotBlob(screen: ScreenItem, after?: string) {
+    const query = new URLSearchParams({ t: String(Date.now()) });
+    if (after) query.set("after", after);
+    const res = await fetch(`/api/screens/${encodeURIComponent(screen.id)}/screenshot?${query.toString()}`, {
+      headers: authHeaders(),
+      cache: "no-store"
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const err = new APIError(body.detail || body.errorCode || `HTTP ${res.status}`);
+      err.status = res.status;
+      err.body = body;
+      throw err;
+    }
+    return res.blob();
+  }
+
+  async function waitForScreenshot(screen: ScreenItem, after: string, seq: number) {
+    const deadline = Date.now() + 35_000;
+    while (Date.now() < deadline) {
+      if (seq !== screenshotSeq.current) return;
+      try {
+        const blob = await fetchScreenshotBlob(screen, after);
+        if (seq !== screenshotSeq.current) return;
+        const imageUrl = URL.createObjectURL(blob);
+        setScreenshotDialog((current) => {
+          if (current?.imageUrl) URL.revokeObjectURL(current.imageUrl);
+          return {
+            screenId: screen.id,
+            screenName: screen.name || screen.id,
+            status: "ready",
+            message: "截图已返回",
+            requestedAt: after,
+            imageUrl
+          };
+        });
+        await load();
+        return;
+      } catch (err) {
+        if (err instanceof APIError && err.status && err.status !== 404) {
+          throw err;
+        }
+        await sleep(900);
+      }
+    }
+    throw new Error("等待截图超时，请确认屏幕在线后重试");
+  }
+
+  async function requestScreenshot(screen: ScreenItem) {
+    const screenName = screen.name || screen.id;
+    const seq = screenshotSeq.current + 1;
+    screenshotSeq.current = seq;
+    setScreenshotDialog((current) => {
+      if (current?.imageUrl) URL.revokeObjectURL(current.imageUrl);
+      return {
+        screenId: screen.id,
+        screenName,
+        status: "waiting",
+        message: "正在下发截图指令，等待屏幕返回图片..."
+      };
+    });
+    try {
+      const data = await api<ScreenScreenshotResponse>(`/api/screens/${encodeURIComponent(screen.id)}/screenshot`, { method: "POST" });
+      const requestedAt = data.screenshot?.requestedAt || new Date().toISOString();
+      setScreenshotDialog((current) => current ? { ...current, requestedAt, message: "指令已送达，正在等待屏幕截图..." } : current);
+      await waitForScreenshot(screen, requestedAt, seq);
+    } catch (err) {
+      setScreenshotDialog((current) => current ? {
+        ...current,
+        status: "error",
+        message: err instanceof Error ? err.message : String(err)
+      } : current);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function command(screen: ScreenItem, type: string) {
     try {
       if (type === "screenshot") {
-        await api(`/api/screens/${encodeURIComponent(screen.id)}/screenshot`, { method: "POST" });
-        showToast("截图指令已下发，请稍后查看");
+        await requestScreenshot(screen);
       } else {
         await api(`/api/screens/${encodeURIComponent(screen.id)}/command`, {
           method: "POST",
@@ -1087,17 +1196,18 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
 
   async function viewScreenshot(screen: ScreenItem) {
     try {
-      const res = await fetch(`/api/screens/${encodeURIComponent(screen.id)}/screenshot?t=${Date.now()}`, {
-        headers: authHeaders(),
-        cache: "no-store"
+      const blob = await fetchScreenshotBlob(screen);
+      const imageUrl = URL.createObjectURL(blob);
+      setScreenshotDialog((current) => {
+        if (current?.imageUrl) URL.revokeObjectURL(current.imageUrl);
+        return {
+          screenId: screen.id,
+          screenName: screen.name || screen.id,
+          status: "ready",
+          message: "最近一次截图",
+          imageUrl
+        };
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.detail || body.errorCode || `HTTP ${res.status}`);
-      }
-      const blob = await res.blob();
-      if (screenshot) URL.revokeObjectURL(screenshot);
-      setScreenshot(URL.createObjectURL(blob));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1170,9 +1280,24 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
           </div>
         </Modal>
       )}
-      {screenshot && (
-        <Modal title="屏幕截图" onClose={() => { URL.revokeObjectURL(screenshot); setScreenshot(""); }}>
-          <img className="screenshot" src={screenshot} alt="屏幕截图" />
+      {screenshotDialog && (
+        <Modal title={`屏幕截图 · ${screenshotDialog.screenName}`} onClose={closeScreenshotDialog}>
+          {screenshotDialog.status === "waiting" && (
+            <div className="screenshot-wait">
+              <span className="spinner" aria-hidden="true" />
+              <strong>{screenshotDialog.message}</strong>
+              <p>{screenshotDialog.requestedAt ? `请求时间：${formatDate(screenshotDialog.requestedAt)}` : "窗口会在图片返回后自动显示。"}</p>
+            </div>
+          )}
+          {screenshotDialog.status === "ready" && screenshotDialog.imageUrl && (
+            <>
+              <div className="screenshot-meta">{screenshotDialog.message}</div>
+              <img className="screenshot" src={screenshotDialog.imageUrl} alt="屏幕截图" />
+            </>
+          )}
+          {screenshotDialog.status === "error" && (
+            <div className="alert error">{screenshotDialog.message}</div>
+          )}
         </Modal>
       )}
     </section>

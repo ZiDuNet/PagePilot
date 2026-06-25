@@ -123,6 +123,7 @@ func (s *Server) handleRequestScreenScreenshot(w http.ResponseWriter, r *http.Re
 			RequestedAt: *updated.ScreenshotRequestedAt,
 		}
 	}
+	s.sendScreenWSScreenshot(screenID, resp.Screenshot)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -160,6 +161,15 @@ func (s *Server) handleGetScreenScreenshot(w http.ResponseWriter, r *http.Reques
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screenshot", err.Error()), reqID))
 		return
 	}
+	after, hasAfter, apiErr := parseScreenshotAfter(r.URL.Query().Get("after"))
+	if apiErr != nil {
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+		return
+	}
+	if hasAfter && !meta.UpdatedAt.After(after) {
+		writeError(w, apiErrWithReqID(NewError(CodeNotFound, "screenshot", "screenshot not ready"), reqID))
+		return
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -173,6 +183,18 @@ func (s *Server) handleGetScreenScreenshot(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", meta.MimeType)
 	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, filepath.Base(path), meta.UpdatedAt, f)
+}
+
+func parseScreenshotAfter(raw string) (time.Time, bool, *APIError) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false, nil
+	}
+	after, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, true, NewError(CodeInvalidInput, "after", "after must be an RFC3339 timestamp")
+	}
+	return after.UTC(), true, nil
 }
 
 func (s *Server) loadScreenScreenshot(screenID string) (screenScreenshotMeta, string, error) {

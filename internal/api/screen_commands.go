@@ -71,6 +71,7 @@ func (s *Server) handleRequestScreenCommand(w http.ResponseWriter, r *http.Reque
 			RequestedAt: *updated.CommandRequestedAt,
 		}
 	}
+	s.sendScreenWSCommand(screenID, resp.Command)
 	writeJSON(w, http.StatusOK, resp)
 }
 

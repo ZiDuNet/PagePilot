@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -24,26 +25,39 @@ import com.tencent.smtt.sdk.WebSettings
 import com.tencent.smtt.sdk.WebView
 import com.tencent.smtt.sdk.WebViewClient
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.net.URL
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.TimeUnit
 import kotlin.math.max
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
   private val scopeJob = SupervisorJob()
   private val scope = CoroutineScope(scopeJob + Dispatchers.Main)
+  private val wsClient = OkHttpClient.Builder()
+    .pingInterval(25, TimeUnit.SECONDS)
+    .build()
   private lateinit var config: ScreenConfig
   private var pairingJob: Job? = null
   private var playbackJob: Job? = null
+  private var heartbeatJob: Job? = null
+  private var screenSocket: WebSocket? = null
   private var currentEntryUrl = ""
   private var currentManifest: ScreenManifest? = null
   private var currentWebView: WebView? = null
@@ -52,6 +66,9 @@ class MainActivity : Activity() {
   private var hiddenTapCount = 0
   private var hiddenTapStartedAt = 0L
   private var sleeping = false
+  private var socketStatus = "未连接"
+  private var socketLastEvent = "-"
+  private var lastWebViewRuntime = "未检测"
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -68,6 +85,9 @@ class MainActivity : Activity() {
   override fun onDestroy() {
     pairingJob?.cancel()
     playbackJob?.cancel()
+    heartbeatJob?.cancel()
+    screenSocket?.cancel()
+    wsClient.dispatcher.executorService.shutdown()
     scopeJob.cancel()
     currentWebView?.destroy()
     super.onDestroy()
@@ -152,7 +172,7 @@ class MainActivity : Activity() {
     pairingJob = scope.launch {
       try {
         val api = PagePilotApi(serverUrl)
-        val session = api.startPairing(deviceName(), deviceInfo())
+        val session = api.startPairing(deviceName(), webViewRuntimeLabel(), deviceInfo())
         title.text = "配对码 5 分钟内有效"
         code.text = session.pairingCode
         while (true) {
@@ -208,20 +228,111 @@ class MainActivity : Activity() {
     playbackJob?.cancel()
     playbackJob = scope.launch {
       val api = PagePilotApi(serverUrl)
-      while (true) {
+      try {
+        api.heartbeat(deviceToken, webViewRuntimeLabel(), deviceInfo())
+        val manifest = api.manifest(deviceToken)
+        currentManifest = manifest
+        applyManifest(serverUrl, manifest, webView)
+        handleScreenshotCommand(api, deviceToken, manifest, webView)
+        handleScreenCommand(api, deviceToken, manifest, webView)
+      } catch (err: Exception) {
+        if (currentEntryUrl.isBlank() && !sleeping) {
+          webView.loadDataWithBaseURL(serverUrl, errorHtml(err.message ?: "连接失败"), "text/html", "UTF-8", null)
+        }
+      }
+      startHeartbeat(api, deviceToken)
+      while (isActive) {
         try {
-          api.heartbeat(deviceToken, deviceInfo())
-          val manifest = api.manifest(deviceToken)
-          currentManifest = manifest
-          handleScreenshotCommand(api, deviceToken, manifest, webView)
-          handleScreenCommand(api, deviceToken, manifest, webView)
-          applyManifest(serverUrl, manifest, webView)
+          socketStatus = "连接中"
+          openScreenSocket(api, deviceToken, serverUrl, webView)
         } catch (err: Exception) {
           if (currentEntryUrl.isBlank() && !sleeping) {
             webView.loadDataWithBaseURL(serverUrl, errorHtml(err.message ?: "连接失败"), "text/html", "UTF-8", null)
           }
         }
+        socketStatus = "重连等待"
+        delay(2500)
+      }
+    }
+  }
+
+  private fun startHeartbeat(api: PagePilotApi, deviceToken: String) {
+    heartbeatJob?.cancel()
+    heartbeatJob = scope.launch {
+      while (isActive) {
+        runCatching { api.heartbeat(deviceToken, webViewRuntimeLabel(), deviceInfo()) }
         delay(15000)
+      }
+    }
+  }
+
+  private suspend fun openScreenSocket(
+    api: PagePilotApi,
+    deviceToken: String,
+    serverUrl: String,
+    webView: WebView,
+  ) {
+    val closed = CompletableDeferred<Unit>()
+    val request = Request.Builder()
+      .url(api.webSocketUrl())
+      .header("Authorization", "Device $deviceToken")
+      .build()
+    val socket = wsClient.newWebSocket(request, object : WebSocketListener() {
+      override fun onOpen(webSocket: WebSocket, response: Response) {
+        socketStatus = "已连接"
+        socketLastEvent = "WebSocket 已连接"
+      }
+
+      override fun onMessage(webSocket: WebSocket, text: String) {
+        scope.launch {
+          runCatching {
+            val message = PagePilotApi.parseWSMessage(text)
+            handleWSMessage(api, deviceToken, serverUrl, message, webView)
+          }.onFailure {
+            socketLastEvent = it.message ?: "消息处理失败"
+          }
+        }
+      }
+
+      override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+        socketStatus = "连接断开"
+        socketLastEvent = t.message ?: "WebSocket 断开"
+        if (!closed.isCompleted) closed.complete(Unit)
+      }
+
+      override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+        socketStatus = "已断开"
+        socketLastEvent = reason.ifBlank { "WebSocket 已关闭" }
+        if (!closed.isCompleted) closed.complete(Unit)
+      }
+    })
+    screenSocket = socket
+    closed.await()
+  }
+
+  private suspend fun handleWSMessage(
+    api: PagePilotApi,
+    deviceToken: String,
+    serverUrl: String,
+    message: ScreenWSMessage,
+    webView: WebView,
+  ) {
+    socketLastEvent = message.type.ifBlank { "收到消息" }
+    when (message.type) {
+      "manifest" -> {
+        val manifest = message.manifest ?: return
+        currentManifest = manifest
+        applyManifest(serverUrl, manifest, webView)
+        handleScreenshotCommand(api, deviceToken, manifest, webView)
+        handleScreenCommand(api, deviceToken, manifest, webView)
+      }
+      "screenshot" -> {
+        val base = currentManifest ?: api.manifest(deviceToken).also { currentManifest = it }
+        handleScreenshotCommand(api, deviceToken, base.copy(screenshot = message.screenshot), webView)
+      }
+      "command" -> {
+        val base = currentManifest ?: api.manifest(deviceToken).also { currentManifest = it }
+        handleScreenCommand(api, deviceToken, base.copy(command = message.command), webView)
       }
     }
   }
@@ -307,7 +418,12 @@ class MainActivity : Activity() {
   private fun stopPlayback(keepPairing: Boolean = false) {
     if (!keepPairing) pairingJob?.cancel()
     playbackJob?.cancel()
+    heartbeatJob?.cancel()
+    screenSocket?.cancel()
+    screenSocket = null
+    socketStatus = "未连接"
     currentWebView?.let {
+      lastWebViewRuntime = webViewRuntimeLabel()
       runCatching { it.stopLoading() }
       runCatching { it.clearHistory() }
       runCatching { it.destroy() }
@@ -375,35 +491,53 @@ class MainActivity : Activity() {
     }
     val back = Button(this).apply { text = "返回播放" }
     back.setOnClickListener { route() }
-    val info = settingsInfo(local)
     setContentView(ScrollView(this).apply {
       addView(centerPanel(
         title = "屏幕设置",
         subtitle = "右上角连续点击 5 次可打开本页。",
-        children = listOf(serverInput, info, saveServer, unbind, back),
+        children = listOf(
+          serverInput,
+          settingsSection("连接状态", listOf(
+            "服务器" to local.serverUrl.ifBlank { "-" },
+            "WebSocket" to socketStatus,
+            "最近事件" to socketLastEvent,
+            "心跳" to "每 15 秒上报一次，控制指令走 WebSocket 实时下发",
+          )),
+          settingsSection("账号与屏幕", listOf(
+            "屏幕" to screenTitle(),
+            "用户" to ownerTitle(),
+            "当前应用" to (currentManifest?.siteCode?.ifBlank { "-" } ?: "-"),
+            "设备令牌" to if (local.deviceToken.isBlank()) "未绑定" else "已保存",
+          )),
+          settingsSection("显示环境", listOf(
+            "分辨率" to "${resources.displayMetrics.widthPixels} x ${resources.displayMetrics.heightPixels} px",
+            "方向" to orientationCN(),
+            "密度" to "${resources.displayMetrics.densityDpi} dpi / ${resources.displayMetrics.density}",
+            "文字缩放" to "WebView textZoom=100",
+          )),
+          settingsSection("WebView 内核", listOf(
+            "控件" to "腾讯 X5 WebView",
+            "运行内核" to if (currentWebView == null) lastWebViewRuntime else webViewRuntimeLabel(),
+            "X5 版本" to x5VersionCode().takeIf { it > 0 }?.toString().orEmpty().ifBlank { "未就绪或回退系统内核" },
+            "实际加载" to if (x5Loaded()) "X5 内核已加载" else "系统 WebView 回退",
+          )),
+          settingsSection("设备环境", listOf(
+            "Android" to "${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})",
+            "设备" to "${Build.MANUFACTURER} ${Build.MODEL}",
+            "品牌" to Build.BRAND,
+            "系统语言" to Locale.getDefault().toLanguageTag(),
+            "时区" to TimeZone.getDefault().id,
+          )),
+          settingsSection("应用信息", listOf(
+            "版本" to BuildConfig.VERSION_NAME,
+            "开发者" to "武硕：http://武硕.top",
+          )),
+          saveServer,
+          unbind,
+          back,
+        ),
       ))
     })
-  }
-
-  private fun settingsInfo(local: LocalScreenConfig): View {
-    val manifest = currentManifest
-    val text = listOf(
-      "服务器：${local.serverUrl.ifBlank { "-" }}",
-      "屏幕：${manifest?.screenName?.ifBlank { manifest.screenId } ?: "-"}",
-      "用户：${manifest?.ownerUsername?.ifBlank { manifest.ownerUserId } ?: "-"}",
-      "分辨率：${resources.displayMetrics.widthPixels} x ${resources.displayMetrics.heightPixels} px",
-      "方向：${orientationLabel()}",
-      "Android：${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})",
-      "设备：${Build.MANUFACTURER} ${Build.MODEL}",
-      "X5：${x5VersionLabel()}",
-      "开发者：武硕：http://武硕.top",
-    ).joinToString("\n")
-    return TextView(this).apply {
-      this.text = text
-      textSize = 15f
-      setTextColor(0xff334155.toInt())
-      setLineSpacing(4f, 1.0f)
-    }
   }
 
   private fun configureWebView(webView: WebView) {
@@ -499,6 +633,51 @@ class MainActivity : Activity() {
     }
   }
 
+  private fun settingsSection(title: String, rows: List<Pair<String, String>>): View {
+    return LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      background = roundedDrawable(0xffffffff.toInt(), 0x1f0f766e)
+      setPadding(dp(16), dp(14), dp(16), dp(14))
+      addView(TextView(context).apply {
+        text = title
+        textSize = 17f
+        setTextColor(0xff0f172a.toInt())
+        setTypeface(typeface, android.graphics.Typeface.BOLD)
+      })
+      rows.forEach { (label, value) ->
+        addView(settingsRow(label, value))
+      }
+    }
+  }
+
+  private fun settingsRow(label: String, value: String): View {
+    return LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL
+      gravity = Gravity.CENTER_VERTICAL
+      setPadding(0, dp(10), 0, 0)
+      addView(TextView(context).apply {
+        text = label
+        textSize = 14f
+        setTextColor(0xff64748b.toInt())
+      }, LinearLayout.LayoutParams(dp(112), ViewGroup.LayoutParams.WRAP_CONTENT))
+      addView(TextView(context).apply {
+        text = value.ifBlank { "-" }
+        textSize = 14f
+        setTextColor(0xff1e293b.toInt())
+        setLineSpacing(2f, 1.0f)
+      }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+    }
+  }
+
+  private fun roundedDrawable(fill: Int, stroke: Int): GradientDrawable {
+    return GradientDrawable().apply {
+      shape = GradientDrawable.RECTANGLE
+      cornerRadius = dp(16).toFloat()
+      setColor(fill)
+      setStroke(dp(1), stroke)
+    }
+  }
+
   private fun panelParams(): LinearLayout.LayoutParams {
     return LinearLayout.LayoutParams(
       ViewGroup.LayoutParams.MATCH_PARENT,
@@ -531,7 +710,11 @@ class MainActivity : Activity() {
       .put("density", metrics.density)
       .put("locale", Locale.getDefault().toLanguageTag())
       .put("timeZone", TimeZone.getDefault().id)
-      .put("x5Version", x5VersionLabel())
+      .put("webViewRuntime", webViewRuntimeLabel())
+      .put("webViewClass", currentWebView?.javaClass?.name ?: WebView::class.java.name)
+      .put("x5Version", x5VersionCode())
+      .put("x5Loaded", x5Loaded())
+      .put("socketStatus", socketStatus)
       .put("appVersion", BuildConfig.VERSION_NAME)
   }
 
@@ -539,9 +722,38 @@ class MainActivity : Activity() {
     return if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait"
   }
 
-  private fun x5VersionLabel(): String {
-    val version = QbSdk.getTbsVersion(this)
-    return if (version > 0) version.toString() else "system-webview"
+  private fun orientationCN(): String {
+    return if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) "横屏" else "竖屏"
+  }
+
+  private fun x5VersionCode(): Int {
+    return QbSdk.getTbsVersion(this)
+  }
+
+  private fun x5Loaded(): Boolean {
+    val webView = currentWebView ?: return false
+    return runCatching { webView.x5WebViewExtension != null }.getOrDefault(false)
+  }
+
+  private fun webViewRuntimeLabel(): String {
+    val version = x5VersionCode()
+    val label = when {
+      x5Loaded() && version > 0 -> "X5 WebView $version"
+      version > 0 -> "X5 已安装，等待加载 ($version)"
+      else -> "系统 WebView 回退（X5 未就绪）"
+    }
+    lastWebViewRuntime = label
+    return label
+  }
+
+  private fun screenTitle(): String {
+    val manifest = currentManifest
+    return manifest?.screenName?.ifBlank { manifest.screenId } ?: "-"
+  }
+
+  private fun ownerTitle(): String {
+    val manifest = currentManifest
+    return manifest?.ownerUsername?.ifBlank { manifest.ownerUserId } ?: "-"
   }
 
   private fun serverUrlAllowed(url: String): Boolean {

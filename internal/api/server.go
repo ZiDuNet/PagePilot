@@ -116,6 +116,7 @@ type Server struct {
 	version     string
 	captchaMu   sync.Mutex
 	captchas    map[string]captchaChallenge
+	screenHub   *screenHub
 }
 
 type captchaChallenge struct {
@@ -140,6 +141,7 @@ func New(cfg config.Config, deployer DeployerPort, authSvc *auth.Service, requir
 		logger:      logger,
 		version:     "dev",
 		captchas:    map[string]captchaChallenge{},
+		screenHub:   newScreenHub(),
 	}
 	s.routes()
 	return s
@@ -197,6 +199,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/device/pairing/start", s.handleDevicePairingStart)
 	s.mux.HandleFunc("POST /api/device/pairing/complete", s.handleDevicePairingComplete)
 	s.mux.HandleFunc("GET /api/device/manifest", s.handleDeviceManifest)
+	s.mux.HandleFunc("GET /api/device/ws", s.handleDeviceWebSocket)
 	s.mux.HandleFunc("POST /api/device/heartbeat", s.handleDeviceHeartbeat)
 	s.mux.HandleFunc("POST /api/device/screenshot", s.handleDeviceScreenshot)
 	s.mux.HandleFunc("POST /api/device/command/ack", s.handleDeviceCommandAck)

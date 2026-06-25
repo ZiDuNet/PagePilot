@@ -176,6 +176,15 @@ type ScreenCommandResponse struct {
 	Command *ScreenDeviceCommand `json:"command,omitempty"`
 }
 
+type ScreenWSMessage struct {
+	Type       string                   `json:"type"`
+	ScreenID   string                   `json:"screenId,omitempty"`
+	ServerTime time.Time                `json:"serverTime,omitempty"`
+	Manifest   *ScreenManifestResponse  `json:"manifest,omitempty"`
+	Screenshot *ScreenScreenshotCommand `json:"screenshot,omitempty"`
+	Command    *ScreenDeviceCommand     `json:"command,omitempty"`
+}
+
 type DeviceCommandAckRequest struct {
 	RequestID string `json:"requestId"`
 	Type      string `json:"type,omitempty"`

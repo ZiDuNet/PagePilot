@@ -90,6 +90,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 | `DELETE` | `/api/screens/{screenId}` | 解绑自己的屏幕 |
 | `POST` | `/api/device/pairing/start` | 屏幕 APP 创建短期配对码 |
 | `POST` | `/api/device/pairing/complete` | 屏幕 APP 换取 Device Token |
+| `GET` | `/api/device/ws` | 屏幕 APP 使用 Device Token 建立 WebSocket 控制通道 |
 | `GET` | `/api/device/manifest` | 屏幕 APP 使用 Device Token 拉取播放清单 |
 | `POST` | `/api/device/heartbeat` | 屏幕 APP 上报在线状态和设备信息 |
 | `POST` | `/api/device/screenshot` | 屏幕 APP 按指令回传截图 |
@@ -125,9 +126,10 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 首页应用商城保留点赞排行；管理员置顶会优先于所有排序，置顶分组内部仍按当前选择的排序（如 `likes_desc`）排列。
 - 访问密码输入入口保持公开，匿名访客也可以输入密码查看加密站点；验证通过后浏览器获得 5 分钟签名访问票据，站点改密码后旧票据立即失效。
 - 屏幕投放只允许注册用户 Token 或登录用户会话调用；匿名 session 不能绑定屏幕或投屏。
-- 屏幕 APP 不持有用户 Token，只持有可吊销的 Device Token；Device Token 只能拉取自己的 manifest 和上报心跳。
+- 屏幕 APP 不持有用户 Token，只持有可吊销的 Device Token；Device Token 只能拉取自己的 manifest、建立自己的 WebSocket 控制通道、上报心跳和按指令回传截图。
 - 屏幕配对码是 5 分钟一次性短码，只用于首次绑定，不是长期权限。
 - 内置页面 `/deploy.html`、`/api-docs.html`、`/agents/`、`/screens/` 由 Go 服务内嵌返回；反向代理应把这些路径原样转发给 PagePilot。
+- 如果前面有 Nginx、宝塔或负载均衡，必须为 `/api/device/ws` 转发 WebSocket Upgrade 头，否则后台刷新、截图、休眠等指令会退化为不可实时或连接失败。
 
 ## 手动部署与多文件站点
 
@@ -216,9 +218,9 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py screen shutdown screen_xxx
 - 屏幕 APP 创建配对码，用户在后台“屏幕”页或 Skill 中输入配对码绑定。
 - 一个注册用户可以绑定多个屏幕。
 - 投屏发布的是 manifest 播放清单，不是直接下发裸 HTML 字符串。
-- 第一版在线加载 `entryUrl`，manifest 已包含资源 hash，后续可实现离线缓存。
-- 屏幕端右上角连续点击 5 次打开隐藏设置，可查看绑定用户、设备信息、分辨率和横竖屏，也可切换服务器或清除绑定。
-- 后台、Skill 和 MCP 可下发截图、刷新、休眠、唤醒和软关机指令；截图只在后台指令触发时回传。
+- 屏幕 APP 通过 `/api/device/ws` 保持 WebSocket 长连接，投屏、刷新、截图、休眠、唤醒和软关机指令会实时下发；`/api/device/manifest` 保留为初始化和兜底读取。
+- 屏幕端右上角连续点击 5 次打开隐藏设置，可查看绑定用户、设备信息、分辨率、横竖屏、WebSocket 状态和 X5/WebView 运行状态，也可切换服务器或清除绑定。
+- 后台、Skill 和 MCP 可下发截图、刷新、休眠、唤醒和软关机指令；截图只在后台指令触发时回传，后台点击截图会弹出等待窗口并在新图片返回后立即显示。
 - 软关机、开机自启和定时开关机依赖硬件或系统权限，通用 APP 侧只能做黑屏待机和刷新播放。
 
 ## 存储布局

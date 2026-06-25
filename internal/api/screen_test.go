@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/yourorg/hostctl/internal/auth"
 	"github.com/yourorg/hostctl/internal/config"
 	"github.com/yourorg/hostctl/internal/store"
@@ -355,6 +357,80 @@ func TestScreenCommandIsDeliveredAndAcknowledged(t *testing.T) {
 	}
 	if manifestAfter.Command != nil {
 		t.Fatalf("manifest command after ack = %+v, want nil", manifestAfter.Command)
+	}
+}
+
+func TestScreenWebSocketReceivesRealtimeScreenshotAndCommand(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, token := createScreenAPIUser(t, srv, "alice")
+	seedScreenPairing(t, srv, "pair-1", "123456", "pair-secret", "screen-1")
+
+	bindBody, _ := json.Marshal(ScreenBindRequest{PairingCode: "123456"})
+	bindReq := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
+	bindReq.Header.Set("Content-Type", "application/json")
+	bindReq.Header.Set("Authorization", "Bearer "+token)
+	bindRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(bindRR, bindReq)
+	if bindRR.Code != http.StatusOK {
+		t.Fatalf("bind status = %d, body = %s", bindRR.Code, bindRR.Body.String())
+	}
+	if err := srv.deployer.CompleteScreenPairing(ctx, "pair-1", auth.HashToken("pair-secret"), auth.HashToken("device-token")); err != nil {
+		t.Fatalf("complete pairing: %v", err)
+	}
+
+	ts := httptest.NewServer(srv.withMiddleware(srv.mux))
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/device/ws"
+	header := http.Header{"Authorization": []string{"Device device-token"}}
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	var hello ScreenWSMessage
+	if err := conn.ReadJSON(&hello); err != nil {
+		t.Fatalf("read websocket hello: %v", err)
+	}
+	if hello.Type != "manifest" || hello.Manifest == nil || hello.Manifest.ScreenID != "screen-1" {
+		t.Fatalf("hello websocket message = %+v, want manifest for screen-1", hello)
+	}
+
+	requestReq := httptest.NewRequest(http.MethodPost, "/api/screens/screen-1/screenshot", nil)
+	requestReq.Header.Set("Authorization", "Bearer "+token)
+	requestRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(requestRR, requestReq)
+	if requestRR.Code != http.StatusOK {
+		t.Fatalf("request screenshot status = %d, body = %s; want %d", requestRR.Code, requestRR.Body.String(), http.StatusOK)
+	}
+	var shotMsg ScreenWSMessage
+	if err := conn.ReadJSON(&shotMsg); err != nil {
+		t.Fatalf("read websocket screenshot: %v", err)
+	}
+	if shotMsg.Type != "screenshot" || shotMsg.Screenshot == nil || shotMsg.Screenshot.RequestID == "" {
+		t.Fatalf("screenshot websocket message = %+v", shotMsg)
+	}
+
+	commandBody, _ := json.Marshal(ScreenCommandRequest{Type: "refresh"})
+	commandReq := httptest.NewRequest(http.MethodPost, "/api/screens/screen-1/command", bytes.NewReader(commandBody))
+	commandReq.Header.Set("Content-Type", "application/json")
+	commandReq.Header.Set("Authorization", "Bearer "+token)
+	commandRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(commandRR, commandReq)
+	if commandRR.Code != http.StatusOK {
+		t.Fatalf("command status = %d, body = %s; want %d", commandRR.Code, commandRR.Body.String(), http.StatusOK)
+	}
+	var commandMsg ScreenWSMessage
+	if err := conn.ReadJSON(&commandMsg); err != nil {
+		t.Fatalf("read websocket command: %v", err)
+	}
+	if commandMsg.Type != "command" || commandMsg.Command == nil || commandMsg.Command.Type != "refresh" {
+		t.Fatalf("command websocket message = %+v", commandMsg)
 	}
 }
 
