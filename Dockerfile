@@ -1,29 +1,10 @@
 # PagePilot / hostctl multi-stage Dockerfile.
 # Build stage compiles static Go binaries; runtime stage keeps only binaries and small OS deps.
 
-ARG NODE_IMAGE=node:22-alpine
 ARG GO_IMAGE=golang:1.22-alpine
 ARG ALPINE_IMAGE=alpine:3.20
-ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 # ===== Build =====
-FROM ${NODE_IMAGE} AS frontend-builder
-
-WORKDIR /src
-
-ARG NPM_REGISTRY
-RUN npm config set registry "${NPM_REGISTRY}"
-
-COPY frontend/user/package*.json ./frontend/user/
-RUN cd frontend/user && npm ci
-COPY frontend/user ./frontend/user
-RUN cd frontend/user && npm run build
-
-COPY frontend/admin/package*.json ./frontend/admin/
-RUN cd frontend/admin && npm ci
-COPY frontend/admin ./frontend/admin
-RUN cd frontend/admin && npm run build
-
 FROM ${GO_IMAGE} AS builder
 
 # git is needed by go mod for VCS-backed modules.
@@ -42,8 +23,6 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-COPY --from=frontend-builder /src/internal/web/user/app ./internal/web/user/app
-COPY --from=frontend-builder /src/internal/web/admin/app ./internal/web/admin/app
 
 # modernc.org/sqlite is pure Go, so CGO can stay disabled.
 ENV CGO_ENABLED=0 GOOS=linux

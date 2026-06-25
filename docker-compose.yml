@@ -24,11 +24,9 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # 基础镜像保持 Docker Hub 官方名称；国内加速请配置 Docker daemon registry mirrors。
-        NODE_IMAGE: node:22-alpine
+        # Docker 构建直接使用已提交的前端产物，只需要 Go 与 Alpine 基础镜像。
         GO_IMAGE: golang:1.22-alpine
         ALPINE_IMAGE: alpine:3.20
-        NPM_REGISTRY: https://registry.npmmirror.com
         GOPROXY: https://mirrors.aliyun.com/goproxy/,direct
     image: pagepilot:latest
     container_name: pagepilot
