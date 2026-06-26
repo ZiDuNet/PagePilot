@@ -2028,11 +2028,18 @@ func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 	path := s.managedSkillZipPath()
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
-		http.NotFound(w, r)
+		data, embedErr := web.SkillPackage()
+		if embedErr != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy.zip"`)
+		http.ServeContent(w, r, "hostctl-deploy.zip", time.Time{}, bytes.NewReader(data))
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy-skill.zip"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy.zip"`)
 	http.ServeFile(w, r, path)
 }
 
@@ -2054,6 +2061,7 @@ type adminSkillResponse struct {
 type adminSkillPackage struct {
 	Exists    bool   `json:"exists"`
 	Path      string `json:"path"`
+	Source    string `json:"source"`
 	Size      int64  `json:"size"`
 	Sha256    string `json:"sha256,omitempty"`
 	UpdatedAt string `json:"updatedAt,omitempty"`
@@ -2259,9 +2267,17 @@ func (s *Server) skillPackageInfo() adminSkillPackage {
 	info := adminSkillPackage{Path: path}
 	st, err := os.Stat(path)
 	if err != nil || st.IsDir() {
+		if data, embedErr := web.SkillPackage(); embedErr == nil {
+			sum := sha256.Sum256(data)
+			info.Exists = true
+			info.Source = "built-in"
+			info.Size = int64(len(data))
+			info.Sha256 = hex.EncodeToString(sum[:])
+		}
 		return info
 	}
 	info.Exists = true
+	info.Source = "uploaded"
 	info.Size = st.Size()
 	info.UpdatedAt = st.ModTime().UTC().Format(time.RFC3339)
 	if data, err := os.ReadFile(path); err == nil {

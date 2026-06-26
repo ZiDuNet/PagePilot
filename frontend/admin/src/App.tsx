@@ -1862,6 +1862,7 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
 
   const skillURL = `${base}${skillDownloadPath()}`;
   const pkg = meta?.package;
+  const packageLabel = pkg?.source === "uploaded" ? "已上传覆盖包" : pkg?.exists ? "内置默认包" : "未上传";
   const prompt = [
     "PAGEPILOT SKILL",
     `请从 ${skillURL} 下载并安装 hostctl-deploy Skill。`,
@@ -1891,7 +1892,7 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
               <span>{zipFile ? formatSize(zipFile.size) : "这个 ZIP 会成为 /skill/hostctl-deploy.zip 的固定下载包"}</span>
             </label>
             <div className="meta-box">
-              <InfoRow label="下载包" value={pkg?.exists ? "已上传" : "未上传"} />
+              <InfoRow label="下载包" value={packageLabel} />
               <InfoRow label="包大小" value={pkg?.exists ? formatSize(pkg?.size) : "-"} />
               <InfoRow label="更新时间" value={formatDate(pkg?.updatedAt)} />
               <InfoRow label="SHA256" value={pkg?.sha256 || "-"} />

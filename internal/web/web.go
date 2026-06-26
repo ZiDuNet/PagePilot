@@ -17,6 +17,9 @@ var adminFS embed.FS
 //go:embed user
 var userFS embed.FS
 
+//go:embed skill/hostctl-deploy.zip
+var skillPackageFS embed.FS
+
 var (
 	adminHTMLOnce  sync.Once
 	adminHTMLBytes []byte
@@ -63,4 +66,9 @@ func AdminAppFS() fs.FS {
 		panic(err)
 	}
 	return sub
+}
+
+// SkillPackage 返回内置的 hostctl-deploy Skill ZIP。
+func SkillPackage() ([]byte, error) {
+	return skillPackageFS.ReadFile("skill/hostctl-deploy.zip")
 }

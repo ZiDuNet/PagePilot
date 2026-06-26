@@ -23,7 +23,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Docker 构建直接使用已提交的前端产物，只需要 Go 与 Alpine 基础镜像。
+        # Docker 构建会先编译前端，再把产物 embed 进 Go 二进制。
+        NODE_IMAGE: node:22-alpine
         GO_IMAGE: golang:1.22-alpine
         ALPINE_IMAGE: alpine:3.20
         GOPROXY: https://mirrors.aliyun.com/goproxy/,direct

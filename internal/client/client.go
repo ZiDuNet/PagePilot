@@ -15,6 +15,8 @@ import (
 	"github.com/yourorg/hostctl/internal/api"
 )
 
+const currentOriginHeader = "X-Hostctl-Current-Origin"
+
 // Client 是 hostctl API 客户端。
 type Client struct {
 	baseURL string
@@ -65,6 +67,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.baseURL != "" {
+		req.Header.Set(currentOriginHeader, c.baseURL)
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
@@ -140,6 +145,9 @@ func (c *Client) RawDeploy(ctx context.Context, body []byte) (map[string]any, er
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.baseURL != "" {
+		req.Header.Set(currentOriginHeader, c.baseURL)
+	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}

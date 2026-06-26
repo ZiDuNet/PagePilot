@@ -1,10 +1,31 @@
 # PagePilot / hostctl multi-stage Dockerfile.
-# Build stage compiles static Go binaries; runtime stage keeps only binaries and small OS deps.
+# Frontend stages build React assets, Go stage embeds them into static binaries.
 
+ARG NODE_IMAGE=node:22-alpine
 ARG GO_IMAGE=golang:1.22-alpine
 ARG ALPINE_IMAGE=alpine:3.20
 
-# ===== Build =====
+# ===== Frontend =====
+FROM ${NODE_IMAGE} AS frontend-builder
+
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+
+WORKDIR /src
+
+COPY frontend/admin/package*.json ./frontend/admin/
+RUN cd frontend/admin && npm ci
+
+COPY frontend/user/package*.json ./frontend/user/
+RUN cd frontend/user && npm ci
+
+COPY frontend/admin ./frontend/admin
+COPY frontend/user ./frontend/user
+COPY internal/web ./internal/web
+
+RUN cd frontend/admin && npm run build && \
+    cd ../user && npm run build
+
+# ===== Go Build =====
 FROM ${GO_IMAGE} AS builder
 
 # git is needed by go mod for VCS-backed modules.
@@ -23,6 +44,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+COPY --from=frontend-builder /src/internal/web/admin/app ./internal/web/admin/app
+COPY --from=frontend-builder /src/internal/web/user/app ./internal/web/user/app
 
 # modernc.org/sqlite is pure Go, so CGO can stay disabled.
 ENV CGO_ENABLED=0 GOOS=linux

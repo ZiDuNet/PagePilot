@@ -157,7 +157,7 @@ func TestSkillDownloadReturnsManagedZipWithoutRuntimeInjection(t *testing.T) {
 	}
 }
 
-func TestSkillDownloadMissingManagedZipReturnsNotFound(t *testing.T) {
+func TestSkillDownloadFallsBackToBuiltInZip(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
 
@@ -166,8 +166,29 @@ func TestSkillDownloadMissingManagedZipReturnsNotFound(t *testing.T) {
 
 	srv.handleSkillDownload(rr, req)
 
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusNotFound)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body size = %d; want %d", rr.Code, rr.Body.Len(), http.StatusOK)
+	}
+	if rr.Header().Get("Content-Type") != "application/zip" {
+		t.Fatalf("content-type = %q, want application/zip", rr.Header().Get("Content-Type"))
+	}
+	zr, err := zip.NewReader(bytes.NewReader(rr.Body.Bytes()), int64(rr.Body.Len()))
+	if err != nil {
+		t.Fatalf("open built-in skill zip: %v", err)
+	}
+	foundSkill := false
+	for _, f := range zr.File {
+		if f.Name == "hostctl-deploy/SKILL.md" {
+			foundSkill = true
+			break
+		}
+	}
+	if !foundSkill {
+		t.Fatalf("built-in zip does not contain hostctl-deploy/SKILL.md")
+	}
+	info := srv.skillPackageInfo()
+	if !info.Exists || info.Source != "built-in" || info.Size <= 0 {
+		t.Fatalf("package info = %+v, want built-in package", info)
 	}
 }
 
@@ -215,6 +236,10 @@ func TestAdminUploadSkillZipPersistsManagedPackage(t *testing.T) {
 	}
 	if !bytes.Equal(rr.Body.Bytes(), want) {
 		t.Fatalf("downloaded package differs from uploaded package")
+	}
+	info := srv.skillPackageInfo()
+	if info.Source != "uploaded" {
+		t.Fatalf("package source = %q, want uploaded", info.Source)
 	}
 }
 

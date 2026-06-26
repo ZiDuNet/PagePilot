@@ -12,7 +12,7 @@
 
 ## 快速启动
 
-PagePilot 不需要配置入口域名。浏览器访问时，首页、后台、`/agents/`、`/screens/`、Skill/MCP 文案、二维码和 `/agent/{code}/` 路径模式链接都会跟随当前打开的域名或 IP。Skill ZIP 下载包由后台上传维护，包内默认 server 不会在下载时动态改写。
+PagePilot 不需要配置入口域名。浏览器访问时，首页、后台、`/agents/`、`/screens/`、Skill/MCP 文案、二维码和 `/agent/{code}/` 路径模式链接都会跟随当前打开的域名或 IP。Skill ZIP 默认使用服务端内置包，管理员也可以在后台上传自定义 ZIP 覆盖；包内默认 server 不会在下载时动态改写。
 
 如果同一套服务通过多个入口访问，PagePilot 会按用户实际打开的入口生成链接。外层反向代理建议透传 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。
 
@@ -25,7 +25,7 @@ docker compose logs -f hostctl
 
 默认映射端口为 `8787:8787`。如果服务器外层反向代理使用其它端口，例如 `1143`，用户用 `https://pagepilot.example.com:1143` 打开时，页面展示、复制和下载说明会直接使用这个当前地址。
 
-镜像构建会把内置用户端和后台产物打进 Go 二进制。源码部署时请确认以下产物来自最新代码：
+镜像构建会先运行前端 `npm ci && npm run build`，再把用户端和后台产物打进 Go 二进制。源码方式直接编译二进制时，请确认以下产物来自最新代码：
 
 - 用户端 React：`frontend/user` 构建到 `internal/web/user/app`。
 - 后台 React：`frontend/admin` 构建到 `internal/web/admin/app`。

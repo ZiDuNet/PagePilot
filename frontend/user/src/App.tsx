@@ -1066,7 +1066,7 @@ function SkillInstallCard({ baseURL }: { baseURL: string }) {
         <div>
           <div className="mini-label">hostctl-deploy.zip</div>
           <h2>后台维护下载包</h2>
-          <p>管理员在后台上传固定 Skill ZIP，安装说明里的服务器地址按当前页面生成。</p>
+          <p>默认提供内置 Skill ZIP；管理员可在后台上传自定义包覆盖，安装说明里的服务器地址按当前页面生成。</p>
         </div>
         <a className="button primary" href={skillDownloadPath()}>
           <Download size={18} />下载 Skill
