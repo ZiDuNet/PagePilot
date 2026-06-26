@@ -51,7 +51,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - Keep the main entry as `index.html` whenever possible. If the site uses a different HTML entry, pass it explicitly with `--filename` and keep the same entry stable across appended versions.
 - Before deploying a directory, make sure it contains exactly one intended HTML entry or a clear `index.html`. If several plausible HTML entries exist and the intended entry is unclear, ask the user before publishing.
 - For multi-page HTML sites, preserve normal navigation: use relative links such as `href="settings.html"` or `href="./settings.html"` and do not call `preventDefault()` on those links unless the handler explicitly changes `window.location` to the same target.
-- Hosted apps always keep `/agent/{code}/` as the compatible path-mode URL. Servers may also enable wildcard-domain URLs such as `https://{code}.apps.example.com/`; check `/api/config` before assuming the preferred public URL.
+- Hosted apps always keep `/agent/{code}/` as the compatible path-mode URL, resolved against the PagePilot server the user is using. Servers may also enable wildcard-domain URLs such as `https://{code}.apps.example.com/`; check `/api/config` only for the app URL mode, suffix, scheme, and port.
 - In path mode, do not generate root-relative asset or page links such as `/settings.html`; use relative links like `settings.html` or `./assets/app.js`. Wildcard-domain mode supports root-relative links better, but path mode remains the default compatibility entry.
 - Inspect versions before switching, locking, unlocking, overwriting, or deleting versions.
 - Do not overwrite or delete locked versions. Append a new version instead.

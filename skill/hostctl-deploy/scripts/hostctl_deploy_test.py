@@ -76,7 +76,7 @@ class RequestHeaderTests(unittest.TestCase):
                 return b'{"success": true}'
 
         def fake_urlopen(req, timeout=0):
-            captured["origin"] = req.headers.get("X-hostctl-public-origin")
+            captured["origin"] = req.headers.get("X-hostctl-current-origin")
             return FakeResponse()
 
         with mock.patch.object(hostctl_deploy.urllib.request, "urlopen", fake_urlopen):
