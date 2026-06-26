@@ -17,13 +17,12 @@ import (
 
 func TestAppURLConfigBuildsPathAndDomainURLs(t *testing.T) {
 	cfg := config.Default()
-	cfg.PublicBaseURL = "https://pagepilot.example.com:1143"
 	cfg.AppURLMode = AppURLModePath
 	cfg.AppDomainSuffix = "pagepilot.example.com"
 	cfg.AppURLScheme = "https"
 	cfg.AppURLPort = "1143"
 
-	appURLs := NewAppURLConfig(cfg)
+	appURLs := NewAppURLConfig(cfg).WithPathBaseURL("https://pagepilot.example.com:1143")
 	version := int64(7)
 	if got := appURLs.PrimaryAppURL("demo", nil); got != "https://pagepilot.example.com:1143/agent/demo/" {
 		t.Fatalf("path primary url = %q", got)
@@ -33,7 +32,7 @@ func TestAppURLConfigBuildsPathAndDomainURLs(t *testing.T) {
 	}
 
 	cfg.AppURLMode = AppURLModeDomain
-	appURLs = NewAppURLConfig(cfg)
+	appURLs = NewAppURLConfig(cfg).WithPathBaseURL("https://pagepilot.example.com:1143")
 	if got := appURLs.PrimaryAppURL("demo", nil); got != "https://demo.pagepilot.example.com:1143/" {
 		t.Fatalf("domain primary url = %q", got)
 	}

@@ -142,7 +142,7 @@ func (s *Server) handlePublishScreen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen", err.Error()), reqID))
 		return
 	}
-	if err := s.sendScreenWSManifest(r.Context(), screenID); err != nil {
+	if err := s.sendScreenWSManifest(r.Context(), screenID, r); err != nil {
 		s.logger.Printf("push screen manifest failed for %s: %v", screenID, err)
 	}
 	writeJSON(w, http.StatusOK, ScreenPublishResponse{Success: true, Screen: s.toScreenItem(r.Context(), screen)})
@@ -363,7 +363,7 @@ func (s *Server) authenticateDevice(r *http.Request) (store.Screen, *APIError) {
 
 func (s *Server) screenManifest(ctx context.Context, screen store.Screen, r *http.Request) (ScreenManifestResponse, *APIError) {
 	now := time.Now().UTC()
-	base := s.effectivePublicBaseURL(r)
+	base := s.requestBaseURL(r)
 	appURLs := s.appURLConfigForRequest(r)
 	resp := ScreenManifestResponse{
 		Success:       true,

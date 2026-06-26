@@ -163,7 +163,7 @@ def request_json(base: str, token: str, path: str, method: str = "GET",
                  payload: dict | None = None, session_id: str = "", agent: dict | None = None) -> tuple[int, dict]:
     data = None
     headers = {"User-Agent": UA, "Accept": "application/json"}
-    headers["X-Hostctl-Public-Origin"] = base
+    headers["X-Hostctl-Current-Origin"] = base
     agent = agent or load_agent_identity()
     if agent.get("agentId"):
         headers["X-Hostctl-Agent-Id"] = str(agent["agentId"])
@@ -619,11 +619,6 @@ def cmd_config_get(args) -> int:
     return print_result(status, data)
 
 
-def cmd_config_set_base(args) -> int:
-    status, data = request_json(server_url(args), auth_token(args), "/api/config", "PUT", {"publicBaseURL": args.public_base_url})
-    return print_result(status, data)
-
-
 def cmd_config_set_app_url(args) -> int:
     payload = {
         "appURLMode": args.mode,
@@ -956,9 +951,6 @@ def build_parser() -> argparse.ArgumentParser:
     config_sub = p_config.add_subparsers(dest="config_cmd", required=True)
     pc = config_sub.add_parser("get", help="Read runtime config")
     pc.set_defaults(func=cmd_config_get)
-    pc = config_sub.add_parser("set-base-url", help="Update publicBaseURL")
-    pc.add_argument("public_base_url")
-    pc.set_defaults(func=cmd_config_set_base)
     pc = config_sub.add_parser("set-app-url", help="Update hosted app URL mode and wildcard domain settings")
     pc.add_argument("--mode", choices=["path", "domain", "dual"], required=True, help="path keeps /agent/{code}; domain uses {code}.suffix; dual enables both")
     pc.add_argument("--domain-suffix", default="", help="Wildcard app host suffix, e.g. apps.pagepilot.example.com")

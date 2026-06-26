@@ -16,7 +16,6 @@ ExecStart=/usr/local/bin/hostctl-server \
 	--addr 127.0.0.1:8787 \
 	--hosted-dir /var/www/hosted \
 	--db /var/lib/hostctl/hostctl.db \
-	--public-url https://host.example.com \
 	--require-auth
 
 Restart=on-failure

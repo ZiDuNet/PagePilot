@@ -25,6 +25,7 @@ type screenWSClient struct {
 	screenID string
 	conn     *websocket.Conn
 	send     chan ScreenWSMessage
+	baseURL  string
 }
 
 func newScreenHub() *screenHub {
@@ -51,30 +52,42 @@ func (h *screenHub) unregister(client *screenWSClient) {
 	}
 }
 
-func (h *screenHub) push(screenID string, msg ScreenWSMessage) bool {
+func (h *screenHub) clientsFor(screenID string) []*screenWSClient {
 	h.mu.RLock()
+	defer h.mu.RUnlock()
 	clients := make([]*screenWSClient, 0, len(h.clients[screenID]))
 	for client := range h.clients[screenID] {
 		clients = append(clients, client)
 	}
-	h.mu.RUnlock()
-	if len(clients) == 0 {
-		return false
-	}
+	return clients
+}
+
+func (h *screenHub) pushClient(client *screenWSClient, msg ScreenWSMessage) bool {
 	if msg.ScreenID == "" {
-		msg.ScreenID = screenID
+		msg.ScreenID = client.screenID
 	}
 	if msg.ServerTime.IsZero() {
 		msg.ServerTime = time.Now().UTC()
 	}
+	select {
+	case client.send <- msg:
+		return true
+	default:
+		h.unregister(client)
+		_ = client.conn.Close()
+		return false
+	}
+}
+
+func (h *screenHub) push(screenID string, msg ScreenWSMessage) bool {
+	clients := h.clientsFor(screenID)
+	if len(clients) == 0 {
+		return false
+	}
 	delivered := false
 	for _, client := range clients {
-		select {
-		case client.send <- msg:
+		if h.pushClient(client, msg) {
 			delivered = true
-		default:
-			h.unregister(client)
-			_ = client.conn.Close()
 		}
 	}
 	return delivered
@@ -98,11 +111,12 @@ func (s *Server) handleDeviceWebSocket(w http.ResponseWriter, r *http.Request) {
 		screenID: screen.ID,
 		conn:     conn,
 		send:     make(chan ScreenWSMessage, 8),
+		baseURL:  s.requestBaseURL(r),
 	}
 	s.screenHub.register(client)
 	defer s.screenHub.unregister(client)
 
-	if err := s.sendScreenWSManifest(r.Context(), screen.ID); err != nil {
+	if err := s.sendScreenWSManifest(r.Context(), screen.ID, r); err != nil {
 		s.logger.Printf("screen websocket initial manifest failed for %s: %v", screen.ID, err)
 	}
 
@@ -152,21 +166,46 @@ func (c *screenWSClient) writeLoop(done <-chan struct{}) {
 	}
 }
 
-func (s *Server) sendScreenWSManifest(ctx context.Context, screenID string) error {
+func (s *Server) sendScreenWSManifest(ctx context.Context, screenID string, r *http.Request) error {
 	screen, err := s.deployer.GetScreen(ctx, screenID)
 	if err != nil {
 		return err
 	}
-	manifest, apiErr := s.screenManifest(ctx, screen, nil)
-	if apiErr != nil {
-		return errors.New(apiErr.Detail)
+	clients := s.screenHub.clientsFor(screenID)
+	if len(clients) == 0 {
+		manifest, apiErr := s.screenManifest(ctx, screen, r)
+		if apiErr != nil {
+			return errors.New(apiErr.Detail)
+		}
+		s.screenHub.push(screenID, ScreenWSMessage{
+			Type:     "manifest",
+			ScreenID: screenID,
+			Manifest: &manifest,
+		})
+		return nil
 	}
-	s.screenHub.push(screenID, ScreenWSMessage{
-		Type:     "manifest",
-		ScreenID: screenID,
-		Manifest: &manifest,
-	})
+	for _, client := range clients {
+		req := r
+		if client.baseURL != "" {
+			req = requestWithPublicOrigin(client.baseURL)
+		}
+		manifest, apiErr := s.screenManifest(ctx, screen, req)
+		if apiErr != nil {
+			return errors.New(apiErr.Detail)
+		}
+		s.screenHub.pushClient(client, ScreenWSMessage{
+			Type:     "manifest",
+			ScreenID: screenID,
+			Manifest: &manifest,
+		})
+	}
 	return nil
+}
+
+func requestWithPublicOrigin(baseURL string) *http.Request {
+	return &http.Request{
+		Header: http.Header{"X-Hostctl-Current-Origin": []string{baseURL}},
+	}
 }
 
 func (s *Server) sendScreenWSScreenshot(screenID string, shot *ScreenScreenshotCommand) {

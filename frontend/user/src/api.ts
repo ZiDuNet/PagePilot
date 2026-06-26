@@ -12,8 +12,8 @@ export class APIError extends Error {
 
 export function authHeaders(extra: HeadersInit = {}): HeadersInit {
   const headers: Record<string, string> = { ...(extra as Record<string, string>) };
-  if (typeof location !== "undefined" && !headers["X-Hostctl-Public-Origin"]) {
-    headers["X-Hostctl-Public-Origin"] = location.origin;
+  if (typeof location !== "undefined" && !headers["X-Hostctl-Current-Origin"]) {
+    headers["X-Hostctl-Current-Origin"] = location.origin;
   }
   const token =
     localStorage.getItem("hostctl-admin-token") ||

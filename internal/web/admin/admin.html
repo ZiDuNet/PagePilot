@@ -771,7 +771,7 @@
         </div>
         <div class="panel">
           <div class="panel-head">
-            <div><h2 class="panel-title">运行配置</h2><p class="panel-subtitle">公网地址、鉴权和上传限制。</p></div>
+            <div><h2 class="panel-title">运行配置</h2><p class="panel-subtitle">鉴权、应用泛域名和上传限制。</p></div>
           </div>
           <div id="config-summary"></div>
         </div>
@@ -970,8 +970,8 @@
     </section>
     <section id="tab-config" class="tab-panel hidden">
       <div class="panel" style="max-width:760px">
-        <div class="panel-head"><div><h2 class="panel-title">运行设置</h2><p class="panel-subtitle">调整对外 URL 和查看当前限制。</p></div></div>
-        <div class="field"><label>Public Base URL</label><input id="config-base-url" class="input mono" placeholder="https://pagepilot.example.com"></div>
+        <div class="panel-head"><div><h2 class="panel-title">运行设置</h2><p class="panel-subtitle">主站链接跟随当前访问域名；这里只配置应用泛域名和限制。</p></div></div>
+        <div class="file-row"><span>当前主站</span><code id="config-current-origin"></code></div>
         <div class="field"><label>应用访问模式</label><select id="config-app-url-mode" class="input"><option value="path">路径模式 /agent/{code}</option><option value="domain">泛域名模式 {code}.domain</option><option value="dual">双模式兼容</option></select><div class="hint">/agent/{code} 始终保留。domain 模式会优先生成泛域名访问链接；dual 用于灰度。</div></div>
         <div class="field"><label>应用域名后缀</label><input id="config-app-domain" class="input mono" placeholder="apps.pagepilot.example.com 或 pagepilot.example.com"><div class="hint">只填写 host 后缀，不填 * 和协议。Nginx 需要透传 Host。</div></div>
         <div class="grid two">
@@ -1335,7 +1335,7 @@
     if (isAdminSession()) {
       items.push(["用户管理", "账号、额度、停用、删除", "users"]);
       items.push(["匿名 Agent", "设备、IP、额度追踪", "anonymous"]);
-      items.push(["运行设置", "公网 URL、额度、CORS", "config"]);
+      items.push(["运行设置", "泛域名、额度、CORS", "config"]);
       items.push(["Skill 编辑", "维护 Agent 下载包", "skill"]);
     }
     $("quick-actions").innerHTML = items.map(([title, desc, tab]) => `
@@ -1654,7 +1654,7 @@
     const c = state.config || {};
     if (isAdminSession()) {
       $("config-summary").innerHTML = `
-        <div class="file-row"><span>Public URL</span><code>${escapeHtml(c.publicBaseURL || "-")}</code></div>
+        <div class="file-row"><span>当前主站</span><code>${escapeHtml(location.origin || "-")}</code></div>
         <div class="file-row"><span>模式</span><strong>${escapeHtml(c.mode || "-")}</strong></div>
         <div class="file-row"><span>冷却</span><strong>${c.cooldownSeconds || 0}s</strong></div>
         <div class="file-row"><span>匿名 Agent</span><strong>每个 Agent ${c.anonymousPolicy?.deployLimit ?? 5} 次</strong></div>
@@ -2170,7 +2170,6 @@
     try {
       const mb = 1024 * 1024;
       const payload = {
-        publicBaseURL: $("config-base-url").value.trim(),
         appURLMode: $("config-app-url-mode").value,
         appDomainSuffix: $("config-app-domain").value.trim(),
         appURLScheme: $("config-app-scheme").value,
@@ -2190,7 +2189,7 @@
   function renderConfig() {
     const c = state.config || {};
     const app = c.appURL || {};
-    if ($("config-base-url")) $("config-base-url").value = c.publicBaseURL || "";
+    if ($("config-current-origin")) $("config-current-origin").textContent = location.origin || "-";
     if ($("config-app-url-mode")) $("config-app-url-mode").value = app.appURLMode || "path";
     if ($("config-app-domain")) $("config-app-domain").value = app.appDomainSuffix || "";
     if ($("config-app-scheme")) $("config-app-scheme").value = app.appURLScheme || "https";

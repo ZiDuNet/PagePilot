@@ -17,12 +17,12 @@ const (
 )
 
 type AppURLConfig struct {
-	PublicBaseURL   string `json:"publicBaseURL"`
 	AppURLMode      string `json:"appURLMode"`
 	AppDomainSuffix string `json:"appDomainSuffix,omitempty"`
 	AppURLScheme    string `json:"appURLScheme"`
 	AppURLPort      string `json:"appURLPort,omitempty"`
 	AppPathBase     string `json:"appPathBase"`
+	PathBaseURL     string `json:"-"`
 }
 
 func normalizeAppURLMode(mode string) string {
@@ -82,13 +82,17 @@ func NormalizeAppURLPortForConfig(port string) string {
 
 func NewAppURLConfig(cfg config.Config) AppURLConfig {
 	return AppURLConfig{
-		PublicBaseURL:   strings.TrimRight(cfg.PublicBaseURL, "/"),
 		AppURLMode:      normalizeAppURLMode(cfg.AppURLMode),
 		AppDomainSuffix: normalizeAppDomainSuffix(cfg.AppDomainSuffix),
 		AppURLScheme:    normalizeAppURLScheme(cfg.AppURLScheme),
 		AppURLPort:      normalizeAppURLPort(cfg.AppURLPort),
 		AppPathBase:     "/agent",
 	}
+}
+
+func (c AppURLConfig) WithPathBaseURL(baseURL string) AppURLConfig {
+	c.PathBaseURL = strings.TrimRight(baseURL, "/")
+	return c
 }
 
 func (c AppURLConfig) PrimaryAppURL(code string, version *int64) string {
@@ -99,10 +103,7 @@ func (c AppURLConfig) PrimaryAppURL(code string, version *int64) string {
 }
 
 func (c AppURLConfig) PathAppURL(code string, version *int64) string {
-	base := strings.TrimRight(c.PublicBaseURL, "/")
-	if base == "" {
-		base = "http://localhost:8787"
-	}
+	base := strings.TrimRight(c.PathBaseURL, "/")
 	pathBase := strings.TrimRight(c.AppPathBase, "/")
 	if pathBase == "" {
 		pathBase = "/agent"

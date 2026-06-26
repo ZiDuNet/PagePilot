@@ -254,7 +254,6 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	// 11. 拼响应（OpenAPI 全字段）
 	site, _ := d.store.GetSite(ctx, code)
 	allVersions, _ := d.store.ListVersions(ctx, code)
-	base := strings.TrimRight(d.cfg.PublicBaseURL, "/")
 	appURLs := d.AppURLConfig()
 	publicURL := appURLs.PrimaryAppURL(code, nil)
 	strategy := api.StrategyLikes
@@ -265,7 +264,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	agentGuideURL := ""
 	if isNewSite {
 		preserveHint = "Use createVersion=true with the same code to publish updates."
-		agentGuideURL = fmt.Sprintf("%s/api-docs.html", base)
+		agentGuideURL = "/api-docs.html"
 	}
 	return &api.DeployResponse{
 		Success:                true,
@@ -750,34 +749,12 @@ func isValidAutoCode(code string) bool {
 	return true
 }
 
-// PublicBaseURL 暴露当前 baseURL（用于 GET /api/config）。
-func (d *Deployer) PublicBaseURL() string { return d.cfg.PublicBaseURL }
-
 func (d *Deployer) AppURLConfig() api.AppURLConfig {
 	return api.NewAppURLConfig(d.cfg)
 }
 
-// SetPublicBaseURL 把新的 baseURL 写入数据库并热更新内存。
-// 下一次部署就会用新值拼 URL。
-func (d *Deployer) SetPublicBaseURL(ctx context.Context, baseURL string) error {
-	baseURL = strings.TrimSpace(baseURL)
-	if err := d.store.SetSetting(ctx, "public_base_url", baseURL); err != nil {
-		return fmt.Errorf("persist baseURL: %w", err)
-	}
-	d.cfg.PublicBaseURL = baseURL
-	return nil
-}
-
-func (d *Deployer) SetPublicURLMode(ctx context.Context, mode string) error {
-	mode = config.NormalizePublicURLMode(mode)
-	if err := d.store.SetSetting(ctx, "public_url_mode", mode); err != nil {
-		return fmt.Errorf("persist public URL mode: %w", err)
-	}
-	d.cfg.PublicURLMode = mode
-	return nil
-}
-
 func (d *Deployer) SetAppURLConfig(ctx context.Context, cfg api.AppURLConfig) error {
+	cfg.PathBaseURL = ""
 	if err := d.store.SetSetting(ctx, "app_url_mode", api.NormalizeAppURLModeForConfig(cfg.AppURLMode)); err != nil {
 		return fmt.Errorf("persist app url mode: %w", err)
 	}
@@ -867,12 +844,6 @@ func sanitizeSiteTitle(title string) string {
 // LoadPersistedSettings 启动时从数据库恢复持久化设置。
 // 数据库里没有则保持 cfg 原值不变，并返回恢复后的配置快照。
 func (d *Deployer) LoadPersistedSettings(ctx context.Context) config.Config {
-	if v, err := d.store.GetSetting(ctx, "public_base_url"); err == nil && v != "" {
-		d.cfg.PublicBaseURL = v
-	}
-	if v, err := d.store.GetSetting(ctx, "public_url_mode"); err == nil && v != "" {
-		d.cfg.PublicURLMode = config.NormalizePublicURLMode(v)
-	}
 	if v, err := d.store.GetSetting(ctx, "app_url_mode"); err == nil && v != "" {
 		d.cfg.AppURLMode = api.NormalizeAppURLModeForConfig(v)
 	}

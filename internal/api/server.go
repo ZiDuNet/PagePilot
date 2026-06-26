@@ -58,9 +58,6 @@ type DeployerPort interface {
 	ListSites(ctx context.Context) ([]store.SiteWithMeta, error)
 	SetSitePinned(ctx context.Context, code string, pinned bool) error
 	SetSiteVisibility(ctx context.Context, code, visibility string) error
-	PublicBaseURL() string
-	SetPublicBaseURL(ctx context.Context, baseURL string) error
-	SetPublicURLMode(ctx context.Context, mode string) error
 	SetAnonymousDeployLimit(ctx context.Context, n int) error
 	SetCooldownSeconds(ctx context.Context, n int) error
 	SetUploadLimits(ctx context.Context, singleFileBytes, siteTotalBytes int64, filesPerSite int) error
@@ -150,30 +147,18 @@ func New(cfg config.Config, deployer DeployerPort, authSvc *auth.Service, requir
 	return s
 }
 
-func (s *Server) publicBaseURL() string {
-	base := ""
-	if s.deployer != nil {
-		base = strings.TrimRight(s.deployer.PublicBaseURL(), "/")
+func (s *Server) requestBaseURL(r *http.Request) string {
+	if r == nil {
+		return ""
 	}
-	if base == "" {
-		base = strings.TrimRight(s.cfg.PublicBaseURL, "/")
-	}
-	return base
-}
-
-func (s *Server) effectivePublicBaseURL(r *http.Request) string {
-	configured := s.publicBaseURL()
-	if r == nil || config.NormalizePublicURLMode(s.cfg.PublicURLMode) != "request_host" {
-		return configured
-	}
-	if base := publicBaseURLFromRequest(r); base != "" {
+	if base := baseURLFromRequest(r); base != "" {
 		return base
 	}
-	return configured
+	return ""
 }
 
-func publicBaseURLFromRequest(r *http.Request) string {
-	if base := publicBaseURLFromBrowserOrigin(r, false); base != "" {
+func baseURLFromRequest(r *http.Request) string {
+	if base := baseURLFromClientOrigin(r, false); base != "" {
 		return base
 	}
 	host := forwardedHost(r)
@@ -190,8 +175,8 @@ func publicBaseURLFromRequest(r *http.Request) string {
 	return scheme + "://" + host
 }
 
-func publicBaseURLFromBrowserOrigin(r *http.Request, allowQuery bool) string {
-	origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("X-Hostctl-Public-Origin")), "/")
+func baseURLFromClientOrigin(r *http.Request, allowQuery bool) string {
+	origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("X-Hostctl-Current-Origin")), "/")
 	if origin == "" && allowQuery {
 		origin = strings.TrimRight(strings.TrimSpace(r.URL.Query().Get("origin")), "/")
 	}
@@ -232,18 +217,15 @@ func firstForwardedValue(value string) string {
 
 func (s *Server) appURLConfig() AppURLConfig {
 	if p, ok := s.deployer.(appURLConfigProvider); ok {
-		cfg := p.AppURLConfig()
-		if cfg.PublicBaseURL != "" {
-			return cfg
-		}
+		return p.AppURLConfig()
 	}
 	return NewAppURLConfig(s.cfg)
 }
 
 func (s *Server) appURLConfigForRequest(r *http.Request) AppURLConfig {
 	cfg := s.appURLConfig()
-	if base := s.effectivePublicBaseURL(r); base != "" {
-		cfg.PublicBaseURL = base
+	if base := s.requestBaseURL(r); base != "" {
+		cfg = cfg.WithPathBaseURL(base)
 	}
 	return cfg
 }
@@ -262,7 +244,12 @@ func (s *Server) rewriteDeployResponseURLs(r *http.Request, resp *DeployResponse
 	}
 	resp.QRCode = generateQRCodeDataURL(resp.URL)
 	if resp.AgentGuideURL != "" {
-		resp.AgentGuideURL = strings.TrimRight(s.effectivePublicBaseURL(r), "/") + "/api-docs.html"
+		base := strings.TrimRight(s.requestBaseURL(r), "/")
+		if base == "" {
+			resp.AgentGuideURL = "/api-docs.html"
+		} else {
+			resp.AgentGuideURL = base + "/api-docs.html"
+		}
 	}
 }
 
@@ -395,7 +382,7 @@ func (s *Server) routes() {
 
 // ListenAndServe 启动 HTTP 服务。
 func (s *Server) ListenAndServe() error {
-	s.logger.Printf("hostctl-server listening on %s (public base: %s)", s.cfg.HTTPAddr, s.cfg.PublicBaseURL)
+	s.logger.Printf("hostctl-server listening on %s", s.cfg.HTTPAddr)
 	srv := &http.Server{
 		Addr:              s.cfg.HTTPAddr,
 		Handler:           s.withMiddleware(s.mux),
@@ -945,7 +932,7 @@ func (s *Server) marketplaceActor(r *http.Request) (string, bool) {
 }
 
 func (s *Server) toMarketplaceResponse(r *http.Request, d store.MarketplaceDeploy, actor string, isAdmin bool) marketplaceDeployResponse {
-	base := s.effectivePublicBaseURL(r)
+	base := s.requestBaseURL(r)
 	appURLs := s.appURLConfigForRequest(r)
 	var currentVerID, primaryVerID *string
 	if d.CurrentVersionID != "" {
@@ -2044,11 +2031,9 @@ func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	base := s.effectivePublicBaseURL(r)
-	if config.NormalizePublicURLMode(s.cfg.PublicURLMode) == "request_host" {
-		if browserOrigin := publicBaseURLFromBrowserOrigin(r, true); browserOrigin != "" {
-			base = browserOrigin
-		}
+	base := s.requestBaseURL(r)
+	if browserOrigin := baseURLFromClientOrigin(r, true); browserOrigin != "" {
+		base = browserOrigin
 	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy-skill.zip"`)
@@ -2475,18 +2460,16 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuth {
 		mode = "dev"
 	}
-	publicBase := s.effectivePublicBaseURL(r)
+	currentBase := s.requestBaseURL(r)
 	writeJSON(w, http.StatusOK, ConfigResponse{
-		Success:                 true,
-		PublicBaseURL:           publicBase,
-		ConfiguredPublicBaseURL: s.publicBaseURL(),
-		PublicURLMode:           config.NormalizePublicURLMode(s.cfg.PublicURLMode),
-		AppURL:                  s.appURLConfigForRequest(r),
-		Mode:                    mode,
-		CORSAllowOrigins:        s.cfg.CORSAllowOrigins,
-		EmbedPolicy:             config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy),
-		EmbedAllowOrigins:       s.cfg.EmbedAllowOrigins,
-		CooldownSeconds:         s.cfg.CooldownSeconds,
+		Success:           true,
+		CurrentBaseURL:    currentBase,
+		AppURL:            s.appURLConfigForRequest(r),
+		Mode:              mode,
+		CORSAllowOrigins:  s.cfg.CORSAllowOrigins,
+		EmbedPolicy:       config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy),
+		EmbedAllowOrigins: s.cfg.EmbedAllowOrigins,
+		CooldownSeconds:   s.cfg.CooldownSeconds,
 		Limits: Limits{
 			MaxSingleFileBytes: s.cfg.MaxSingleFileBytes,
 			MaxSiteTotalBytes:  s.cfg.MaxSiteTotalBytes,
@@ -2553,29 +2536,6 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.PublicBaseURL != nil {
-		v := strings.TrimSpace(*req.PublicBaseURL)
-		if !baseURLLooksValid(v) {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"publicBaseURL must look like http(s)://host[:port] with no path"), reqID))
-			return
-		}
-		if err := s.deployer.SetPublicBaseURL(r.Context(), v); err != nil {
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
-				fmt.Sprintf("failed to persist baseURL: %v", err)), reqID))
-			return
-		}
-		s.logger.Printf("publicBaseURL updated to %s", v)
-	}
-	if req.PublicURLMode != nil {
-		mode := config.NormalizePublicURLMode(*req.PublicURLMode)
-		if err := s.deployer.SetPublicURLMode(r.Context(), mode); err != nil {
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
-				fmt.Sprintf("failed to persist public URL mode: %v", err)), reqID))
-			return
-		}
-		s.cfg.PublicURLMode = mode
-	}
 	if req.AppURLMode != nil || req.AppDomainSuffix != nil || req.AppURLScheme != nil || req.AppURLPort != nil {
 		next := s.appURLConfig()
 		if req.AppURLMode != nil {
@@ -2722,17 +2682,15 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		s.cfg.EmbedPolicy = policy
 		s.cfg.EmbedAllowOrigins = origins
 	}
-	publicBase := s.effectivePublicBaseURL(r)
+	currentBase := s.requestBaseURL(r)
 	writeJSON(w, http.StatusOK, ConfigUpdateResponse{
-		Success:                 true,
-		PublicBaseURL:           publicBase,
-		ConfiguredPublicBaseURL: s.publicBaseURL(),
-		PublicURLMode:           config.NormalizePublicURLMode(s.cfg.PublicURLMode),
-		AppURL:                  s.appURLConfigForRequest(r),
-		CORSAllowOrigins:        s.cfg.CORSAllowOrigins,
-		EmbedPolicy:             config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy),
-		EmbedAllowOrigins:       s.cfg.EmbedAllowOrigins,
-		CooldownSeconds:         s.cfg.CooldownSeconds,
+		Success:           true,
+		CurrentBaseURL:    currentBase,
+		AppURL:            s.appURLConfigForRequest(r),
+		CORSAllowOrigins:  s.cfg.CORSAllowOrigins,
+		EmbedPolicy:       config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy),
+		EmbedAllowOrigins: s.cfg.EmbedAllowOrigins,
+		CooldownSeconds:   s.cfg.CooldownSeconds,
 		Limits: Limits{
 			MaxSingleFileBytes: s.cfg.MaxSingleFileBytes,
 			MaxSiteTotalBytes:  s.cfg.MaxSiteTotalBytes,

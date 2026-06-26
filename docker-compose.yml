@@ -1,10 +1,9 @@
 # PagePilot single-container deployment example.
 #
 # Usage:
-#   1. Change HOSTCTL_PUBLIC_BASE_URL to the public URL users and agents will visit.
-#   2. Run: docker compose up -d --build
-#   3. Open: http://<host>:8787/admin
-#   4. Sign in with the first-run admin below, then change the password immediately.
+#   1. Run: docker compose up -d --build
+#   2. Open: http://<host>:8787/admin
+#   3. Sign in with the first-run admin below, then change the password immediately.
 # Full deployment guide: deploy/DOCKER.md
 #
 # Persistent bind mounts:
@@ -36,10 +35,6 @@ services:
       - "8787:8787"
 
     environment:
-      # Public URL used for generated links, QR codes, agent skill download links, and share pages.
-      # Include the external port if users visit one, for example https://pagepilot.example.com:1143.
-      HOSTCTL_PUBLIC_BASE_URL: "http://localhost:8787"
-
       # App URL strategy. Keep "path" for /agent/{code}/ compatibility.
       # Use "domain" only after DNS and reverse proxy accept *.your-domain.
       # See deploy/APP_URL_MODE.md for Nginx and Docker examples.

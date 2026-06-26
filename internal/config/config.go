@@ -12,8 +12,6 @@ type Config struct {
 	HTTPAddr          string
 	HostedDir         string
 	DBPath            string
-	PublicBaseURL     string
-	PublicURLMode     string
 	AppURLMode        string
 	AppDomainSuffix   string
 	AppURLScheme      string
@@ -39,8 +37,6 @@ func Default() Config {
 		HTTPAddr:             "127.0.0.1:8787",
 		HostedDir:            "/var/www/hosted",
 		DBPath:               "/var/lib/hostctl/hostctl.db",
-		PublicBaseURL:        "http://localhost:8787",
-		PublicURLMode:        "request_host",
 		AppURLMode:           "path",
 		AppURLScheme:         "https",
 		CORSAllowOrigins:     "",
@@ -60,12 +56,6 @@ func Default() Config {
 	}
 	if v := os.Getenv("HOSTCTL_DB_PATH"); v != "" {
 		c.DBPath = v
-	}
-	if v := os.Getenv("HOSTCTL_PUBLIC_BASE_URL"); v != "" {
-		c.PublicBaseURL = v
-	}
-	if v := os.Getenv("HOSTCTL_PUBLIC_URL_MODE"); v != "" {
-		c.PublicURLMode = NormalizePublicURLMode(v)
 	}
 	if v := os.Getenv("HOSTCTL_APP_URL_MODE"); v != "" {
 		c.AppURLMode = v
@@ -130,12 +120,6 @@ func Default() Config {
 		c.BootstrapAdminPassword = v
 	}
 
-	if v := os.Getenv("PUBLIC_BASE_URL"); v != "" {
-		c.PublicBaseURL = v
-	}
-	if v := os.Getenv("PUBLIC_URL_MODE"); v != "" {
-		c.PublicURLMode = NormalizePublicURLMode(v)
-	}
 	if v := os.Getenv("APP_URL_MODE"); v != "" {
 		c.AppURLMode = v
 	}
@@ -229,14 +213,6 @@ func (c Config) Validate() error {
 	if c.DBPath == "" {
 		return fmt.Errorf("DBPath is empty")
 	}
-	if c.PublicBaseURL == "" {
-		return fmt.Errorf("PublicBaseURL is empty")
-	}
-	switch c.PublicURLMode {
-	case "", "configured", "request_host":
-	default:
-		return fmt.Errorf("PublicURLMode must be configured or request_host")
-	}
 	switch c.AppURLMode {
 	case "", "path", "domain", "dual":
 	default:
@@ -268,16 +244,6 @@ func (c Config) Validate() error {
 		return fmt.Errorf("AnonymousDeployLimit must be -1 or greater")
 	}
 	return nil
-}
-
-// NormalizePublicURLMode 规范化主站对外链接来源。
-func NormalizePublicURLMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "request_host", "request", "host", "current":
-		return "request_host"
-	default:
-		return "configured"
-	}
 }
 
 // NormalizeEmbedPolicy 规范化应用 iframe 嵌入策略。

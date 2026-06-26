@@ -13,11 +13,7 @@ docker compose up -d --build
 完整 Docker 部署、升级、备份、反向代理和排障说明请见 [deploy/DOCKER.md](DOCKER.md)。
 应用访问地址默认使用 `/agent/{code}/`，泛域名或双模式配置请参考 [APP_URL_MODE.md](APP_URL_MODE.md)。
 
-浏览器页面会按当前打开域名生成首页、后台、Skill/MCP、二维码和路径模式应用链接。`HOSTCTL_PUBLIC_BASE_URL` 只作为无浏览器上下文时的兜底地址，建议在 `docker-compose.yml` 中填一个可访问的默认地址，例如：
-
-```yaml
-HOSTCTL_PUBLIC_BASE_URL: "https://pagepilot.example.com"
-```
+主站不需要配置域名。浏览器页面会按当前打开域名生成首页、后台、Skill/MCP、二维码和路径模式应用链接；反向代理只需要透传 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。
 
 首次启动会在空数据库中自动创建默认管理员：
 
@@ -84,7 +80,7 @@ go build -o bin/hostctl ./cmd/hostctl
 
 ## 3. 安装 systemd
 
-编辑 `deploy/hostctl-server.service`，把 `https://host.example.com` 替换成真实对外 URL。
+检查 `deploy/hostctl-server.service` 里的监听地址、数据目录和运行用户是否符合你的服务器环境。
 
 ```bash
 sudo cp deploy/hostctl-server.service /etc/systemd/system/

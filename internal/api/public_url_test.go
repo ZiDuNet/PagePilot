@@ -12,11 +12,9 @@ import (
 	"testing"
 )
 
-func TestConfigUsesRequestHostWhenPublicURLModeEnabled(t *testing.T) {
+func TestConfigAlwaysUsesRequestHostForMainSiteLinks(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	srv.cfg.PublicBaseURL = "https://pagepilot.dell.4dbim.cc:1143"
-	srv.cfg.PublicURLMode = "request_host"
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -32,30 +30,22 @@ func TestConfigUsesRequestHostWhenPublicURLModeEnabled(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.PublicBaseURL != "https://pagepilot2.dell.4dbim.cc" {
-		t.Fatalf("publicBaseURL = %q, want request host", resp.PublicBaseURL)
+	if resp.CurrentBaseURL != "https://pagepilot2.dell.4dbim.cc" {
+		t.Fatalf("currentBaseURL = %q, want request host", resp.CurrentBaseURL)
 	}
-	if resp.ConfiguredPublicBaseURL != "https://pagepilot.dell.4dbim.cc:1143" {
-		t.Fatalf("configuredPublicBaseURL = %q", resp.ConfiguredPublicBaseURL)
-	}
-	if resp.PublicURLMode != "request_host" {
-		t.Fatalf("publicURLMode = %q", resp.PublicURLMode)
-	}
-	if resp.AppURL.PublicBaseURL != "https://pagepilot2.dell.4dbim.cc" {
-		t.Fatalf("appURL.publicBaseURL = %q, want request host", resp.AppURL.PublicBaseURL)
+	if got := srv.appURLConfigForRequest(req).PathAppURL("demo", nil); got != "https://pagepilot2.dell.4dbim.cc/agent/demo/" {
+		t.Fatalf("path app url = %q, want request host", got)
 	}
 }
 
 func TestConfigUsesBrowserOriginWhenProxyHostIsStale(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	srv.cfg.PublicBaseURL = "https://pagepilot.dell.4dbim.cc:1143"
-	srv.cfg.PublicURLMode = "request_host"
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
 	req.Header.Set("X-Forwarded-Host", "pagepilot.dell.4dbim.cc")
-	req.Header.Set("X-Hostctl-Public-Origin", "https://pagepilot.chaoxi.live")
+	req.Header.Set("X-Hostctl-Current-Origin", "https://pagepilot.chaoxi.live")
 	rr := httptest.NewRecorder()
 
 	srv.handleGetConfig(rr, req)
@@ -67,19 +57,17 @@ func TestConfigUsesBrowserOriginWhenProxyHostIsStale(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.PublicBaseURL != "https://pagepilot.chaoxi.live" {
-		t.Fatalf("publicBaseURL = %q, want browser origin", resp.PublicBaseURL)
+	if resp.CurrentBaseURL != "https://pagepilot.chaoxi.live" {
+		t.Fatalf("currentBaseURL = %q, want browser origin", resp.CurrentBaseURL)
 	}
-	if resp.AppURL.PublicBaseURL != "https://pagepilot.chaoxi.live" {
-		t.Fatalf("appURL.publicBaseURL = %q, want browser origin", resp.AppURL.PublicBaseURL)
+	if got := srv.appURLConfigForRequest(req).PathAppURL("demo", nil); got != "https://pagepilot.chaoxi.live/agent/demo/" {
+		t.Fatalf("path app url = %q, want browser origin", got)
 	}
 }
 
 func TestConfigIgnoresOriginQueryForNormalAPIs(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	srv.cfg.PublicBaseURL = "https://pagepilot.dell.4dbim.cc:1143"
-	srv.cfg.PublicURLMode = "request_host"
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config?origin=https%3A%2F%2Ffake.example.com", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -95,16 +83,14 @@ func TestConfigIgnoresOriginQueryForNormalAPIs(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.PublicBaseURL != "https://pagepilot.chaoxi.live" {
-		t.Fatalf("publicBaseURL = %q, want request host", resp.PublicBaseURL)
+	if resp.CurrentBaseURL != "https://pagepilot.chaoxi.live" {
+		t.Fatalf("currentBaseURL = %q, want request host", resp.CurrentBaseURL)
 	}
 }
 
-func TestRequestHostPublicURLDoesNotOverrideDomainAppURL(t *testing.T) {
+func TestRequestHostDoesNotOverrideDomainAppURL(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	srv.cfg.PublicBaseURL = "https://pagepilot.dell.4dbim.cc:1143"
-	srv.cfg.PublicURLMode = "request_host"
 	srv.cfg.AppURLMode = AppURLModeDomain
 	srv.cfg.AppDomainSuffix = "apps.example.com"
 	srv.cfg.AppURLScheme = "https"
@@ -125,8 +111,6 @@ func TestRequestHostPublicURLDoesNotOverrideDomainAppURL(t *testing.T) {
 func TestSkillDownloadInjectsRequestHostWhenEnabled(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	srv.cfg.PublicBaseURL = "https://pagepilot.dell.4dbim.cc:1143"
-	srv.cfg.PublicURLMode = "request_host"
 	t.Setenv("HOSTCTL_SKILL_DIR", filepath.Join("..", "..", "skill", "hostctl-deploy"))
 
 	req := httptest.NewRequest(http.MethodGet, "/skill/hostctl-deploy.zip", nil)
@@ -168,14 +152,12 @@ func TestSkillDownloadInjectsRequestHostWhenEnabled(t *testing.T) {
 func TestSkillDownloadInjectsBrowserOriginWhenProxyHostIsStale(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	srv.cfg.PublicBaseURL = "https://pagepilot.dell.4dbim.cc:1143"
-	srv.cfg.PublicURLMode = "request_host"
 	t.Setenv("HOSTCTL_SKILL_DIR", filepath.Join("..", "..", "skill", "hostctl-deploy"))
 
 	req := httptest.NewRequest(http.MethodGet, "/skill/hostctl-deploy.zip", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
 	req.Header.Set("X-Forwarded-Host", "pagepilot.dell.4dbim.cc")
-	req.Header.Set("X-Hostctl-Public-Origin", "https://pagepilot.chaoxi.live")
+	req.Header.Set("X-Hostctl-Current-Origin", "https://pagepilot.chaoxi.live")
 	rr := httptest.NewRecorder()
 
 	srv.handleSkillDownload(rr, req)
@@ -212,8 +194,6 @@ func TestSkillDownloadInjectsBrowserOriginWhenProxyHostIsStale(t *testing.T) {
 func TestSkillDownloadInjectsOriginQueryWhenAnchorCannotSendHeader(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	srv.cfg.PublicBaseURL = "https://pagepilot.dell.4dbim.cc:1143"
-	srv.cfg.PublicURLMode = "request_host"
 	t.Setenv("HOSTCTL_SKILL_DIR", filepath.Join("..", "..", "skill", "hostctl-deploy"))
 
 	req := httptest.NewRequest(http.MethodGet, "/skill/hostctl-deploy.zip?origin=https%3A%2F%2Fpagepilot.chaoxi.live", nil)

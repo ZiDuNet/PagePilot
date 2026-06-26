@@ -12,19 +12,9 @@
 
 ## 快速启动
 
-浏览器访问时，首页、后台、`/agents/`、`/screens/`、Skill/MCP 文案、下载包默认 server、二维码和 `/agent/{code}/` 路径模式链接都会跟随当前打开域名。`HOSTCTL_PUBLIC_BASE_URL` 只作为无浏览器请求上下文时的兜底地址，建议仍填一个可访问的默认地址：
+PagePilot 不需要配置入口域名。浏览器访问时，首页、后台、`/agents/`、`/screens/`、Skill/MCP 文案、下载包默认 server、二维码和 `/agent/{code}/` 路径模式链接都会跟随当前打开的域名或 IP。
 
-```yaml
-HOSTCTL_PUBLIC_BASE_URL: "https://pagepilot.example.com"
-```
-
-如果希望同一套服务能通过多个主站域名访问，默认即可按当前访问域名生成。也可以在后台“运行设置”确认“主站链接来源”为“按当前访问域名生成”，或通过环境变量设置：
-
-```yaml
-HOSTCTL_PUBLIC_URL_MODE: "request_host"
-```
-
-这种模式会让浏览器页面和新版本 Skill 请求优先使用当前访问域名；没有浏览器上下文时再使用反向代理请求头或 `HOSTCTL_PUBLIC_BASE_URL` 兜底。应用泛域名配置仍然独立，不受这个开关影响。
+如果同一套服务通过多个入口访问，PagePilot 会按用户实际打开的入口生成链接。外层反向代理建议透传 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。
 
 然后启动：
 
@@ -33,11 +23,7 @@ docker compose up -d --build
 docker compose logs -f hostctl
 ```
 
-默认映射端口为 `8787:8787`。如果服务器外层反向代理使用其它端口，例如 `1143`，请把 `HOSTCTL_PUBLIC_BASE_URL` 写成用户真实访问的完整地址：
-
-```yaml
-HOSTCTL_PUBLIC_BASE_URL: "https://pagepilot.example.com:1143"
-```
+默认映射端口为 `8787:8787`。如果服务器外层反向代理使用其它端口，例如 `1143`，用户用 `https://pagepilot.example.com:1143` 打开时，页面展示、复制和下载说明会直接使用这个当前地址。
 
 镜像构建会把内置用户端和后台产物打进 Go 二进制。源码部署时请确认以下产物来自最新代码：
 
@@ -100,11 +86,11 @@ server {
 }
 ```
 
-如果你使用的是 `https://pagepilot.example.com:1143` 这类带端口地址，浏览器页面会直接使用当前打开地址生成链接；但 `HOSTCTL_PUBLIC_BASE_URL` 作为兜底地址时也建议带相同端口，避免旧客户端或后台任务生成错误地址。
+如果你使用的是 `https://pagepilot.example.com:1143` 这类带端口地址，浏览器页面会直接使用当前打开地址生成链接。请确保反向代理传给后端的 `Host` 或 `X-Forwarded-Host` 也包含外部端口。
 
 应用访问地址默认使用 `/agent/{code}/`。如需让应用使用 `https://{code}.example.com/` 泛域名访问，或在路径模式和泛域名之间切换，请参考 [APP_URL_MODE.md](APP_URL_MODE.md)。外部 Nginx 只需要一条泛域名 `server_name`，不需要为每个应用单独配置。
 
-浏览器页面会把当前 `origin` 传给后端；没有浏览器上下文时，后端会依赖 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto` 判断真实公网域名和协议。反向代理仍建议保留这些头，不要把内网地址写进去。
+浏览器页面会把当前 `origin` 传给后端；普通 HTTP 请求会依赖 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto` 判断真实公网域名和协议。反向代理仍建议保留这些头，不要把内网地址写进去。
 
 ## 常用命令
 
@@ -182,6 +168,6 @@ docker compose up -d
 | 现象 | 检查项 |
 |---|---|
 | 首页可访问但 `/deploy.html` 或 `/screens/` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
-| 二维码或分享链接域名错误 | 新版浏览器页面会把当前 `location.origin` 传给后端；请先确认访问页面本身的域名正确。若来自旧客户端或后台任务，再检查 `HOSTCTL_PUBLIC_BASE_URL`，以及反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。 |
+| 二维码或分享链接域名错误 | 请先确认浏览器当前打开的域名正确；再检查反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，不要把内网地址透传给后端。 |
 | 登录默认管理员失败 | 如果数据库已有用户，默认管理员不会再次创建；请用已有管理员或备份恢复。 |
 | 发布后静态文件丢失 | 检查 `./data/docker/hosted` 是否正确挂载且未被清空。 |

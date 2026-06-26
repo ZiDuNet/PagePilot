@@ -1,11 +1,8 @@
 export interface RuntimeConfig {
-  publicBaseURL?: string;
-  configuredPublicBaseURL?: string;
-  publicURLMode?: "configured" | "request_host";
+  currentBaseURL?: string;
   embedPolicy?: "any" | "self" | "allowlist" | "deny";
   embedAllowOrigins?: string;
   appURL?: {
-    publicBaseURL?: string;
     appURLMode?: "path" | "domain" | "dual";
     appDomainSuffix?: string;
     appURLScheme?: "http" | "https";

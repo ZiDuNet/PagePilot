@@ -48,7 +48,7 @@ build-linux: frontend
 
 # Run a local dev server.
 run: build
-	HOSTCTL_DEV=1 $(SERVER_BIN) --addr 127.0.0.1:8787 --public-url http://localhost:8787
+	HOSTCTL_DEV=1 $(SERVER_BIN) --addr 127.0.0.1:8787
 
 # Run Go tests.
 test:

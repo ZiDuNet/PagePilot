@@ -62,9 +62,7 @@ interface SessionInfo {
 }
 
 interface RuntimeConfig {
-  publicBaseURL?: string;
-  configuredPublicBaseURL?: string;
-  publicURLMode?: "configured" | "request_host";
+  currentBaseURL?: string;
   mode?: string;
   corsAllowOrigins?: string;
   embedPolicy?: "any" | "self" | "allowlist" | "deny";
@@ -223,8 +221,8 @@ const navItems: Array<{ tab: Tab; label: string; icon: React.ReactNode; adminOnl
 ];
 
 function authHeaders(headers: Record<string, string> = {}) {
-  if (typeof location !== "undefined" && !headers["X-Hostctl-Public-Origin"]) {
-    headers["X-Hostctl-Public-Origin"] = location.origin;
+  if (typeof location !== "undefined" && !headers["X-Hostctl-Current-Origin"]) {
+    headers["X-Hostctl-Current-Origin"] = location.origin;
   }
   const token = localStorage.getItem("hostctl-admin-token") || localStorage.getItem("hostctl-token") || "";
   return token && !headers.Authorization ? { ...headers, Authorization: `Bearer ${token}` } : headers;
@@ -482,7 +480,7 @@ function tabSubtitle(tab: Tab, isAdmin: boolean) {
     tokens: "创建永久或临时 Token，供 Skill/MCP/Agent 调用。",
     users: "创建账号、调整额度、停用或删除用户。",
     anonymous: "查看未登录发布产生的网页匿名和 Agent 匿名 session。",
-    config: "调整公网 URL、泛域名访问、上传额度、CORS 和匿名额度。",
+    config: "调整应用泛域名、上传额度、CORS 和匿名额度。",
     skill: "维护 Skill 下载包，并查看 MCP 接入说明。"
   };
   return subtitles[tab];
@@ -1561,8 +1559,6 @@ function AnonymousPanel({ setError }: { setError: (msg: string) => void }) {
 
 function ConfigPanel({ config, onConfig, showToast, setError }: { config: RuntimeConfig | null; onConfig: (cfg: RuntimeConfig) => void; showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [draft, setDraft] = useState({
-    publicBaseURL: "",
-    publicURLMode: "request_host" as "configured" | "request_host",
     appURLMode: "path",
     appDomainSuffix: "",
     appURLScheme: "https",
@@ -1580,8 +1576,6 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
   useEffect(() => {
     if (!config) return;
     setDraft({
-      publicBaseURL: config.configuredPublicBaseURL || config.publicBaseURL || "",
-      publicURLMode: config.publicURLMode || "request_host",
       appURLMode: config.appURL?.appURLMode || "path",
       appDomainSuffix: config.appURL?.appDomainSuffix || "",
       appURLScheme: config.appURL?.appURLScheme || "https",
@@ -1603,8 +1597,6 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          publicBaseURL: draft.publicBaseURL,
-          publicURLMode: draft.publicURLMode,
           appURLMode: draft.appURLMode,
           appDomainSuffix: draft.appDomainSuffix,
           appURLScheme: draft.appURLScheme,
@@ -1626,7 +1618,6 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
     }
   }
 
-  const configuredBaseURLPreview = (draft.publicBaseURL || "https://pagepilot.example.com").replace(/\/+$/, "");
   const requestBaseURLPreview = currentBaseURL();
   const baseURLPreview = requestBaseURLPreview;
   const portText = String(draft.appURLPort || "").trim();
@@ -1636,7 +1627,7 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
   const pathURL = `${baseURLPreview}/agent/${sampleCode}/`;
   const domainURL = `${draft.appURLScheme}://${sampleCode}.${domainSuffix}${portSuffix}/`;
   const modeText = draft.appURLMode === "domain" ? "只生成泛域名链接" : draft.appURLMode === "dual" ? "同时保留路径和泛域名链接" : "默认生成 /agent/{code} 路径链接";
-  const publicURLModeText = "浏览器页面按当前访问域名生成";
+  const mainSiteText = "主站链接跟随当前访问域名，无需配置";
   const embedModeText = draft.embedPolicy === "deny" ? "禁止任何网站 iframe 嵌入应用" : draft.embedPolicy === "self" ? "只允许本站嵌入应用" : draft.embedPolicy === "allowlist" ? "本站和白名单来源可嵌入应用" : "允许任意网站 iframe 嵌入应用";
 
   return (
@@ -1644,7 +1635,7 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
       <div className="panel-head">
         <div>
           <h2>运行设置</h2>
-          <p>这里控制对外链接、Agent/Skill 下载说明、二维码、投屏链接和上传限额。改完后新生成的链接会按这里生效。</p>
+          <p>主站链接会自动跟随当前访问域名；这里主要管理应用泛域名、上传限制、跨域和嵌入策略。</p>
         </div>
       </div>
 
@@ -1652,22 +1643,16 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
         <div className="config-main">
           <section className="config-section">
             <div className="config-section-head">
-              <strong>公网兜底地址</strong>
-              <span>没有浏览器请求上下文时使用</span>
+              <strong>主站访问入口</strong>
+              <span>自动跟随当前浏览器域名</span>
             </div>
-            <label className="field rich-field">
-              <span>Fallback Base URL</span>
-              <input className="mono" value={draft.publicBaseURL} onChange={(event) => setDraft({ ...draft, publicBaseURL: event.target.value })} placeholder="https://pagepilot.example.com" />
-              <em>仅作为无请求上下文时的兜底地址，例如后台任务或旧客户端。浏览器页面、按钮、复制链接、Skill/MCP 文案都会优先使用当前打开页面的域名。</em>
-            </label>
-            <label className="field rich-field">
-              <span>主站链接来源</span>
-              <select value={draft.publicURLMode} onChange={(event) => setDraft({ ...draft, publicURLMode: event.target.value as "configured" | "request_host" })}>
-                <option value="request_host">按当前访问域名生成</option>
-                <option value="configured">仅兜底场景使用 Fallback Base URL</option>
-              </select>
-              <em>推荐保持“按当前访问域名生成”。浏览器页面内部使用相对路径或当前 origin；Agent/Skill 请求会把连接服务器地址传给后端。泛域名应用访问仍由下方独立配置控制。</em>
-            </label>
+            <div className="readonly-callout">
+              <div>
+                <span>当前主站</span>
+                <code>{baseURLPreview}</code>
+              </div>
+              <em>首页、后台、/agents/、/screens/、二维码、Skill/MCP 文案和路径模式 /agent/{"{code}"} 都使用当前打开 PagePilot 的域名或 IP，不需要在后台配置入口地址。</em>
+            </div>
           </section>
 
           <section className="config-section">
@@ -1790,7 +1775,7 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
             <strong>{modeText}</strong>
             <div className="preview-row">
               <small>主站来源</small>
-              <code>{publicURLModeText}</code>
+              <code>{mainSiteText}</code>
             </div>
             <div className="preview-row">
               <small>路径链接</small>
@@ -1808,10 +1793,10 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
           <div className="preview-card muted">
             <span>会被影响</span>
             <ul>
-              <li>浏览器页面按钮和展示优先使用当前域名</li>
-              <li>部署成功后的复制链接会改写到当前域名</li>
-              <li>二维码、Skill 包等无页面上下文场景使用请求来源或兜底地址</li>
-              <li>泛域名应用访问仍由应用链接规则独立控制</li>
+              <li>主站按钮、复制链接、二维码和 Skill/MCP 文案使用当前访问域名</li>
+              <li>路径模式应用地址固定为当前主站下的 /agent/{"{code}"}</li>
+              <li>只有启用泛域名应用访问时，才需要填写应用域名后缀</li>
+              <li>CORS 和 iframe 嵌入策略分别控制 API 跨域和应用被外站嵌入</li>
             </ul>
           </div>
           <button className="button primary full" type="button" onClick={() => void save()}><Save size={16} />保存运行设置</button>

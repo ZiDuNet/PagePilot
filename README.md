@@ -25,7 +25,7 @@ hostctl 是 PagePilot 的静态站点控制平面。它让用户和 AI Agent 都
 
 ```bash
 go build -o bin/hostctl-server ./cmd/hostctl-server
-HOSTCTL_DEV=1 ./bin/hostctl-server --addr 127.0.0.1:8787 --public-url http://127.0.0.1:8787
+HOSTCTL_DEV=1 ./bin/hostctl-server --addr 127.0.0.1:8787
 ```
 
 打开以下地址：
@@ -42,10 +42,10 @@ Docker 快速启动：
 docker compose up -d --build
 ```
 
-浏览器里展示、复制和下载说明默认都会跟随当前打开 PagePilot 的域名；`HOSTCTL_PUBLIC_BASE_URL` 只作为无浏览器上下文时的兜底地址。完整 Docker 说明请见 [deploy/DOCKER.md](deploy/DOCKER.md)。
+主站不需要配置域名。首页、后台、`/agents/`、`/screens/`、二维码、Skill/MCP 文案和 `/agent/{code}/` 路径模式链接都会跟随当前打开 PagePilot 的域名。完整 Docker 说明请见 [deploy/DOCKER.md](deploy/DOCKER.md)。
 应用访问地址默认保持 `/agent/{code}/` 路径模式；如需启用 `https://{code}.example.com/` 泛域名模式，请参考 [deploy/APP_URL_MODE.md](deploy/APP_URL_MODE.md)。
 
-后台“运行设置”里的 Fallback Base URL 只用于后台任务、旧客户端或无请求上下文的场景。首页、`/agents/`、`/screens/`、Skill/MCP 文案、下载包默认 server、二维码和 `/agent/{code}/` 路径模式链接都会优先使用当前访问域名。应用泛域名是独立配置，只影响应用 URL，不会改变主站入口。
+后台“运行设置”只配置应用泛域名、上传限制、CORS、iframe 嵌入和匿名额度。只有启用应用泛域名模式时，才需要填写应用域名后缀；它不会改变主站入口。
 
 Docker 首次启动会在空数据库中自动创建默认管理员：
 
@@ -63,7 +63,6 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
   --addr 127.0.0.1:8787 \
   --hosted-dir /var/www/hosted \
   --db /var/lib/hostctl/hostctl.db \
-  --public-url https://host.example.com \
   --require-auth
 ```
 

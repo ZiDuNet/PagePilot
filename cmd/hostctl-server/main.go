@@ -24,7 +24,6 @@ func main() {
 	flag.StringVar(&cfg.HTTPAddr, "addr", cfg.HTTPAddr, "HTTP listen address")
 	flag.StringVar(&cfg.HostedDir, "hosted-dir", cfg.HostedDir, "static files root directory")
 	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
-	flag.StringVar(&cfg.PublicBaseURL, "public-url", cfg.PublicBaseURL, "public base URL for generated links")
 	dev := flag.Bool("dev", false, "enable dev mode (uses ./data/ for paths)")
 	requireAuth := flag.Bool("require-auth", false, "require Bearer token on all write operations")
 	flag.Parse()
@@ -41,8 +40,6 @@ func main() {
 				cfg.HostedDir = f.Value.String()
 			case "db":
 				cfg.DBPath = f.Value.String()
-			case "public-url":
-				cfg.PublicBaseURL = f.Value.String()
 			}
 		})
 	}
@@ -77,7 +74,7 @@ func main() {
 	}
 	deployer := deploy.New(cfg, st)
 
-	// 启动时从数据库恢复持久化设置（如热修改过的 baseURL）
+	// 启动时从数据库恢复持久化设置。
 	cfg = deployer.LoadPersistedSettings(context.Background())
 
 	// 构造 server

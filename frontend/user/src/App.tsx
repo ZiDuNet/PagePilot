@@ -942,7 +942,7 @@ function AgentsPage({ config }: { config: RuntimeConfig | null }) {
           <Workflow size={16} />MCP
         </button>
       </div>
-      {tab === "skill" ? <SkillGuide config={config} baseURL={baseURL} /> : <MCPGuide config={config} baseURL={baseURL} />}
+      {tab === "skill" ? <SkillGuide baseURL={baseURL} /> : <MCPGuide baseURL={baseURL} />}
       <div className="info-grid">
         <FeatureTile icon={<KeyRound />} title="Token 分两种" desc="默认永久，也可以按 expiresAt/ttlSeconds 创建临时 Token。" />
         <FeatureTile icon={<ShieldCheck />} title="匿名身份按 session" desc="网页匿名用浏览器 cookie；Agent 匿名用本地 session 文件和请求头。" />
@@ -952,8 +952,8 @@ function AgentsPage({ config }: { config: RuntimeConfig | null }) {
   );
 }
 
-function SkillGuide({ config, baseURL }: { config: RuntimeConfig | null; baseURL: string }) {
-  const server = baseURL || config?.publicBaseURL || "https://pagepilot.example.com";
+function SkillGuide({ baseURL }: { baseURL: string }) {
+  const server = baseURL || currentBaseURL();
 
   return (
     <>
@@ -998,8 +998,8 @@ function SkillGuide({ config, baseURL }: { config: RuntimeConfig | null; baseURL
   );
 }
 
-function MCPGuide({ config, baseURL }: { config: RuntimeConfig | null; baseURL: string }) {
-  const server = baseURL || config?.publicBaseURL || "https://pagepilot.example.com";
+function MCPGuide({ baseURL }: { baseURL: string }) {
+  const server = baseURL || currentBaseURL();
 
   return (
     <>

@@ -6,19 +6,17 @@ import "time"
 
 // ConfigResponse 是 GET /api/config 响应。包含可读的运行时配置。
 type ConfigResponse struct {
-	Success                 bool            `json:"success"`
-	PublicBaseURL           string          `json:"publicBaseURL"`
-	ConfiguredPublicBaseURL string          `json:"configuredPublicBaseURL,omitempty"`
-	PublicURLMode           string          `json:"publicURLMode"`
-	AppURL                  AppURLConfig    `json:"appURL"`
-	Mode                    string          `json:"mode"` // "dev" | "prod"
-	CORSAllowOrigins        string          `json:"corsAllowOrigins"`
-	EmbedPolicy             string          `json:"embedPolicy"`
-	EmbedAllowOrigins       string          `json:"embedAllowOrigins,omitempty"`
-	CooldownSeconds         int             `json:"cooldownSeconds"`
-	Limits                  Limits          `json:"limits"`
-	AnonymousPolicy         AnonymousPolicy `json:"anonymousPolicy"`
-	Version                 string          `json:"version"`
+	Success           bool            `json:"success"`
+	CurrentBaseURL    string          `json:"currentBaseURL"`
+	AppURL            AppURLConfig    `json:"appURL"`
+	Mode              string          `json:"mode"` // "dev" | "prod"
+	CORSAllowOrigins  string          `json:"corsAllowOrigins"`
+	EmbedPolicy       string          `json:"embedPolicy"`
+	EmbedAllowOrigins string          `json:"embedAllowOrigins,omitempty"`
+	CooldownSeconds   int             `json:"cooldownSeconds"`
+	Limits            Limits          `json:"limits"`
+	AnonymousPolicy   AnonymousPolicy `json:"anonymousPolicy"`
+	Version           string          `json:"version"`
 }
 
 type AnonymousPolicy struct {
@@ -34,8 +32,6 @@ type Limits struct {
 
 // ConfigUpdateRequest 是 PUT /api/config 请求体。任一非空字段会被更新。
 type ConfigUpdateRequest struct {
-	PublicBaseURL        *string `json:"publicBaseURL,omitempty"`
-	PublicURLMode        *string `json:"publicURLMode,omitempty"`
 	AppURLMode           *string `json:"appURLMode,omitempty"`
 	AppDomainSuffix      *string `json:"appDomainSuffix,omitempty"`
 	AppURLScheme         *string `json:"appURLScheme,omitempty"`
@@ -52,17 +48,15 @@ type ConfigUpdateRequest struct {
 
 // ConfigUpdateResponse 是 PUT /api/config 响应。
 type ConfigUpdateResponse struct {
-	Success                 bool            `json:"success"`
-	PublicBaseURL           string          `json:"publicBaseURL"`
-	ConfiguredPublicBaseURL string          `json:"configuredPublicBaseURL,omitempty"`
-	PublicURLMode           string          `json:"publicURLMode"`
-	AppURL                  AppURLConfig    `json:"appURL"`
-	CORSAllowOrigins        string          `json:"corsAllowOrigins"`
-	EmbedPolicy             string          `json:"embedPolicy"`
-	EmbedAllowOrigins       string          `json:"embedAllowOrigins,omitempty"`
-	CooldownSeconds         int             `json:"cooldownSeconds"`
-	Limits                  Limits          `json:"limits"`
-	AnonymousPolicy         AnonymousPolicy `json:"anonymousPolicy"`
+	Success           bool            `json:"success"`
+	CurrentBaseURL    string          `json:"currentBaseURL"`
+	AppURL            AppURLConfig    `json:"appURL"`
+	CORSAllowOrigins  string          `json:"corsAllowOrigins"`
+	EmbedPolicy       string          `json:"embedPolicy"`
+	EmbedAllowOrigins string          `json:"embedAllowOrigins,omitempty"`
+	CooldownSeconds   int             `json:"cooldownSeconds"`
+	Limits            Limits          `json:"limits"`
+	AnonymousPolicy   AnonymousPolicy `json:"anonymousPolicy"`
 }
 
 // ===== 站点列表（GET /api/admin/sites） =====

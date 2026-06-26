@@ -483,10 +483,9 @@ func newScreenAPITestServer(t *testing.T) (*Server, func()) {
 	cfg := config.Default()
 	cfg.HostedDir = filepath.Join(tmp, "hosted")
 	cfg.DBPath = filepath.Join(tmp, "hostctl.db")
-	cfg.PublicBaseURL = "http://example.test"
 	cfg.CooldownSeconds = 0
 	authSvc := auth.New(st)
-	srv := New(cfg, &screenAPIDeployerStub{st: st, baseURL: cfg.PublicBaseURL}, authSvc, true, log.New(bytes.NewBuffer(nil), "", 0)).
+	srv := New(cfg, &screenAPIDeployerStub{st: st}, authSvc, true, log.New(bytes.NewBuffer(nil), "", 0)).
 		WithVersion("test")
 	return srv, func() {
 		if err := st.Close(); err != nil {
@@ -576,12 +575,7 @@ func seedScreenSite(t *testing.T, srv *Server, code, ownerTokenID string) {
 
 type screenAPIDeployerStub struct {
 	DeployerPort
-	st      *store.SQLiteStore
-	baseURL string
-}
-
-func (s *screenAPIDeployerStub) PublicBaseURL() string {
-	return s.baseURL
+	st *store.SQLiteStore
 }
 
 func (s *screenAPIDeployerStub) CreateScreenPairing(ctx context.Context, pairing store.ScreenPairing) error {

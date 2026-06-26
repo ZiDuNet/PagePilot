@@ -148,12 +148,12 @@ func TestAnonymousDeployWithoutExistingSessionIsTracked(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(DeployRequest{
-		Filename:          "index.html",
-		Title:             "匿名发布记录测试",
-		Description:       "匿名发布记录测试页面",
-		Content:           "<!doctype html><html><head><title>匿名发布记录测试</title></head><body><h1>ok</h1></body></html>",
-		Visibility:        "unlisted",
-		AccessPassword:    "secret123",
+		Filename:       "index.html",
+		Title:          "匿名发布记录测试",
+		Description:    "匿名发布记录测试页面",
+		Content:        "<!doctype html><html><head><title>匿名发布记录测试</title></head><body><h1>ok</h1></body></html>",
+		Visibility:     "unlisted",
+		AccessPassword: "secret123",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -229,10 +229,6 @@ func (s marketplaceDeploysStub) ListMarketplaceDeploys(
 	return s.deploys, len(s.deploys), nil
 }
 
-func (s marketplaceDeploysStub) PublicBaseURL() string {
-	return "http://example.test"
-}
-
 type claimedAnonymousDeployStub struct {
 	DeployerPort
 	deployCalled bool
@@ -293,10 +289,6 @@ func newTrackingAnonymousDeployStub() *trackingAnonymousDeployStub {
 	return &trackingAnonymousDeployStub{
 		sessions: map[string]store.AnonymousSession{},
 	}
-}
-
-func (s *trackingAnonymousDeployStub) PublicBaseURL() string {
-	return "http://example.test"
 }
 
 func (s *trackingAnonymousDeployStub) CreateAnonymousSession(
@@ -408,7 +400,6 @@ func newTokenTestServer(t *testing.T) (*Server, *auth.Service, func()) {
 	cfg := config.Default()
 	cfg.HostedDir = filepath.Join(tmp, "hosted")
 	cfg.DBPath = filepath.Join(tmp, "hostctl.db")
-	cfg.PublicBaseURL = "http://example.test"
 	cfg.CooldownSeconds = 0
 	cfg.AnonymousDeployLimit = 50
 	authSvc := auth.New(st)

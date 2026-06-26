@@ -306,7 +306,7 @@ func toolList() []toolDef {
 		},
 		{
 			Name:        "set_primary_strategy",
-			Description: "切换主域名策略：likes（默认，最高赞版本对外）/ latest（最新版本对外，适合日更项目）。更改 /agent/{code}/ 访问时返回哪个版本。",
+			Description: "切换默认入口版本策略：likes（默认，最高赞版本对外）/ latest（最新版本对外，适合日更项目）。更改 /agent/{code}/ 访问时返回哪个版本。",
 			InputSchema: jsonSchema{
 				Type: "object",
 				Properties: map[string]*schemaProp{

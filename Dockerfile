@@ -55,7 +55,6 @@ WORKDIR /var/lib/hostctl
 ENV HOSTCTL_HTTP_ADDR=0.0.0.0:8787 \
     HOSTCTL_HOSTED_DIR=/var/www/hosted \
     HOSTCTL_DB_PATH=/var/lib/hostctl/hostctl.db \
-    HOSTCTL_PUBLIC_BASE_URL=http://localhost:8787 \
     HOSTCTL_SKILL_DIR=/opt/pagepilot/skill/hostctl-deploy \
     HOSTCTL_COOLDOWN_SECONDS=10 \
     REQUIRE_AUTH=true \
