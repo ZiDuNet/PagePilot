@@ -1577,37 +1577,154 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
     }
   }
 
+  const baseURLPreview = (draft.publicBaseURL || "https://pagepilot.example.com").replace(/\/+$/, "");
+  const portText = String(draft.appURLPort || "").trim();
+  const portSuffix = portText ? `:${portText}` : "";
+  const domainSuffix = String(draft.appDomainSuffix || "apps.example.com").replace(/^\.+/, "");
+  const sampleCode = "demo-app";
+  const pathURL = `${baseURLPreview}/agent/${sampleCode}/`;
+  const domainURL = `${draft.appURLScheme}://${sampleCode}.${domainSuffix}${portSuffix}/`;
+  const modeText = draft.appURLMode === "domain" ? "只生成泛域名链接" : draft.appURLMode === "dual" ? "同时保留路径和泛域名链接" : "默认生成 /agent/{code} 路径链接";
+
   return (
     <section className="panel config-panel">
-      <div className="panel-head"><div><h2>运行设置</h2><p>公网地址、泛域名模式和上传限制会影响首页、二维码、Skill 下载说明和应用链接。</p></div></div>
-      <label className="field"><span>Public Base URL</span><input className="mono" value={draft.publicBaseURL} onChange={(event) => setDraft({ ...draft, publicBaseURL: event.target.value })} placeholder="https://pagepilot.example.com" /></label>
-      <div className="form-grid">
-        <label className="field"><span>应用访问模式</span><select value={draft.appURLMode} onChange={(event) => setDraft({ ...draft, appURLMode: event.target.value })}><option value="path">路径模式 /agent/{"{code}"}</option><option value="domain">泛域名模式 {"{code}"}.domain</option><option value="dual">双模式兼容</option></select></label>
-        <label className="field"><span>域名后缀</span><input className="mono" value={draft.appDomainSuffix} onChange={(event) => setDraft({ ...draft, appDomainSuffix: event.target.value })} placeholder="apps.example.com" /></label>
+      <div className="panel-head">
+        <div>
+          <h2>运行设置</h2>
+          <p>这里控制对外链接、Agent/Skill 下载说明、二维码、投屏链接和上传限额。改完后新生成的链接会按这里生效。</p>
+        </div>
       </div>
-      <div className="form-grid">
-        <label className="field"><span>应用协议</span><select value={draft.appURLScheme} onChange={(event) => setDraft({ ...draft, appURLScheme: event.target.value })}><option value="https">https</option><option value="http">http</option></select></label>
-        <label className="field"><span>应用端口</span><input className="mono" value={draft.appURLPort} onChange={(event) => setDraft({ ...draft, appURLPort: event.target.value })} placeholder="443 / 1143 / 留空" /></label>
+
+      <div className="config-layout">
+        <div className="config-main">
+          <section className="config-section">
+            <div className="config-section-head">
+              <strong>公网访问地址</strong>
+              <span>用户和 Agent 看到的服务器地址</span>
+            </div>
+            <label className="field rich-field">
+              <span>Public Base URL</span>
+              <input className="mono" value={draft.publicBaseURL} onChange={(event) => setDraft({ ...draft, publicBaseURL: event.target.value })} placeholder="https://pagepilot.example.com" />
+              <em>填浏览器实际访问后台/首页的地址，必须包含协议和端口；不要带路径。会影响首页按钮、二维码、Skill 下载文案。</em>
+            </label>
+          </section>
+
+          <section className="config-section">
+            <div className="config-section-head">
+              <strong>应用链接规则</strong>
+              <span>决定发布后的应用 URL 怎么生成</span>
+            </div>
+            <div className="form-grid">
+              <label className="field rich-field">
+                <span>访问模式</span>
+                <select value={draft.appURLMode} onChange={(event) => setDraft({ ...draft, appURLMode: event.target.value })}>
+                  <option value="path">路径模式：/agent/{"{code}"}</option>
+                  <option value="domain">泛域名模式：{"{code}"}.domain</option>
+                  <option value="dual">双模式兼容：路径 + 泛域名</option>
+                </select>
+                <em>没有泛域名 DNS 或反向代理时选路径模式。已经配置泛域名时可以选泛域名或双模式。</em>
+              </label>
+              <label className="field rich-field">
+                <span>泛域名后缀</span>
+                <input className="mono" value={draft.appDomainSuffix} onChange={(event) => setDraft({ ...draft, appDomainSuffix: event.target.value })} placeholder="apps.example.com" />
+                <em>只填域名后缀，不要写协议。例如 apps.example.com，对应 demo-app.apps.example.com。</em>
+              </label>
+            </div>
+            <div className="form-grid">
+              <label className="field rich-field">
+                <span>应用协议</span>
+                <select value={draft.appURLScheme} onChange={(event) => setDraft({ ...draft, appURLScheme: event.target.value })}>
+                  <option value="https">https</option>
+                  <option value="http">http</option>
+                </select>
+                <em>泛域名链接使用的协议。公网生产环境建议 https。</em>
+              </label>
+              <label className="field rich-field">
+                <span>应用端口</span>
+                <input className="mono" value={draft.appURLPort} onChange={(event) => setDraft({ ...draft, appURLPort: event.target.value })} placeholder="留空 / 443 / 1143" />
+                <em>只在泛域名链接需要显式端口时填写。标准 443 通常可以留空；你的 1143 场景可填 1143。</em>
+              </label>
+            </div>
+          </section>
+
+          <section className="config-section">
+            <div className="config-section-head">
+              <strong>发布限额</strong>
+              <span>控制匿名发布、上传大小和滥用防护</span>
+            </div>
+            <div className="form-grid three">
+              <label className="field rich-field">
+                <span>匿名额度</span>
+                <input type="number" min={0} value={draft.anonymousDeployLimit} onChange={(event) => setDraft({ ...draft, anonymousDeployLimit: Number(event.target.value) })} />
+                <em>未登录网页或匿名 Agent 最多可发布次数；注册用户不受这个匿名额度影响。</em>
+              </label>
+              <label className="field rich-field">
+                <span>部署冷却秒</span>
+                <input type="number" min={0} value={draft.cooldownSeconds} onChange={(event) => setDraft({ ...draft, cooldownSeconds: Number(event.target.value) })} />
+                <em>两次发布之间的最短间隔，用于防刷。</em>
+              </label>
+              <label className="field rich-field">
+                <span>文件数上限</span>
+                <input type="number" min={1} value={draft.maxFiles} onChange={(event) => setDraft({ ...draft, maxFiles: Number(event.target.value) })} />
+                <em>多文件静态站点单次最多上传多少个文件。</em>
+              </label>
+            </div>
+            <div className="form-grid">
+              <label className="field rich-field">
+                <span>单文件上限 MB</span>
+                <input type="number" min={0.1} step={0.1} value={draft.maxSingleMB} onChange={(event) => setDraft({ ...draft, maxSingleMB: Number(event.target.value) })} />
+                <em>限制单个 HTML、JS、CSS、图片等文件大小。</em>
+              </label>
+              <label className="field rich-field">
+                <span>整站上限 MB</span>
+                <input type="number" min={0.1} step={0.1} value={draft.maxTotalMB} onChange={(event) => setDraft({ ...draft, maxTotalMB: Number(event.target.value) })} />
+                <em>限制一次发布的所有文件总大小。</em>
+              </label>
+            </div>
+          </section>
+
+          <section className="config-section">
+            <div className="config-section-head">
+              <strong>跨域白名单</strong>
+              <span>给外部网站调用 PagePilot API 时才需要</span>
+            </div>
+            <label className="field rich-field">
+              <span>CORS 允许来源</span>
+              <textarea
+                value={draft.cors}
+                onChange={(event) => setDraft({ ...draft, cors: event.target.value })}
+                placeholder={"留空表示不开放跨域 API\nhttps://studio.example.com\nhttps://admin.example.com"}
+              />
+              <em>只填写可信网页来源，多个来源可用换行或逗号分隔。不建议使用 *，避免开放过宽。</em>
+            </label>
+          </section>
+        </div>
+
+        <aside className="config-preview">
+          <div className="preview-card">
+            <span>当前链接策略</span>
+            <strong>{modeText}</strong>
+            <div className="preview-row">
+              <small>路径链接</small>
+              <code>{pathURL}</code>
+            </div>
+            <div className="preview-row">
+              <small>泛域名链接</small>
+              <code>{domainURL}</code>
+            </div>
+          </div>
+          <div className="preview-card muted">
+            <span>会被影响</span>
+            <ul>
+              <li>首页应用打开链接</li>
+              <li>部署成功后的返回 URL</li>
+              <li>二维码和屏幕投放地址</li>
+              <li>Skill 下载说明和 Agent 文案</li>
+            </ul>
+          </div>
+          <button className="button primary full" type="button" onClick={() => void save()}><Save size={16} />保存运行设置</button>
+        </aside>
       </div>
-      <div className="form-grid three">
-        <label className="field"><span>匿名额度</span><input type="number" value={draft.anonymousDeployLimit} onChange={(event) => setDraft({ ...draft, anonymousDeployLimit: Number(event.target.value) })} /></label>
-        <label className="field"><span>部署冷却秒</span><input type="number" value={draft.cooldownSeconds} onChange={(event) => setDraft({ ...draft, cooldownSeconds: Number(event.target.value) })} /></label>
-        <label className="field"><span>文件数上限</span><input type="number" value={draft.maxFiles} onChange={(event) => setDraft({ ...draft, maxFiles: Number(event.target.value) })} /></label>
-      </div>
-      <div className="form-grid">
-        <label className="field"><span>单文件上限 MB</span><input type="number" value={draft.maxSingleMB} onChange={(event) => setDraft({ ...draft, maxSingleMB: Number(event.target.value) })} /></label>
-        <label className="field"><span>整站上限 MB</span><input type="number" value={draft.maxTotalMB} onChange={(event) => setDraft({ ...draft, maxTotalMB: Number(event.target.value) })} /></label>
-      </div>
-      <label className="field">
-        <span>CORS 允许来源</span>
-        <textarea
-          value={draft.cors}
-          onChange={(event) => setDraft({ ...draft, cors: event.target.value })}
-          placeholder="留空关闭；多个来源用逗号或换行分隔"
-        />
-        <div className="hint">只有确实需要给其他网页前端跨域调用 API 时才填写白名单，不建议使用 *。</div>
-      </label>
-      <button className="button primary" type="button" onClick={() => void save()}><Save size={16} />保存设置</button>
     </section>
   );
 }
