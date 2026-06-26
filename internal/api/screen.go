@@ -306,7 +306,7 @@ func (s *Server) handleDeviceManifest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
-	resp, apiErr := s.screenManifest(r.Context(), screen)
+	resp, apiErr := s.screenManifest(r.Context(), screen, r)
 	if apiErr != nil {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
@@ -361,10 +361,10 @@ func (s *Server) authenticateDevice(r *http.Request) (store.Screen, *APIError) {
 	return screen, nil
 }
 
-func (s *Server) screenManifest(ctx context.Context, screen store.Screen) (ScreenManifestResponse, *APIError) {
+func (s *Server) screenManifest(ctx context.Context, screen store.Screen, r *http.Request) (ScreenManifestResponse, *APIError) {
 	now := time.Now().UTC()
-	base := s.publicBaseURL()
-	appURLs := s.appURLConfig()
+	base := s.effectivePublicBaseURL(r)
+	appURLs := s.appURLConfigForRequest(r)
 	resp := ScreenManifestResponse{
 		Success:       true,
 		ScreenID:      screen.ID,

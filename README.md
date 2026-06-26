@@ -45,6 +45,8 @@ docker compose up -d --build
 部署前请把 `docker-compose.yml` 中的 `HOSTCTL_PUBLIC_BASE_URL` 改成用户真实访问地址。完整 Docker 说明请见 [deploy/DOCKER.md](deploy/DOCKER.md)。
 应用访问地址默认保持 `/agent/{code}/` 路径模式；如需启用 `https://{code}.example.com/` 泛域名模式，请参考 [deploy/APP_URL_MODE.md](deploy/APP_URL_MODE.md)。
 
+后台“运行设置”可以选择主站链接来源：固定使用 `Public Base URL`，或按当前访问域名生成首页、Skill/MCP、OpenAPI、二维码和 `/agent/{code}/` 路径模式链接。应用泛域名是独立配置，只影响应用 URL，不会改变主站入口。
+
 Docker 首次启动会在空数据库中自动创建默认管理员：
 
 - 用户名：`admin`
@@ -130,6 +132,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 屏幕配对码是 5 分钟一次性短码，只用于首次绑定，不是长期权限。
 - 内置页面 `/deploy.html`、`/api-docs.html`、`/agents/`、`/screens/` 由 Go 服务内嵌返回；反向代理应把这些路径原样转发给 PagePilot。
 - 如果前面有 Nginx、宝塔或负载均衡，必须为 `/api/device/ws` 转发 WebSocket Upgrade 头，否则后台刷新、截图、休眠等指令会退化为不可实时或连接失败。
+- CORS 白名单只控制外部网页用 `fetch` / XHR 调用 PagePilot API，不控制 iframe。应用是否允许被外部网站嵌入由后台“运行设置 -> 跨域与嵌入 -> iframe 嵌入”控制，支持任意、仅本站、白名单和禁止嵌入，底层会写入托管应用响应的 CSP `frame-ancestors`。
 
 ## 手动部署与多文件站点
 

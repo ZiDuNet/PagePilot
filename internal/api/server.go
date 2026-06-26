@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -59,10 +60,12 @@ type DeployerPort interface {
 	SetSiteVisibility(ctx context.Context, code, visibility string) error
 	PublicBaseURL() string
 	SetPublicBaseURL(ctx context.Context, baseURL string) error
+	SetPublicURLMode(ctx context.Context, mode string) error
 	SetAnonymousDeployLimit(ctx context.Context, n int) error
 	SetCooldownSeconds(ctx context.Context, n int) error
 	SetUploadLimits(ctx context.Context, singleFileBytes, siteTotalBytes int64, filesPerSite int) error
 	SetCORSAllowOrigins(ctx context.Context, origins string) error
+	SetEmbedPolicy(ctx context.Context, policy, allowOrigins string) error
 	CreateAnonymousSession(ctx context.Context, id string) (store.AnonymousSession, error)
 	GetAnonymousSession(ctx context.Context, id string) (store.AnonymousSession, error)
 	UpdateAnonymousSessionMeta(ctx context.Context, id, agentID, agentLabel, deviceIP, userAgent string) error
@@ -158,6 +161,61 @@ func (s *Server) publicBaseURL() string {
 	return base
 }
 
+func (s *Server) effectivePublicBaseURL(r *http.Request) string {
+	configured := s.publicBaseURL()
+	if r == nil || config.NormalizePublicURLMode(s.cfg.PublicURLMode) != "request_host" {
+		return configured
+	}
+	if base := publicBaseURLFromRequest(r); base != "" {
+		return base
+	}
+	return configured
+}
+
+func publicBaseURLFromRequest(r *http.Request) string {
+	host := forwardedHost(r)
+	if host == "" {
+		return ""
+	}
+	if strings.ContainsAny(host, "/?#") {
+		return ""
+	}
+	scheme := requestScheme(r)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func requestScheme(r *http.Request) string {
+	if proto := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+		return strings.ToLower(proto)
+	}
+	if forwarded := r.Header.Get("Forwarded"); forwarded != "" {
+		for _, part := range strings.Split(forwarded, ";") {
+			key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+			if ok && strings.EqualFold(strings.TrimSpace(key), "proto") {
+				return strings.ToLower(strings.Trim(strings.TrimSpace(value), `"`))
+			}
+		}
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	if r.URL != nil && r.URL.Scheme != "" {
+		return strings.ToLower(r.URL.Scheme)
+	}
+	return "http"
+}
+
+func firstForwardedValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.Split(value, ",")[0])
+}
+
 func (s *Server) appURLConfig() AppURLConfig {
 	if p, ok := s.deployer.(appURLConfigProvider); ok {
 		cfg := p.AppURLConfig()
@@ -168,7 +226,56 @@ func (s *Server) appURLConfig() AppURLConfig {
 	return NewAppURLConfig(s.cfg)
 }
 
+func (s *Server) appURLConfigForRequest(r *http.Request) AppURLConfig {
+	cfg := s.appURLConfig()
+	if base := s.effectivePublicBaseURL(r); base != "" {
+		cfg.PublicBaseURL = base
+	}
+	return cfg
+}
+
 // WithVersion 设置服务端版本号（用于 /api/config 响应）。
+func (s *Server) rewriteDeployResponseURLs(r *http.Request, resp *DeployResponse) {
+	if resp == nil || strings.TrimSpace(resp.Code) == "" {
+		return
+	}
+	appURLs := s.appURLConfigForRequest(r)
+	version := int64(resp.VersionNumber)
+	resp.URL = appURLs.PrimaryAppURL(resp.Code, nil)
+	resp.DetailURL = resp.URL
+	if version > 0 {
+		resp.VersionURL = appURLs.PrimaryAppURL(resp.Code, &version)
+	}
+	resp.QRCode = generateQRCodeDataURL(resp.URL)
+	if resp.AgentGuideURL != "" {
+		resp.AgentGuideURL = strings.TrimRight(s.effectivePublicBaseURL(r), "/") + "/api-docs.html"
+	}
+}
+
+func (s *Server) versionCreatedResponseForRequest(r *http.Request, resp *DeployResponse) VersionCreatedResponse {
+	s.rewriteDeployResponseURLs(r, resp)
+	return VersionCreatedResponse{
+		Success:                true,
+		Code:                   resp.Code,
+		VersionID:              resp.VersionID,
+		VersionNumber:          resp.VersionNumber,
+		URL:                    resp.URL,
+		DetailURL:              resp.DetailURL,
+		VersionURL:             resp.VersionURL,
+		CurrentVersionID:       resp.CurrentVersionID,
+		PreserveHint:           resp.PreserveHint,
+		PrimaryVersionStrategy: resp.PrimaryVersionStrategy,
+	}
+}
+
+func generateQRCodeDataURL(text string) string {
+	png, err := qrcode.Encode(text, qrcode.Medium, 256)
+	if err != nil {
+		return ""
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+}
+
 func (s *Server) WithVersion(v string) *Server { s.version = v; return s }
 
 // routes 注册路由。使用 Go 1.22 {name} 模式做路径参数。
@@ -486,6 +593,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			s.logger.Printf("failed to increment user deploy count %s: %v", userID, err)
 		}
 	}
+	s.rewriteDeployResponseURLs(r, resp)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -739,7 +847,7 @@ func (s *Server) handleListMarketplace(w http.ResponseWriter, r *http.Request) {
 	actor, isAdmin := s.marketplaceActor(r)
 	out := make([]marketplaceDeployResponse, 0, len(deploys))
 	for _, d := range deploys {
-		out = append(out, s.toMarketplaceResponse(d, actor, isAdmin))
+		out = append(out, s.toMarketplaceResponse(r, d, actor, isAdmin))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -776,7 +884,7 @@ func (s *Server) handleGetMarketplaceDeploy(w http.ResponseWriter, r *http.Reque
 	}
 
 	actor, isAdmin := s.marketplaceActor(r)
-	writeJSON(w, http.StatusOK, s.toMarketplaceResponse(d, actor, isAdmin))
+	writeJSON(w, http.StatusOK, s.toMarketplaceResponse(r, d, actor, isAdmin))
 }
 
 // handleLikeDeploy 处理 POST /api/deploys/{code}/like —— 公开点赞。
@@ -822,9 +930,9 @@ func (s *Server) marketplaceActor(r *http.Request) (string, bool) {
 	return actor, isAdmin
 }
 
-func (s *Server) toMarketplaceResponse(d store.MarketplaceDeploy, actor string, isAdmin bool) marketplaceDeployResponse {
-	base := s.publicBaseURL()
-	appURLs := s.appURLConfig()
+func (s *Server) toMarketplaceResponse(r *http.Request, d store.MarketplaceDeploy, actor string, isAdmin bool) marketplaceDeployResponse {
+	base := s.effectivePublicBaseURL(r)
+	appURLs := s.appURLConfigForRequest(r)
 	var currentVerID, primaryVerID *string
 	if d.CurrentVersionID != "" {
 		v := d.CurrentVersionID
@@ -885,7 +993,7 @@ func (s *Server) handleQRCode(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	png, err := qrcode.Encode(s.appURLConfig().PrimaryAppURL(code, nil), qrcode.Medium, 256)
+	png, err := qrcode.Encode(s.appURLConfigForRequest(r).PrimaryAppURL(code, nil), qrcode.Medium, 256)
 	if err != nil {
 		writeError(w, NewError(CodeInternal, "qr", err.Error()))
 		return
@@ -1272,6 +1380,7 @@ func (s *Server) handlePatchVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	s.rewriteDeployResponseURLs(r, resp)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1921,7 +2030,7 @@ func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	base := s.publicBaseURL()
+	base := s.effectivePublicBaseURL(r)
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy-skill.zip"`)
 	zw := zip.NewWriter(w)
@@ -1960,6 +2069,7 @@ func injectSkillServerURL(rel string, data []byte, base string) []byte {
 	switch rel {
 	case "SKILL.md":
 		text = strings.ReplaceAll(text, "If unset, the script uses `http://localhost:8787`.", "If unset, the script uses `"+base+"`.")
+		text = strings.ReplaceAll(text, "If unset, the script uses `https://pagepilot.dell.4dbim.cc:1143`.", "If unset, the script uses `"+base+"`.")
 		text = strings.ReplaceAll(text, "python skill/hostctl-deploy/scripts/hostctl_deploy.py --server http://127.0.0.1:8787 doctor", "python skill/hostctl-deploy/scripts/hostctl_deploy.py doctor")
 	case "scripts/hostctl_deploy.py":
 		text = strings.ReplaceAll(text, `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "http://localhost:8787")`, `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "`+base+`")`)
@@ -2346,13 +2456,18 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuth {
 		mode = "dev"
 	}
+	publicBase := s.effectivePublicBaseURL(r)
 	writeJSON(w, http.StatusOK, ConfigResponse{
-		Success:          true,
-		PublicBaseURL:    s.publicBaseURL(),
-		AppURL:           s.appURLConfig(),
-		Mode:             mode,
-		CORSAllowOrigins: s.cfg.CORSAllowOrigins,
-		CooldownSeconds:  s.cfg.CooldownSeconds,
+		Success:                 true,
+		PublicBaseURL:           publicBase,
+		ConfiguredPublicBaseURL: s.publicBaseURL(),
+		PublicURLMode:           config.NormalizePublicURLMode(s.cfg.PublicURLMode),
+		AppURL:                  s.appURLConfigForRequest(r),
+		Mode:                    mode,
+		CORSAllowOrigins:        s.cfg.CORSAllowOrigins,
+		EmbedPolicy:             config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy),
+		EmbedAllowOrigins:       s.cfg.EmbedAllowOrigins,
+		CooldownSeconds:         s.cfg.CooldownSeconds,
 		Limits: Limits{
 			MaxSingleFileBytes: s.cfg.MaxSingleFileBytes,
 			MaxSiteTotalBytes:  s.cfg.MaxSiteTotalBytes,
@@ -2432,6 +2547,15 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.logger.Printf("publicBaseURL updated to %s", v)
+	}
+	if req.PublicURLMode != nil {
+		mode := config.NormalizePublicURLMode(*req.PublicURLMode)
+		if err := s.deployer.SetPublicURLMode(r.Context(), mode); err != nil {
+			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
+				fmt.Sprintf("failed to persist public URL mode: %v", err)), reqID))
+			return
+		}
+		s.cfg.PublicURLMode = mode
 	}
 	if req.AppURLMode != nil || req.AppDomainSuffix != nil || req.AppURLScheme != nil || req.AppURLPort != nil {
 		next := s.appURLConfig()
@@ -2552,12 +2676,44 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		s.cfg.CORSAllowOrigins = origins
 	}
+	if req.EmbedPolicy != nil || req.EmbedAllowOrigins != nil {
+		policy := config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy)
+		origins := s.cfg.EmbedAllowOrigins
+		if req.EmbedPolicy != nil {
+			policy = config.NormalizeEmbedPolicy(*req.EmbedPolicy)
+		}
+		if req.EmbedAllowOrigins != nil {
+			origins = config.NormalizeOriginList(*req.EmbedAllowOrigins)
+		}
+		if policy == "allowlist" && strings.TrimSpace(origins) == "" {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
+				"embedAllowOrigins is required when embedPolicy is allowlist"), reqID))
+			return
+		}
+		if origins != "" && !corsOriginsLookValid(origins) {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
+				"embedAllowOrigins must be empty or a comma/newline separated list of http(s) origins"), reqID))
+			return
+		}
+		if err := s.deployer.SetEmbedPolicy(r.Context(), policy, origins); err != nil {
+			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
+				fmt.Sprintf("failed to persist embed policy: %v", err)), reqID))
+			return
+		}
+		s.cfg.EmbedPolicy = policy
+		s.cfg.EmbedAllowOrigins = origins
+	}
+	publicBase := s.effectivePublicBaseURL(r)
 	writeJSON(w, http.StatusOK, ConfigUpdateResponse{
-		Success:          true,
-		PublicBaseURL:    s.publicBaseURL(),
-		AppURL:           s.appURLConfig(),
-		CORSAllowOrigins: s.cfg.CORSAllowOrigins,
-		CooldownSeconds:  s.cfg.CooldownSeconds,
+		Success:                 true,
+		PublicBaseURL:           publicBase,
+		ConfiguredPublicBaseURL: s.publicBaseURL(),
+		PublicURLMode:           config.NormalizePublicURLMode(s.cfg.PublicURLMode),
+		AppURL:                  s.appURLConfigForRequest(r),
+		CORSAllowOrigins:        s.cfg.CORSAllowOrigins,
+		EmbedPolicy:             config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy),
+		EmbedAllowOrigins:       s.cfg.EmbedAllowOrigins,
+		CooldownSeconds:         s.cfg.CooldownSeconds,
 		Limits: Limits{
 			MaxSingleFileBytes: s.cfg.MaxSingleFileBytes,
 			MaxSiteTotalBytes:  s.cfg.MaxSiteTotalBytes,
@@ -3013,18 +3169,7 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 	}
 
 	// 响应用 VersionCreatedResponse 结构（OpenAPI 对齐）
-	writeJSON(w, http.StatusOK, VersionCreatedResponse{
-		Success:                true,
-		Code:                   resp.Code,
-		VersionID:              resp.VersionID,
-		VersionNumber:          resp.VersionNumber,
-		URL:                    resp.URL,
-		DetailURL:              resp.DetailURL,
-		VersionURL:             resp.VersionURL,
-		CurrentVersionID:       resp.CurrentVersionID,
-		PreserveHint:           resp.PreserveHint,
-		PrimaryVersionStrategy: resp.PrimaryVersionStrategy,
-	})
+	writeJSON(w, http.StatusOK, s.versionCreatedResponseForRequest(r, resp))
 }
 
 // extractCodeFromURL 从类似 https://host/foo 或 https://host/agent/foo 的 URL 提取 code。
@@ -3177,7 +3322,7 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 }
 
 func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, sub, absFull, routePrefix string) {
-	setHostedContentSecurityHeaders(w)
+	s.setHostedContentSecurityHeaders(w)
 	setHostedContentCORSHeaders(w, r)
 	lowerSub := strings.ToLower(sub)
 	if !strings.HasSuffix(lowerSub, ".html") && !strings.HasSuffix(lowerSub, ".htm") {
@@ -3193,14 +3338,40 @@ func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, sub, ab
 	http.ServeContent(w, r, filepath.Base(absFull), fileModTime(absFull), strings.NewReader(injectHostedHTMLCompat(body, routePrefix)))
 }
 
-func setHostedContentSecurityHeaders(w http.ResponseWriter) {
-	w.Header().Set("Content-Security-Policy",
-		"sandbox allow-scripts allow-forms allow-popups allow-downloads; "+
-			"default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; "+
-			"img-src * data: blob:; media-src * data: blob:; font-src * data:; "+
-			"connect-src *; frame-src *; child-src *")
+func (s *Server) setHostedContentSecurityHeaders(w http.ResponseWriter) {
+	csp := "sandbox allow-scripts allow-forms allow-popups allow-downloads; " +
+		"default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; " +
+		"img-src * data: blob:; media-src * data: blob:; font-src * data:; " +
+		"connect-src *; frame-src *; child-src *"
+	if frameAncestors := s.frameAncestorsDirective(); frameAncestors != "" {
+		csp += "; " + frameAncestors
+	}
+	w.Header().Set("Content-Security-Policy", csp)
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+}
+
+func (s *Server) frameAncestorsDirective() string {
+	switch config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy) {
+	case "deny":
+		return "frame-ancestors 'none'"
+	case "self":
+		return "frame-ancestors 'self'"
+	case "allowlist":
+		origins := strings.FieldsFunc(s.cfg.EmbedAllowOrigins, func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+		})
+		items := []string{"'self'"}
+		for _, origin := range origins {
+			origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+			if origin != "" && baseURLLooksValid(origin) {
+				items = append(items, origin)
+			}
+		}
+		return "frame-ancestors " + strings.Join(items, " ")
+	default:
+		return ""
+	}
 }
 
 func setHostedContentCORSHeaders(w http.ResponseWriter, r *http.Request) {

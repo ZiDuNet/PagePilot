@@ -89,6 +89,60 @@ func TestAppServeAllowsSandboxedSameAppFetch(t *testing.T) {
 	}
 }
 
+func TestAppServeEmbedPolicyAddsFrameAncestors(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.cfg.EmbedPolicy = "allowlist"
+	srv.cfg.EmbedAllowOrigins = "https://portal.example.com"
+	srv.deployer = &appServeDeployerStub{
+		site: store.Site{Code: "demo"},
+	}
+	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "index.html"), []byte("<p>demo</p>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/demo/", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	csp := rr.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "frame-ancestors 'self' https://portal.example.com") {
+		t.Fatalf("CSP = %q, want configured frame-ancestors", csp)
+	}
+}
+
+func TestAppServeEmbedPolicyDenyAddsFrameAncestorsNone(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.cfg.EmbedPolicy = "deny"
+	srv.deployer = &appServeDeployerStub{
+		site: store.Site{Code: "demo"},
+	}
+	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "index.html"), []byte("<p>demo</p>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/demo/", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	csp := rr.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "frame-ancestors 'none'") {
+		t.Fatalf("CSP = %q, want frame-ancestors none", csp)
+	}
+}
+
 func TestAppServeRedirectsLegacyVersionQuery(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()

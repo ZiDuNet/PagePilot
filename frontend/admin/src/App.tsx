@@ -63,8 +63,12 @@ interface SessionInfo {
 
 interface RuntimeConfig {
   publicBaseURL?: string;
+  configuredPublicBaseURL?: string;
+  publicURLMode?: "configured" | "request_host";
   mode?: string;
   corsAllowOrigins?: string;
+  embedPolicy?: "any" | "self" | "allowlist" | "deny";
+  embedAllowOrigins?: string;
   cooldownSeconds?: number;
   version?: string;
   appURL?: {
@@ -1522,6 +1526,7 @@ function AnonymousPanel({ setError }: { setError: (msg: string) => void }) {
 function ConfigPanel({ config, onConfig, showToast, setError }: { config: RuntimeConfig | null; onConfig: (cfg: RuntimeConfig) => void; showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [draft, setDraft] = useState({
     publicBaseURL: "",
+    publicURLMode: "configured" as "configured" | "request_host",
     appURLMode: "path",
     appDomainSuffix: "",
     appURLScheme: "https",
@@ -1531,13 +1536,16 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
     maxSingleMB: 1,
     maxTotalMB: 10,
     maxFiles: 100,
-    cors: ""
+    cors: "",
+    embedPolicy: "any" as "any" | "self" | "allowlist" | "deny",
+    embedAllowOrigins: ""
   });
 
   useEffect(() => {
     if (!config) return;
     setDraft({
-      publicBaseURL: config.publicBaseURL || "",
+      publicBaseURL: config.configuredPublicBaseURL || config.publicBaseURL || "",
+      publicURLMode: config.publicURLMode || "configured",
       appURLMode: config.appURL?.appURLMode || "path",
       appDomainSuffix: config.appURL?.appDomainSuffix || "",
       appURLScheme: config.appURL?.appURLScheme || "https",
@@ -1547,7 +1555,9 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
       maxSingleMB: Number(((config.limits?.maxSingleFileBytes || 0) / 1024 / 1024).toFixed(2)),
       maxTotalMB: Number(((config.limits?.maxSiteTotalBytes || 0) / 1024 / 1024).toFixed(2)),
       maxFiles: config.limits?.maxFilesPerSite || 100,
-      cors: config.corsAllowOrigins || ""
+      cors: config.corsAllowOrigins || "",
+      embedPolicy: config.embedPolicy || "any",
+      embedAllowOrigins: config.embedAllowOrigins || ""
     });
   }, [config]);
 
@@ -1558,6 +1568,7 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           publicBaseURL: draft.publicBaseURL,
+          publicURLMode: draft.publicURLMode,
           appURLMode: draft.appURLMode,
           appDomainSuffix: draft.appDomainSuffix,
           appURLScheme: draft.appURLScheme,
@@ -1567,7 +1578,9 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
           maxSingleFileBytes: Math.round(Number(draft.maxSingleMB) * 1024 * 1024),
           maxSiteTotalBytes: Math.round(Number(draft.maxTotalMB) * 1024 * 1024),
           maxFilesPerSite: Number(draft.maxFiles),
-          corsAllowOrigins: draft.cors
+          corsAllowOrigins: draft.cors,
+          embedPolicy: draft.embedPolicy,
+          embedAllowOrigins: draft.embedAllowOrigins
         })
       });
       onConfig(data);
@@ -1577,7 +1590,9 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
     }
   }
 
-  const baseURLPreview = (draft.publicBaseURL || "https://pagepilot.example.com").replace(/\/+$/, "");
+  const configuredBaseURLPreview = (draft.publicBaseURL || "https://pagepilot.example.com").replace(/\/+$/, "");
+  const requestBaseURLPreview = (typeof location !== "undefined" ? location.origin : "https://current.example.com").replace(/\/+$/, "");
+  const baseURLPreview = draft.publicURLMode === "request_host" ? requestBaseURLPreview : configuredBaseURLPreview;
   const portText = String(draft.appURLPort || "").trim();
   const portSuffix = portText ? `:${portText}` : "";
   const domainSuffix = String(draft.appDomainSuffix || "apps.example.com").replace(/^\.+/, "");
@@ -1585,6 +1600,8 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
   const pathURL = `${baseURLPreview}/agent/${sampleCode}/`;
   const domainURL = `${draft.appURLScheme}://${sampleCode}.${domainSuffix}${portSuffix}/`;
   const modeText = draft.appURLMode === "domain" ? "只生成泛域名链接" : draft.appURLMode === "dual" ? "同时保留路径和泛域名链接" : "默认生成 /agent/{code} 路径链接";
+  const publicURLModeText = draft.publicURLMode === "request_host" ? "按当前访问域名生成主站链接" : "固定使用 Public Base URL";
+  const embedModeText = draft.embedPolicy === "deny" ? "禁止任何网站 iframe 嵌入应用" : draft.embedPolicy === "self" ? "只允许本站嵌入应用" : draft.embedPolicy === "allowlist" ? "本站和白名单来源可嵌入应用" : "允许任意网站 iframe 嵌入应用";
 
   return (
     <section className="panel config-panel">
@@ -1606,6 +1623,14 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
               <span>Public Base URL</span>
               <input className="mono" value={draft.publicBaseURL} onChange={(event) => setDraft({ ...draft, publicBaseURL: event.target.value })} placeholder="https://pagepilot.example.com" />
               <em>填浏览器实际访问后台/首页的地址，必须包含协议和端口；不要带路径。会影响首页按钮、二维码、Skill 下载文案。</em>
+            </label>
+            <label className="field rich-field">
+              <span>主站链接来源</span>
+              <select value={draft.publicURLMode} onChange={(event) => setDraft({ ...draft, publicURLMode: event.target.value as "configured" | "request_host" })}>
+                <option value="configured">固定使用 Public Base URL</option>
+                <option value="request_host">按当前访问域名生成</option>
+              </select>
+              <em>选择“按当前访问域名”后，首页、Skill/MCP、OpenAPI、二维码和 /agent 路径模式会跟随浏览器实际访问域名；泛域名应用访问仍由下方独立配置控制。请确认前面是可信反向代理，并正确传递 Host / X-Forwarded-Host。</em>
             </label>
           </section>
 
@@ -1685,8 +1710,31 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
 
           <section className="config-section">
             <div className="config-section-head">
-              <strong>跨域白名单</strong>
-              <span>给外部网站调用 PagePilot API 时才需要</span>
+              <strong>跨域与嵌入</strong>
+              <span>CORS 管 API，iframe 管应用嵌入</span>
+            </div>
+            <div className="embed-policy-inline">
+              <label className="field rich-field">
+                <span>iframe 嵌入</span>
+                <select value={draft.embedPolicy} onChange={(event) => setDraft({ ...draft, embedPolicy: event.target.value as "any" | "self" | "allowlist" | "deny" })}>
+                  <option value="any">允许任意网站嵌入</option>
+                  <option value="self">只允许本站嵌入</option>
+                  <option value="allowlist">本站 + 白名单来源</option>
+                  <option value="deny">禁止被任何网站嵌入</option>
+                </select>
+                <em>控制外部网站是否能 iframe 嵌入应用 URL；它会写入应用内容的 CSP frame-ancestors，和 CORS 不是一回事。</em>
+              </label>
+              {draft.embedPolicy === "allowlist" && (
+                <label className="field rich-field">
+                  <span>允许嵌入来源</span>
+                  <textarea
+                    value={draft.embedAllowOrigins}
+                    onChange={(event) => setDraft({ ...draft, embedAllowOrigins: event.target.value })}
+                    placeholder={"https://portal.example.com\nhttps://display.example.com"}
+                  />
+                  <em>必须包含 http(s) 协议，不要带路径；多个来源可换行或逗号分隔。</em>
+                </label>
+              )}
             </div>
             <label className="field rich-field">
               <span>CORS 允许来源</span>
@@ -1695,7 +1743,7 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
                 onChange={(event) => setDraft({ ...draft, cors: event.target.value })}
                 placeholder={"留空表示不开放跨域 API\nhttps://studio.example.com\nhttps://admin.example.com"}
               />
-              <em>只填写可信网页来源，多个来源可用换行或逗号分隔。不建议使用 *，避免开放过宽。</em>
+              <em>只在外部网站需要用 fetch/XHR 调 PagePilot API 时填写；iframe 嵌入应用 URL 请使用上面的嵌入策略。</em>
             </label>
           </section>
         </div>
@@ -1705,12 +1753,20 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
             <span>当前链接策略</span>
             <strong>{modeText}</strong>
             <div className="preview-row">
+              <small>主站来源</small>
+              <code>{publicURLModeText}</code>
+            </div>
+            <div className="preview-row">
               <small>路径链接</small>
               <code>{pathURL}</code>
             </div>
             <div className="preview-row">
               <small>泛域名链接</small>
               <code>{domainURL}</code>
+            </div>
+            <div className="preview-row">
+              <small>iframe 嵌入</small>
+              <code>{embedModeText}</code>
             </div>
           </div>
           <div className="preview-card muted">

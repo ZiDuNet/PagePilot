@@ -9,15 +9,18 @@ import (
 
 // Config is the hostctl-server runtime configuration.
 type Config struct {
-	HTTPAddr         string
-	HostedDir        string
-	DBPath           string
-	PublicBaseURL    string
-	AppURLMode       string
-	AppDomainSuffix  string
-	AppURLScheme     string
-	AppURLPort       string
-	CORSAllowOrigins string
+	HTTPAddr          string
+	HostedDir         string
+	DBPath            string
+	PublicBaseURL     string
+	PublicURLMode     string
+	AppURLMode        string
+	AppDomainSuffix   string
+	AppURLScheme      string
+	AppURLPort        string
+	CORSAllowOrigins  string
+	EmbedPolicy       string
+	EmbedAllowOrigins string
 
 	MaxSingleFileBytes int64
 	MaxSiteTotalBytes  int64
@@ -37,9 +40,11 @@ func Default() Config {
 		HostedDir:            "/var/www/hosted",
 		DBPath:               "/var/lib/hostctl/hostctl.db",
 		PublicBaseURL:        "http://localhost:8787",
+		PublicURLMode:        "configured",
 		AppURLMode:           "path",
 		AppURLScheme:         "https",
 		CORSAllowOrigins:     "",
+		EmbedPolicy:          "any",
 		MaxSingleFileBytes:   1 << 20,
 		MaxSiteTotalBytes:    10 << 20,
 		MaxFilesPerSite:      100,
@@ -59,6 +64,9 @@ func Default() Config {
 	if v := os.Getenv("HOSTCTL_PUBLIC_BASE_URL"); v != "" {
 		c.PublicBaseURL = v
 	}
+	if v := os.Getenv("HOSTCTL_PUBLIC_URL_MODE"); v != "" {
+		c.PublicURLMode = NormalizePublicURLMode(v)
+	}
 	if v := os.Getenv("HOSTCTL_APP_URL_MODE"); v != "" {
 		c.AppURLMode = v
 	}
@@ -73,6 +81,12 @@ func Default() Config {
 	}
 	if v := os.Getenv("HOSTCTL_CORS_ALLOW_ORIGINS"); v != "" {
 		c.CORSAllowOrigins = v
+	}
+	if v := os.Getenv("HOSTCTL_EMBED_POLICY"); v != "" {
+		c.EmbedPolicy = NormalizeEmbedPolicy(v)
+	}
+	if v := os.Getenv("HOSTCTL_EMBED_ALLOW_ORIGINS"); v != "" {
+		c.EmbedAllowOrigins = v
 	}
 	if v := os.Getenv("HOSTCTL_MAX_SINGLE_FILE_BYTES"); v != "" {
 		var n int64
@@ -119,6 +133,9 @@ func Default() Config {
 	if v := os.Getenv("PUBLIC_BASE_URL"); v != "" {
 		c.PublicBaseURL = v
 	}
+	if v := os.Getenv("PUBLIC_URL_MODE"); v != "" {
+		c.PublicURLMode = NormalizePublicURLMode(v)
+	}
 	if v := os.Getenv("APP_URL_MODE"); v != "" {
 		c.AppURLMode = v
 	}
@@ -133,6 +150,12 @@ func Default() Config {
 	}
 	if v := os.Getenv("CORS_ALLOW_ORIGINS"); v != "" {
 		c.CORSAllowOrigins = v
+	}
+	if v := os.Getenv("EMBED_POLICY"); v != "" {
+		c.EmbedPolicy = NormalizeEmbedPolicy(v)
+	}
+	if v := os.Getenv("EMBED_ALLOW_ORIGINS"); v != "" {
+		c.EmbedAllowOrigins = v
 	}
 	if v := os.Getenv("MAX_SINGLE_FILE_BYTES"); v != "" {
 		var n int64
@@ -177,6 +200,8 @@ func Default() Config {
 	}
 
 	c.CORSAllowOrigins = NormalizeCORSAllowOrigins(c.CORSAllowOrigins)
+	c.EmbedPolicy = NormalizeEmbedPolicy(c.EmbedPolicy)
+	c.EmbedAllowOrigins = NormalizeOriginList(c.EmbedAllowOrigins)
 
 	if os.Getenv("HOSTCTL_DEV") == "1" {
 		if c.HostedDir == "/var/www/hosted" {
@@ -207,6 +232,11 @@ func (c Config) Validate() error {
 	if c.PublicBaseURL == "" {
 		return fmt.Errorf("PublicBaseURL is empty")
 	}
+	switch c.PublicURLMode {
+	case "", "configured", "request_host":
+	default:
+		return fmt.Errorf("PublicURLMode must be configured or request_host")
+	}
 	switch c.AppURLMode {
 	case "", "path", "domain", "dual":
 	default:
@@ -216,6 +246,11 @@ func (c Config) Validate() error {
 	case "", "http", "https":
 	default:
 		return fmt.Errorf("AppURLScheme must be http or https")
+	}
+	switch c.EmbedPolicy {
+	case "", "any", "self", "allowlist", "deny":
+	default:
+		return fmt.Errorf("EmbedPolicy must be any, self, allowlist, or deny")
 	}
 	if c.MaxSingleFileBytes <= 0 {
 		return fmt.Errorf("MaxSingleFileBytes must be positive")
@@ -235,6 +270,30 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// NormalizePublicURLMode 规范化主站对外链接来源。
+func NormalizePublicURLMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "request_host", "request", "host", "current":
+		return "request_host"
+	default:
+		return "configured"
+	}
+}
+
+// NormalizeEmbedPolicy 规范化应用 iframe 嵌入策略。
+func NormalizeEmbedPolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "deny", "none", "block", "disabled":
+		return "deny"
+	case "self", "same-origin":
+		return "self"
+	case "allowlist", "allow_list", "origins":
+		return "allowlist"
+	default:
+		return "any"
+	}
+}
+
 // NormalizeCORSAllowOrigins 规范化 CORS 白名单配置。
 // 当前版本默认关闭 CORS；星号通配符会被视为关闭。
 func NormalizeCORSAllowOrigins(origins string) string {
@@ -242,5 +301,20 @@ func NormalizeCORSAllowOrigins(origins string) string {
 	if origins == "*" {
 		return ""
 	}
-	return origins
+	return NormalizeOriginList(origins)
+}
+
+// NormalizeOriginList 规范化 http(s) origin 列表，保留逗号分隔形式。
+func NormalizeOriginList(origins string) string {
+	fields := strings.FieldsFunc(origins, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+	out := make([]string, 0, len(fields))
+	for _, item := range fields {
+		item = strings.TrimRight(strings.TrimSpace(item), "/")
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return strings.Join(out, ", ")
 }

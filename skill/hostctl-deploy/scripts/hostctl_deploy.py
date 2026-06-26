@@ -640,6 +640,86 @@ def cmd_screen_list(args) -> int:
     return print_result(status, data)
 
 
+def screen_orientation(screen: dict) -> str:
+    info = screen.get("deviceInfo") if isinstance(screen, dict) else {}
+    if not isinstance(info, dict):
+        info = {}
+    raw = str(info.get("orientation") or screen.get("orientation") or "").strip().lower()
+    if raw in {"landscape", "horizontal", "横屏"}:
+        return "landscape"
+    if raw in {"portrait", "vertical", "竖屏"}:
+        return "portrait"
+    width = info.get("screenWidthPx", info.get("width"))
+    height = info.get("screenHeightPx", info.get("height"))
+    try:
+        w = float(width)
+        h = float(height)
+    except (TypeError, ValueError):
+        return ""
+    if w > h:
+        return "landscape"
+    if h > w:
+        return "portrait"
+    return ""
+
+
+def screen_resolution(screen: dict) -> str:
+    info = screen.get("deviceInfo") if isinstance(screen, dict) else {}
+    if not isinstance(info, dict):
+        info = {}
+    width = info.get("screenWidthPx", info.get("width"))
+    height = info.get("screenHeightPx", info.get("height"))
+    if width and height:
+        return f"{width}x{height}"
+    return str(info.get("resolution") or "").strip()
+
+
+def orientation_check_result(screen: dict, expected: str) -> tuple[bool, str]:
+    expected = (expected or "any").strip().lower()
+    if expected in {"", "any"}:
+        return True, ""
+    actual = screen_orientation(screen)
+    if not actual:
+        return True, "Target screen did not report orientation; cannot validate expected orientation."
+    if actual == expected:
+        return True, ""
+    name = screen.get("name") or screen.get("id") or "target screen"
+    resolution = screen_resolution(screen)
+    suffix = f" ({resolution})" if resolution else ""
+    return False, (
+        f"Orientation mismatch: app is expected to be {expected}, but screen "
+        f"{name} is {actual}{suffix}. Confirm the layout or pass --force-orientation."
+    )
+
+
+def load_target_screen(base: str, token: str, screen_id: str) -> dict:
+    status, data = request_json(base, token, "/api/screens")
+    if not (200 <= status < 300):
+        die("Could not inspect target screen before publishing: " +
+            json.dumps({"httpStatus": status, **data}, ensure_ascii=False))
+    for item in data.get("screens", []):
+        if str(item.get("id") or "") == screen_id:
+            return item
+    die(f"Target screen not found or not owned by current user: {screen_id}")
+    return {}
+
+
+def ensure_screen_orientation(args, base: str, token: str) -> None:
+    expected = str(getattr(args, "expected_orientation", "any") or "any").strip().lower()
+    if expected in {"", "any"}:
+        return
+    screen = load_target_screen(base, token, args.screen)
+    ok, message = orientation_check_result(screen, expected)
+    if ok:
+        if message:
+            print(message, file=sys.stderr)
+        return
+    if getattr(args, "force_orientation", False):
+        print(message + " Continuing because --force-orientation was provided.", file=sys.stderr)
+        return
+    die(message)
+
+
 def cmd_screen_bind(args) -> int:
     token = registered_token(args, "screen bind")
     payload = {"pairingCode": args.pairing_code}
@@ -652,6 +732,7 @@ def cmd_screen_bind(args) -> int:
 def cmd_screen_publish(args) -> int:
     token = registered_token(args, "screen publish")
     base = server_url(args)
+    ensure_screen_orientation(args, base, token)
     code = args.app or ""
     if args.source:
         if not args.description:
@@ -902,6 +983,13 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--visibility", choices=["public", "unlisted"], default="", help="Visibility for --source deploy")
     ps.add_argument("--access-password", default="", help="Optional visit password for --source deploy")
     ps.add_argument("--version-number", type=int, help="Optional version number for an existing app")
+    ps.add_argument(
+        "--expected-orientation",
+        choices=["any", "portrait", "landscape"],
+        default="any",
+        help="Expected app layout direction; blocks mismatched target screens unless --force-orientation is set",
+    )
+    ps.add_argument("--force-orientation", action="store_true", help="Publish even if expected orientation does not match the target screen")
     ps.set_defaults(func=cmd_screen_publish)
     ps = screen_sub.add_parser("screenshot", help="Request a device screenshot and optionally save the returned image")
     ps.add_argument("screen")

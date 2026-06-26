@@ -18,6 +18,14 @@
 HOSTCTL_PUBLIC_BASE_URL: "https://pagepilot.example.com"
 ```
 
+如果希望同一套服务能通过多个主站域名访问，可以在后台“运行设置”把“主站链接来源”切到“按当前访问域名生成”，或通过环境变量设置：
+
+```yaml
+HOSTCTL_PUBLIC_URL_MODE: "request_host"
+```
+
+这种模式会让首页、Skill/MCP、OpenAPI、二维码和 `/agent/{code}/` 路径模式链接跟随当前请求域名；`HOSTCTL_PUBLIC_BASE_URL` 仍然作为默认值和兜底值保留。应用泛域名配置仍然独立，不受这个开关影响。
+
 然后启动：
 
 ```bash
@@ -85,6 +93,7 @@ server {
     location / {
         proxy_pass http://127.0.0.1:8787;
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
@@ -94,6 +103,8 @@ server {
 如果你使用的是 `https://pagepilot.example.com:1143` 这类带端口地址，`HOSTCTL_PUBLIC_BASE_URL` 也必须带相同端口，否则二维码、应用详情页和 Skill 下载链接会生成错误地址。
 
 应用访问地址默认使用 `/agent/{code}/`。如需让应用使用 `https://{code}.example.com/` 泛域名访问，或在路径模式和泛域名之间切换，请参考 [APP_URL_MODE.md](APP_URL_MODE.md)。外部 Nginx 只需要一条泛域名 `server_name`，不需要为每个应用单独配置。
+
+如果启用了“按当前访问域名生成”，反向代理必须保留 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，否则 PagePilot 无法判断真实公网域名和协议。不要把内网地址写进这些头。
 
 ## 常用命令
 
@@ -163,6 +174,7 @@ docker compose up -d
 - Token 明文只返回一次，请使用密码管理器或 CI Secret 保存。
 - 访问密码仅保护前台查看入口。匿名用户也可以输入访问密码查看加密站点；输入正确后浏览器获得 5 分钟访问票据，改密码后旧票据立即失效。
 - 用户上传的 HTML/JS 会以托管应用形式运行。路径模式默认加 CSP sandbox，建议生产环境使用泛域名模式隔离用户上传脚本，详见 [APP_URL_MODE.md](APP_URL_MODE.md)。
+- CORS 只控制外部网页跨域调用 API，不控制 iframe 嵌入。是否允许其它网站嵌入应用 URL，请在后台“运行设置 -> 跨域与嵌入”配置 iframe 嵌入策略；可选任意、仅本站、白名单或禁止嵌入。白名单来源必须写完整 `http(s)://域名[:端口]`，不要带路径。
 - 不要把 `./data/docker/hostctl/hostctl.db`、`./data/docker/hosted` 或备份包提交到 Git。
 
 ## 排障
@@ -170,6 +182,6 @@ docker compose up -d
 | 现象 | 检查项 |
 |---|---|
 | 首页可访问但 `/deploy.html` 或 `/screens/` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
-| 二维码或分享链接域名错误 | 检查 `HOSTCTL_PUBLIC_BASE_URL` 是否为用户真实访问地址。 |
+| 二维码或分享链接域名错误 | 检查 `HOSTCTL_PUBLIC_BASE_URL` 是否为用户真实访问地址；若启用 `HOSTCTL_PUBLIC_URL_MODE=request_host`，同时检查反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。 |
 | 登录默认管理员失败 | 如果数据库已有用户，默认管理员不会再次创建；请用已有管理员或备份恢复。 |
 | 发布后静态文件丢失 | 检查 `./data/docker/hosted` 是否正确挂载且未被清空。 |

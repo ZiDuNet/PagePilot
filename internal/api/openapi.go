@@ -3,7 +3,7 @@ package api
 import "net/http"
 
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
-	base := s.publicBaseURL()
+	base := s.effectivePublicBaseURL(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
@@ -512,7 +512,9 @@ func openAPISchemas() map[string]any {
 		"SetCurrentRequest":      map[string]any{"type": "object", "properties": map[string]any{"versionNumber": intSchema, "versionId": str}},
 		"PrimaryStrategyRequest": map[string]any{"type": "object", "properties": map[string]any{"primaryVersionStrategy": map[string]any{"type": "string", "enum": []string{"likes", "latest"}}}},
 		"ConfigResponse": map[string]any{"type": "object", "properties": map[string]any{
-			"success": boolSchema, "publicBaseURL": str, "mode": str, "corsAllowOrigins": str, "cooldownSeconds": intSchema,
+			"success": boolSchema, "publicBaseURL": str, "configuredPublicBaseURL": str,
+			"publicURLMode": str, "mode": str, "corsAllowOrigins": str,
+			"embedPolicy": str, "embedAllowOrigins": str, "cooldownSeconds": intSchema,
 			"appURL": map[string]any{"$ref": "#/components/schemas/AppURLConfig"},
 			"limits": map[string]any{"$ref": "#/components/schemas/Limits"}, "anonymousPolicy": map[string]any{"$ref": "#/components/schemas/AnonymousPolicy"}, "version": str,
 		}},
@@ -541,12 +543,15 @@ func openAPISchemas() map[string]any {
 			}}},
 		}},
 		"ConfigUpdateRequest": map[string]any{"type": "object", "properties": map[string]any{
-			"publicBaseURL": str, "appURLMode": str, "appDomainSuffix": str, "appURLScheme": str, "appURLPort": str,
+			"publicBaseURL": str, "publicURLMode": str, "appURLMode": str, "appDomainSuffix": str, "appURLScheme": str, "appURLPort": str,
 			"anonymousDeployLimit": intSchema, "cooldownSeconds": intSchema,
 			"maxSingleFileBytes": intSchema, "maxSiteTotalBytes": intSchema, "maxFilesPerSite": intSchema, "corsAllowOrigins": str,
+			"embedPolicy": str, "embedAllowOrigins": str,
 		}},
 		"ConfigUpdateResponse": map[string]any{"type": "object", "properties": map[string]any{
-			"success": boolSchema, "publicBaseURL": str, "appURL": map[string]any{"$ref": "#/components/schemas/AppURLConfig"}, "corsAllowOrigins": str, "cooldownSeconds": intSchema,
+			"success": boolSchema, "publicBaseURL": str, "configuredPublicBaseURL": str,
+			"publicURLMode": str, "appURL": map[string]any{"$ref": "#/components/schemas/AppURLConfig"},
+			"corsAllowOrigins": str, "embedPolicy": str, "embedAllowOrigins": str, "cooldownSeconds": intSchema,
 			"limits": map[string]any{"$ref": "#/components/schemas/Limits"}, "anonymousPolicy": map[string]any{"$ref": "#/components/schemas/AnonymousPolicy"},
 		}},
 		"AdminSessionResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "mode": str, "tokenId": str, "label": str, "userId": str, "username": str, "isAdmin": boolSchema}},

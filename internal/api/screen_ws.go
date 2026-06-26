@@ -157,7 +157,7 @@ func (s *Server) sendScreenWSManifest(ctx context.Context, screenID string) erro
 	if err != nil {
 		return err
 	}
-	manifest, apiErr := s.screenManifest(ctx, screen)
+	manifest, apiErr := s.screenManifest(ctx, screen, nil)
 	if apiErr != nil {
 		return errors.New(apiErr.Detail)
 	}

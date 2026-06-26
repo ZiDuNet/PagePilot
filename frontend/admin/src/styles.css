@@ -522,6 +522,11 @@ td small { color: var(--muted); }
   font-style: normal;
   line-height: 1.55;
 }
+.embed-policy-inline {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+}
 .config-preview {
   position: sticky;
   top: 86px;

@@ -768,6 +768,15 @@ func (d *Deployer) SetPublicBaseURL(ctx context.Context, baseURL string) error {
 	return nil
 }
 
+func (d *Deployer) SetPublicURLMode(ctx context.Context, mode string) error {
+	mode = config.NormalizePublicURLMode(mode)
+	if err := d.store.SetSetting(ctx, "public_url_mode", mode); err != nil {
+		return fmt.Errorf("persist public URL mode: %w", err)
+	}
+	d.cfg.PublicURLMode = mode
+	return nil
+}
+
 func (d *Deployer) SetAppURLConfig(ctx context.Context, cfg api.AppURLConfig) error {
 	if err := d.store.SetSetting(ctx, "app_url_mode", api.NormalizeAppURLModeForConfig(cfg.AppURLMode)); err != nil {
 		return fmt.Errorf("persist app url mode: %w", err)
@@ -830,6 +839,20 @@ func (d *Deployer) SetCORSAllowOrigins(ctx context.Context, origins string) erro
 	return nil
 }
 
+func (d *Deployer) SetEmbedPolicy(ctx context.Context, policy, allowOrigins string) error {
+	policy = config.NormalizeEmbedPolicy(policy)
+	allowOrigins = config.NormalizeOriginList(allowOrigins)
+	if err := d.store.SetSetting(ctx, "embed_policy", policy); err != nil {
+		return fmt.Errorf("persist embed policy: %w", err)
+	}
+	if err := d.store.SetSetting(ctx, "embed_allow_origins", allowOrigins); err != nil {
+		return fmt.Errorf("persist embed allow origins: %w", err)
+	}
+	d.cfg.EmbedPolicy = policy
+	d.cfg.EmbedAllowOrigins = allowOrigins
+	return nil
+}
+
 func sanitizeSiteTitle(title string) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -846,6 +869,9 @@ func sanitizeSiteTitle(title string) string {
 func (d *Deployer) LoadPersistedSettings(ctx context.Context) config.Config {
 	if v, err := d.store.GetSetting(ctx, "public_base_url"); err == nil && v != "" {
 		d.cfg.PublicBaseURL = v
+	}
+	if v, err := d.store.GetSetting(ctx, "public_url_mode"); err == nil && v != "" {
+		d.cfg.PublicURLMode = config.NormalizePublicURLMode(v)
 	}
 	if v, err := d.store.GetSetting(ctx, "app_url_mode"); err == nil && v != "" {
 		d.cfg.AppURLMode = api.NormalizeAppURLModeForConfig(v)
@@ -887,6 +913,12 @@ func (d *Deployer) LoadPersistedSettings(ctx context.Context) config.Config {
 	}
 	if v, err := d.store.GetSetting(ctx, "cors_allow_origins"); err == nil && v != "" {
 		d.cfg.CORSAllowOrigins = config.NormalizeCORSAllowOrigins(v)
+	}
+	if v, err := d.store.GetSetting(ctx, "embed_policy"); err == nil && v != "" {
+		d.cfg.EmbedPolicy = config.NormalizeEmbedPolicy(v)
+	}
+	if v, err := d.store.GetSetting(ctx, "embed_allow_origins"); err == nil {
+		d.cfg.EmbedAllowOrigins = config.NormalizeOriginList(v)
 	}
 	return d.cfg
 }
