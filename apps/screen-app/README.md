@@ -11,6 +11,7 @@
 - 投放到屏幕的是播放 manifest 和 App URL，不是直接下发裸 HTML 字符串。
 - 屏幕端使用 X5 WebView 播放，低版本 Android 兼容到 `minSdk 21`。
 - 屏幕端使用 WebSocket 接收实时控制指令，HTTP manifest 和 heartbeat 负责初始化、在线状态和兜底。
+- APP 的服务器地址由屏幕端本地保存，官方服务器只是默认选项；切换到私有服务器后，后续绑定、manifest 和 WebSocket 都使用该服务器。
 
 ## 身份与权限
 
@@ -86,6 +87,8 @@ POST /api/device/command/ack
 
 `/api/device/ws` 是屏幕控制主通道。连接成功后服务端会先推送一份 manifest，之后后台、Skill 或 MCP 下发投屏、刷新、截图、休眠等操作时会立即推送到该连接。截图图片本身仍通过 `POST /api/device/screenshot` 回传，避免大图占用 WebSocket 控制通道。
 
+manifest 中的应用 URL 由 PagePilot 服务端生成。路径模式会跟随服务端当前入口，泛域名模式会使用后台配置的应用域名后缀。屏幕 APP 只加载 manifest 里的 URL，不自行拼接 `/agent/{code}/` 或泛域名。
+
 如果 PagePilot 部署在 Nginx、宝塔或其他反向代理后面，必须转发 WebSocket Upgrade 头。例如：
 
 ```nginx
@@ -108,6 +111,8 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py screen wake screen_xxx
 python skill/hostctl-deploy/scripts/hostctl_deploy.py screen shutdown screen_xxx
 python skill/hostctl-deploy/scripts/hostctl_deploy.py screen unbind screen_xxx
 ```
+
+`--server` 表示 Skill/MCP 连接 PagePilot 控制面的入口。生产环境应使用屏幕和用户都能访问的公网地址；如果使用内网地址，路径模式下返回给屏幕的 App URL 也可能是内网地址。
 
 `shutdown` 是软关机或黑屏待机。真实断电、开机自启、定时开关机通常依赖设备厂商能力、系统权限或 Device Owner/MDM 配置，不能假设所有硬件都支持。
 

@@ -1,5 +1,9 @@
-# SQL maintenance directory
+# SQL 维护目录
 
-Put manual SQLite maintenance, backup, or migration SQL files here when operating a Docker deployment.
+Docker 部署示例会把本目录挂载到容器内的 `/var/lib/hostctl/sql`，用于放置人工维护、备份或迁移时临时使用的 SQLite SQL 文件。
 
-The compose example mounts this directory path at `/var/lib/hostctl/sql` inside the container.
+建议约定：
+
+- 只提交可复用的维护脚本或迁移说明。
+- 不要提交真实数据库、导出的业务数据、备份包或包含 Token/密码的 SQL。
+- 正式升级应优先依赖程序内置迁移；这里主要用于人工排障和一次性维护。

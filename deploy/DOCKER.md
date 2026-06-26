@@ -16,6 +16,8 @@ PagePilot 不需要配置入口域名。浏览器访问时，首页、后台、`
 
 如果同一套服务通过多个入口访问，PagePilot 会按用户实际打开的入口生成链接。外层反向代理建议透传 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。
 
+Skill、MCP 和 CLI 不读取所谓“主站域名配置”。它们使用 `--server`、`HOSTCTL_SERVER` 或客户端保存的服务器地址作为 API 控制面入口，并把这个入口交给后端用于路径模式 URL 生成。发布成功后的 URL 仍以后端响应为准。
+
 然后启动：
 
 ```bash
@@ -29,6 +31,7 @@ docker compose logs -f hostctl
 
 - 用户端 React：`frontend/user` 构建到 `internal/web/user/app`。
 - 后台 React：`frontend/admin` 构建到 `internal/web/admin/app`。
+- 内置 Skill 包：`internal/web/skill/hostctl-deploy.zip`，由 `skill/hostctl-deploy` 重新打包得到。
 - `/admin`、`/deploy.html`、`/api-docs.html`、`/agents/`、`/screens/` 都应由 PagePilot 服务自身返回。
 
 ## 首次管理员
@@ -91,6 +94,8 @@ server {
 应用访问地址默认使用 `/agent/{code}/`。如需让应用使用 `https://{code}.example.com/` 泛域名访问，或在路径模式和泛域名之间切换，请参考 [APP_URL_MODE.md](APP_URL_MODE.md)。外部 Nginx 只需要一条泛域名 `server_name`，不需要为每个应用单独配置。
 
 浏览器页面会把当前 `origin` 传给后端；普通 HTTP 请求会依赖 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto` 判断真实公网域名和协议。反向代理仍建议保留这些头，不要把内网地址写进去。
+
+后台“Skill & MCP”页只维护下载包，不提供源码编辑。需要调整 Skill 时，请在仓库或本地修改 `skill/hostctl-deploy`，打包成 `hostctl-deploy.zip` 后在后台上传。上传包保存在数据目录下，优先级高于服务端内置包；删除或缺失上传包时会回退到内置包。
 
 ## 常用命令
 
@@ -168,6 +173,8 @@ docker compose up -d
 | 现象 | 检查项 |
 |---|---|
 | 首页可访问但 `/deploy.html` 或 `/screens/` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
+| `/skill/hostctl-deploy.zip` 404 | 确认镜像包含 `internal/web/skill/hostctl-deploy.zip`，并已重新构建；正常情况下没有后台上传包也会返回内置默认包。 |
 | 二维码或分享链接域名错误 | 请先确认浏览器当前打开的域名正确；再检查反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，不要把内网地址透传给后端。 |
+| Skill/MCP 发布后返回内网链接 | 检查 `--server` 或 `HOSTCTL_SERVER` 是否使用了内网地址。路径模式下要返回公网链接，就让 Skill/MCP 用公网入口调用 PagePilot。 |
 | 登录默认管理员失败 | 如果数据库已有用户，默认管理员不会再次创建；请用已有管理员或备份恢复。 |
 | 发布后静态文件丢失 | 检查 `./data/docker/hosted` 是否正确挂载且未被清空。 |

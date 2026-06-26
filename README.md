@@ -19,6 +19,7 @@ hostctl 是 PagePilot 的静态站点控制平面。它让用户和 AI Agent 都
 - 匿名部署配额、用户所有的 Agent Token，以及按用户的部署上限。
 - 硬件屏幕绑定与投放：注册用户可以绑定多个广告屏，屏幕端 APP 通过 X5 WebView 播放 PagePilot 应用。
 - 元数据存储使用 SQLite，静态资源托管在文件系统上。
+- Skill 下载包默认内置在服务端二进制中，后台可上传 `hostctl-deploy.zip` 覆盖；后台不再直接编辑 Skill 源文件。
 - 提供 Docker、Caddy 和 systemd 的生产环境模板。
 
 ## 快速开始
@@ -42,10 +43,12 @@ Docker 快速启动：
 docker compose up -d --build
 ```
 
-主站不需要配置域名。首页、后台、`/agents/`、`/screens/`、二维码、Skill/MCP 文案和 `/agent/{code}/` 路径模式链接都会跟随当前打开 PagePilot 的域名。完整 Docker 说明请见 [deploy/DOCKER.md](deploy/DOCKER.md)。
+主站不需要配置域名。首页、后台、`/agents/`、`/screens/`、二维码、Skill/MCP 文案和 `/agent/{code}/` 路径模式链接都会跟随当前打开 PagePilot 的域名。Skill、MCP 和 CLI 调用接口时，应把 `--server` / `HOSTCTL_SERVER` 设置为希望返回给用户的 PagePilot 入口。完整 Docker 说明请见 [deploy/DOCKER.md](deploy/DOCKER.md)。
 应用访问地址默认保持 `/agent/{code}/` 路径模式；如需启用 `https://{code}.example.com/` 泛域名模式，请参考 [deploy/APP_URL_MODE.md](deploy/APP_URL_MODE.md)。
 
 后台“运行设置”只配置应用泛域名、上传限制、CORS、iframe 嵌入和匿名额度。只有启用应用泛域名模式时，才需要填写应用域名后缀；它不会改变主站入口。
+
+发布接口返回的 `url`、`detailUrl` 和 `versionUrl` 是最终权威结果。路径模式下它们按当前访问入口或 `--server` 生成；泛域名模式下它们按后台配置的应用域名后缀、协议和端口生成。Skill、MCP、CLI 不应该自行拼最终应用 URL。
 
 Docker 首次启动会在空数据库中自动创建默认管理员：
 
@@ -123,6 +126,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 用户注册 / 登录或使用 Bearer Token 后，可以调用 `/api/session/claim` 认领当前匿名 session。认领后该 session 已发布的站点会迁移到 `user:{userId}`，一个用户可以认领多个匿名 session。
 - Token 必须归属到用户。创建 Token 时默认永久有效，也可传 `expiresAt` 或 `ttlSeconds` 创建临时 Token。
 - 管理员控制台、令牌管理、配置写入以及整站删除都需要管理员权限（`isAdmin=true`）。
+- 后台“Skill & MCP”只维护固定下载包。默认内置包会保证 `/skill/hostctl-deploy.zip` 不返回 404；管理员上传 ZIP 后会覆盖内置包。源码修改应在仓库或本地完成并重新打包，不能在后台直接编辑。
 - 公共市场、点赞、静态页面以及内容读取保持公开。
 - 首页应用商城保留点赞排行；管理员置顶会优先于所有排序，置顶分组内部仍按当前选择的排序（如 `likes_desc`）排列。
 - 访问密码输入入口保持公开，匿名访客也可以输入密码查看加密站点；验证通过后浏览器获得 5 分钟签名访问票据，站点改密码后旧票据立即失效。
@@ -181,7 +185,7 @@ bin/hostctl admin pin-site my-landing --unpin
 
 ## Agent 技能
 
-内置技能位于 [skill/hostctl-deploy/SKILL.md](skill/hostctl-deploy/SKILL.md)。它的 Python 包装器仅依赖标准库，可以脱离 Go CLI 单独运行：
+内置技能位于 [skill/hostctl-deploy/SKILL.md](skill/hostctl-deploy/SKILL.md)。它的 Python 包装器仅依赖标准库，可以脱离 Go CLI 单独运行。后台和用户端说明里的下载地址固定为 `/skill/hostctl-deploy.zip`，服务端优先返回后台上传的 ZIP，没有上传包时返回内置默认包。
 
 ```bash
 python skill/hostctl-deploy/scripts/hostctl_deploy.py doctor --server http://127.0.0.1:8787
@@ -193,6 +197,8 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 python skill/hostctl-deploy/scripts/hostctl_deploy.py admin sites
 python skill/hostctl-deploy/scripts/hostctl_deploy.py admin pin-site my-landing
 ```
+
+`--server` 或 `HOSTCTL_SERVER` 表示本次 Agent 调用 PagePilot API 的入口地址，不是全局主站配置。路径模式发布成功后，接口返回的应用链接会使用这个入口；如果要把公网链接交给用户，就用公网地址作为 `--server`。泛域名模式的应用链接由后台“运行设置 -> 应用链接规则”决定，和 `--server` 只用于调用控制面入口的职责分开。
 
 屏幕投放命令仅支持注册用户 Token：
 
@@ -209,6 +215,8 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py screen shutdown screen_xxx
 ```
 
 本项目还在 `cmd/hostctl-mcp` 提供了 MCP 服务器，供偏好通过 stdio 走 JSON-RPC 的工具使用。MCP 支持部署、访问密码、匿名认领、管理员置顶，以及 `list_screens`、`bind_screen`、`publish_screen`、`request_screen_screenshot`、`send_screen_command`、`unbind_screen` 等屏幕工具。
+
+MCP 使用 `HOSTCTL_SERVER` 作为控制面入口，并把它发送给后端用于路径模式 URL 生成。反向代理部署时，如果 MCP 使用内网地址连接 PagePilot，路径模式返回值也会偏向内网地址；生产环境建议让 MCP 使用用户可访问的公网入口。
 
 对已有项目，Agent 应在原 code 上追加版本，而不是创建新的访问地址。技能会把 `source -> code` 记在 `~/.hostctl/projects.json`；如果没有记录的 code，Agent 在部署更新前应向用户索要原始 code 或 URL。
 
@@ -279,6 +287,7 @@ internal/
   deploy/           部署 / 版本逻辑
   store/            SQLite 存储
   web/              内嵌的用户与管理界面
+  web/skill/        内置 Skill ZIP 下载包
 deploy/             Caddy / systemd 生产模板
   DOCKER.md         Docker 部署、升级、备份与排障
 skill/              hostctl-deploy agent 技能

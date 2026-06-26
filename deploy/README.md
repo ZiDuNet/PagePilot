@@ -15,6 +15,8 @@ docker compose up -d --build
 
 主站不需要配置域名。浏览器页面会按当前打开域名生成首页、后台、Skill/MCP、二维码和路径模式应用链接；反向代理只需要透传 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。
 
+Skill、MCP 和 CLI 通过 `--server`、`HOSTCTL_SERVER` 或客户端保存的服务器地址连接 PagePilot。这个地址只表示本次 API 控制面入口；路径模式下发布成功返回的应用链接会按该入口生成，泛域名模式下应用链接按后台配置的应用域名生成。
+
 首次启动会在空数据库中自动创建默认管理员：
 
 ```yaml
@@ -41,7 +43,8 @@ Docker 默认把这些目录挂载到宿主机的 `./data/docker/` 下：
 
 - 用户端 React 工程位于 `frontend/user`，构建产物为 `internal/web/user/app`。
 - 后台 React 工程位于 `frontend/admin`，构建产物为 `internal/web/admin/app`。
-- Go 服务通过 `embed` 打包这些产物，所以源码方式发布二进制前需要先构建前端。
+- 内置 Skill 下载包位于 `internal/web/skill/hostctl-deploy.zip`，用于保证新部署时 `/skill/hostctl-deploy.zip` 可直接下载。
+- Go 服务通过 `embed` 打包这些产物，所以源码方式发布二进制前需要先构建前端，并确认内置 Skill ZIP 是最新的。
 
 ## 1. 准备服务器
 
@@ -74,6 +77,7 @@ ssh root@vps 'chmod +x /usr/local/bin/hostctl-server /usr/local/bin/hostctl'
 ```bash
 (cd frontend/user && npm install && npm run build)
 (cd frontend/admin && npm install && npm run build)
+# 如果改过 skill/hostctl-deploy，请重新生成 internal/web/skill/hostctl-deploy.zip
 go build -o bin/hostctl-server ./cmd/hostctl-server
 go build -o bin/hostctl ./cmd/hostctl
 ```
@@ -103,6 +107,8 @@ sudo systemctl reload caddy
 
 Caddy 直接把整个站点反向代理到 hostctl 即可。hostctl 自己处理首页、后台、API、Skill 下载、应用访问与应用访问路由，不需要在 Caddy 里维护路径白名单。
 
+后台“Skill & MCP”页只维护 `hostctl-deploy.zip` 下载包，不再直接编辑 Skill 源文件。需要调整 Skill 时，请在仓库或本地修改并打包，再上传 ZIP 覆盖内置包。
+
 ## 5. 首次登录
 
 默认管理员账号：
@@ -130,6 +136,7 @@ curl -fsS https://host.example.com/deploy.html >/dev/null
 curl -fsS https://host.example.com/api-docs.html >/dev/null
 curl -fsS https://host.example.com/screens/ >/dev/null
 curl -fsS https://host.example.com/admin >/dev/null
+curl -fsS https://host.example.com/skill/hostctl-deploy.zip >/dev/null
 ```
 
 登录后台后，也可以在 Agent 技能里执行：

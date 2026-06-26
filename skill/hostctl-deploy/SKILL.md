@@ -11,7 +11,7 @@ Use the bundled script instead of hand-written API calls:
 python skill/hostctl-deploy/scripts/hostctl_deploy.py doctor
 ```
 
-Set the target with `--server` or `HOSTCTL_SERVER`. If unset, the script uses `https://pagepilot.dell.4dbim.cc:1143`. Server addresses are not fixed; save or pass the target server explicitly when working with a deployed PagePilot instance.
+Set the target with `--server` or `HOSTCTL_SERVER`. If unset, the script uses `http://localhost:8787`. Server addresses are not fixed; save or pass the target server explicitly when working with a deployed PagePilot instance.
 
 ## Auth
 
@@ -54,6 +54,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - Published URLs are authoritative only when returned by the PagePilot server. Skill, MCP, and CLI clients must not construct final app URLs by themselves.
 - For path-mode URLs, call PagePilot through the public entry that should appear in returned links. The script sends `--server` / `HOSTCTL_SERVER` as `X-Hostctl-Current-Origin` so reverse-proxy and multi-domain deployments can keep links aligned with the actual entry being used.
 - For wildcard-domain URLs, the server uses its app URL settings (`appDomainSuffix`, scheme, and port). This app domain is intentionally configured and stable because DNS wildcard records, certificates, and reverse proxy routing must exist before links can work.
+- In `domain` app URL mode, the server returns wildcard-domain app URLs as the primary `url`. In `dual` mode, wildcard-domain access is enabled but the primary returned `url` remains the path-mode `/agent/{code}/` URL for compatibility.
 - Hosted apps always keep `/agent/{code}/` as the compatible path-mode URL, resolved against the PagePilot server the user is using. Servers may also enable wildcard-domain URLs such as `https://{code}.apps.example.com/`; check `/api/config` only for the app URL mode, suffix, scheme, and port.
 - In path mode, do not generate root-relative asset or page links such as `/settings.html`; use relative links like `settings.html` or `./assets/app.js`. Wildcard-domain mode supports root-relative links better, but path mode remains the default compatibility entry.
 - Inspect versions before switching, locking, unlocking, overwriting, or deleting versions.
@@ -71,6 +72,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - Time-based power scheduling is hardware-specific and not guaranteed on every device. Do not promise universal support without OEM or device-owner integration.
 - After deploying or appending, verify the returned App URL and Version URL. If any URL returns 404, inspect `mainEntry`, current version, and the uploaded file list before reporting success.
 - Built-in PagePilot pages such as `/deploy.html`, `/api-docs.html`, `/agents/`, and `/screens/` should be served by the hostctl server. If these return 404, ask the operator to deploy the latest server build and check reverse proxy forwarding.
+- The downloadable Skill package is served from `/skill/hostctl-deploy.zip`. The server has a built-in fallback ZIP, and admins may upload a replacement ZIP from the admin Skill & MCP page. Do not expect the admin UI to edit Skill source files directly.
 
 ## Workflows
 
@@ -86,7 +88,7 @@ Configure app URL mode as an admin:
 ```bash
 python skill/hostctl-deploy/scripts/hostctl_deploy.py config set-app-url --mode path
 python skill/hostctl-deploy/scripts/hostctl_deploy.py config set-app-url --mode domain --domain-suffix apps.pagepilot.example.com --scheme https
-python skill/hostctl-deploy/scripts/hostctl_deploy.py config set-app-url --mode domain --domain-suffix pagepilot.dell.4dbim.cc --scheme https --port 1143
+python skill/hostctl-deploy/scripts/hostctl_deploy.py config set-app-url --mode domain --domain-suffix pagepilot.example.com --scheme https --port 1143
 ```
 
 Deploy a new site:
