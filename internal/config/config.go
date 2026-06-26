@@ -40,7 +40,7 @@ func Default() Config {
 		HostedDir:            "/var/www/hosted",
 		DBPath:               "/var/lib/hostctl/hostctl.db",
 		PublicBaseURL:        "http://localhost:8787",
-		PublicURLMode:        "configured",
+		PublicURLMode:        "request_host",
 		AppURLMode:           "path",
 		AppURLScheme:         "https",
 		CORSAllowOrigins:     "",

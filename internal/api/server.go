@@ -173,6 +173,9 @@ func (s *Server) effectivePublicBaseURL(r *http.Request) string {
 }
 
 func publicBaseURLFromRequest(r *http.Request) string {
+	if base := publicBaseURLFromBrowserOrigin(r, false); base != "" {
+		return base
+	}
 	host := forwardedHost(r)
 	if host == "" {
 		return ""
@@ -185,6 +188,17 @@ func publicBaseURLFromRequest(r *http.Request) string {
 		return ""
 	}
 	return scheme + "://" + host
+}
+
+func publicBaseURLFromBrowserOrigin(r *http.Request, allowQuery bool) string {
+	origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("X-Hostctl-Public-Origin")), "/")
+	if origin == "" && allowQuery {
+		origin = strings.TrimRight(strings.TrimSpace(r.URL.Query().Get("origin")), "/")
+	}
+	if origin == "" || !baseURLLooksValid(origin) {
+		return ""
+	}
+	return origin
 }
 
 func requestScheme(r *http.Request) string {
@@ -2031,6 +2045,11 @@ func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := s.effectivePublicBaseURL(r)
+	if config.NormalizePublicURLMode(s.cfg.PublicURLMode) == "request_host" {
+		if browserOrigin := publicBaseURLFromBrowserOrigin(r, true); browserOrigin != "" {
+			base = browserOrigin
+		}
+	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy-skill.zip"`)
 	zw := zip.NewWriter(w)

@@ -104,7 +104,7 @@ func TestRegisteredUserCanBindPublishAndDeviceCanReadManifest(t *testing.T) {
 		t.Fatalf("publish status = %d, body = %s; want %d", publishRR.Code, publishRR.Body.String(), http.StatusOK)
 	}
 
-	manifestReq := httptest.NewRequest(http.MethodGet, "/api/device/manifest", nil)
+	manifestReq := httptest.NewRequest(http.MethodGet, "http://example.test/api/device/manifest", nil)
 	manifestReq.Header.Set("Authorization", "Device device-token")
 	manifestRR := httptest.NewRecorder()
 

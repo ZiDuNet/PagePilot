@@ -1497,7 +1497,7 @@
     $("stat-size").textContent = fmtSize(size);
     $("stat-anonymous").textContent = state.anonymousSessions.length;
     $("stat-anonymous-note").textContent = isAdminSession() ? `每个 Agent ${state.config?.anonymousPolicy?.deployLimit ?? 5} 次` : "仅管理员可见";
-    if ($("screen-server-url")) $("screen-server-url").textContent = state.config?.publicBaseURL || location.origin;
+    if ($("screen-server-url")) $("screen-server-url").textContent = location.origin;
     if ($("screen-list-subtitle")) $("screen-list-subtitle").textContent = isAdminSession() ? `全站 ${state.screens.length} 个屏幕。` : `你已绑定 ${state.screens.length} 个屏幕。`;
   }
 

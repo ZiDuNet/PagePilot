@@ -12,19 +12,19 @@
 
 ## 快速启动
 
-先修改 `docker-compose.yml` 中的公开地址：
+浏览器访问时，首页、后台、`/agents/`、`/screens/`、Skill/MCP 文案、下载包默认 server、二维码和 `/agent/{code}/` 路径模式链接都会跟随当前打开域名。`HOSTCTL_PUBLIC_BASE_URL` 只作为无浏览器请求上下文时的兜底地址，建议仍填一个可访问的默认地址：
 
 ```yaml
 HOSTCTL_PUBLIC_BASE_URL: "https://pagepilot.example.com"
 ```
 
-如果希望同一套服务能通过多个主站域名访问，可以在后台“运行设置”把“主站链接来源”切到“按当前访问域名生成”，或通过环境变量设置：
+如果希望同一套服务能通过多个主站域名访问，默认即可按当前访问域名生成。也可以在后台“运行设置”确认“主站链接来源”为“按当前访问域名生成”，或通过环境变量设置：
 
 ```yaml
 HOSTCTL_PUBLIC_URL_MODE: "request_host"
 ```
 
-这种模式会让首页、Skill/MCP、OpenAPI、二维码和 `/agent/{code}/` 路径模式链接跟随当前请求域名；`HOSTCTL_PUBLIC_BASE_URL` 仍然作为默认值和兜底值保留。应用泛域名配置仍然独立，不受这个开关影响。
+这种模式会让浏览器页面和新版本 Skill 请求优先使用当前访问域名；没有浏览器上下文时再使用反向代理请求头或 `HOSTCTL_PUBLIC_BASE_URL` 兜底。应用泛域名配置仍然独立，不受这个开关影响。
 
 然后启动：
 
@@ -100,11 +100,11 @@ server {
 }
 ```
 
-如果你使用的是 `https://pagepilot.example.com:1143` 这类带端口地址，`HOSTCTL_PUBLIC_BASE_URL` 也必须带相同端口，否则二维码、应用详情页和 Skill 下载链接会生成错误地址。
+如果你使用的是 `https://pagepilot.example.com:1143` 这类带端口地址，浏览器页面会直接使用当前打开地址生成链接；但 `HOSTCTL_PUBLIC_BASE_URL` 作为兜底地址时也建议带相同端口，避免旧客户端或后台任务生成错误地址。
 
 应用访问地址默认使用 `/agent/{code}/`。如需让应用使用 `https://{code}.example.com/` 泛域名访问，或在路径模式和泛域名之间切换，请参考 [APP_URL_MODE.md](APP_URL_MODE.md)。外部 Nginx 只需要一条泛域名 `server_name`，不需要为每个应用单独配置。
 
-如果启用了“按当前访问域名生成”，反向代理必须保留 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，否则 PagePilot 无法判断真实公网域名和协议。不要把内网地址写进这些头。
+浏览器页面会把当前 `origin` 传给后端；没有浏览器上下文时，后端会依赖 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto` 判断真实公网域名和协议。反向代理仍建议保留这些头，不要把内网地址写进去。
 
 ## 常用命令
 
@@ -182,6 +182,6 @@ docker compose up -d
 | 现象 | 检查项 |
 |---|---|
 | 首页可访问但 `/deploy.html` 或 `/screens/` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
-| 二维码或分享链接域名错误 | 检查 `HOSTCTL_PUBLIC_BASE_URL` 是否为用户真实访问地址；若启用 `HOSTCTL_PUBLIC_URL_MODE=request_host`，同时检查反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。 |
+| 二维码或分享链接域名错误 | 新版浏览器页面会把当前 `location.origin` 传给后端；请先确认访问页面本身的域名正确。若来自旧客户端或后台任务，再检查 `HOSTCTL_PUBLIC_BASE_URL`，以及反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。 |
 | 登录默认管理员失败 | 如果数据库已有用户，默认管理员不会再次创建；请用已有管理员或备份恢复。 |
 | 发布后静态文件丢失 | 检查 `./data/docker/hosted` 是否正确挂载且未被清空。 |

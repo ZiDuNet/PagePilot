@@ -223,6 +223,9 @@ const navItems: Array<{ tab: Tab; label: string; icon: React.ReactNode; adminOnl
 ];
 
 function authHeaders(headers: Record<string, string> = {}) {
+  if (typeof location !== "undefined" && !headers["X-Hostctl-Public-Origin"]) {
+    headers["X-Hostctl-Public-Origin"] = location.origin;
+  }
   const token = localStorage.getItem("hostctl-admin-token") || localStorage.getItem("hostctl-token") || "";
   return token && !headers.Authorization ? { ...headers, Authorization: `Bearer ${token}` } : headers;
 }
@@ -278,6 +281,32 @@ function toBase64(buffer: ArrayBuffer) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function currentOrigin() {
+  return typeof location === "undefined" ? "https://pagepilot.example.com" : location.origin;
+}
+
+function currentBaseURL() {
+  return currentOrigin().replace(/\/+$/, "");
+}
+
+function sameSiteURL(url?: string) {
+  if (!url) return "";
+  if (!/^https?:\/\//i.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.pathname.startsWith("/agent/") && !parsed.pathname.startsWith("/deploy/") && !parsed.pathname.startsWith("/api/")) {
+      return url;
+    }
+    return `${currentOrigin()}${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return url;
+  }
+}
+
+function skillDownloadPath() {
+  return `/skill/hostctl-deploy.zip?origin=${encodeURIComponent(currentOrigin())}`;
 }
 
 function siteURL(code: string) {
@@ -589,7 +618,7 @@ function LoginScreen({
             {authMode === "register" ? "已有账号，去登录" : "注册普通账号"}
           </button>
         )}
-        <div className="hint-line">当前服务：{config?.publicBaseURL || location.origin}</div>
+        <div className="hint-line">当前服务：{currentOrigin()}</div>
       </section>
     </main>
   );
@@ -866,16 +895,23 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
         <div className="panel-head"><div><h2>结果与预览</h2><p>部署成功后可复制链接和进入版本管理。</p></div></div>
         {result ? (
           <div className="result-box">
+            {(() => {
+              const appURL = sameSiteURL(result.url);
+              return (
+                <>
             <InfoRow label="Code" value={result.code} />
-            <InfoRow label="访问地址" value={result.url} copy />
+            <InfoRow label="访问地址" value={appURL} copy />
             <InfoRow label="版本" value={`v${result.versionNumber || "-"}`} />
             <InfoRow label="大小" value={formatSize(result.size)} />
             <div className="actions">
-              <a className="button primary" href={result.url} target="_blank" rel="noreferrer"><Eye size={16} />打开</a>
-              <button className="button" type="button" onClick={() => navigator.clipboard.writeText(result.url)}><Copy size={16} />复制</button>
+              <a className="button primary" href={appURL} target="_blank" rel="noreferrer"><Eye size={16} />打开</a>
+              <button className="button" type="button" onClick={() => navigator.clipboard.writeText(appURL)}><Copy size={16} />复制</button>
               <a className="button" href={`/deploy/${encodeURIComponent(result.id || result.code)}`} target="_blank" rel="noreferrer">详情</a>
             </div>
-            <iframe title="部署预览" src={result.url} sandbox="allow-scripts allow-forms allow-popups allow-downloads" />
+            <iframe title="部署预览" src={appURL} sandbox="allow-scripts allow-forms allow-popups allow-downloads" />
+                </>
+              );
+            })()}
           </div>
         ) : (
           <div className="empty tall">还没有部署结果。</div>
@@ -1526,7 +1562,7 @@ function AnonymousPanel({ setError }: { setError: (msg: string) => void }) {
 function ConfigPanel({ config, onConfig, showToast, setError }: { config: RuntimeConfig | null; onConfig: (cfg: RuntimeConfig) => void; showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [draft, setDraft] = useState({
     publicBaseURL: "",
-    publicURLMode: "configured" as "configured" | "request_host",
+    publicURLMode: "request_host" as "configured" | "request_host",
     appURLMode: "path",
     appDomainSuffix: "",
     appURLScheme: "https",
@@ -1545,7 +1581,7 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
     if (!config) return;
     setDraft({
       publicBaseURL: config.configuredPublicBaseURL || config.publicBaseURL || "",
-      publicURLMode: config.publicURLMode || "configured",
+      publicURLMode: config.publicURLMode || "request_host",
       appURLMode: config.appURL?.appURLMode || "path",
       appDomainSuffix: config.appURL?.appDomainSuffix || "",
       appURLScheme: config.appURL?.appURLScheme || "https",
@@ -1591,8 +1627,8 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
   }
 
   const configuredBaseURLPreview = (draft.publicBaseURL || "https://pagepilot.example.com").replace(/\/+$/, "");
-  const requestBaseURLPreview = (typeof location !== "undefined" ? location.origin : "https://current.example.com").replace(/\/+$/, "");
-  const baseURLPreview = draft.publicURLMode === "request_host" ? requestBaseURLPreview : configuredBaseURLPreview;
+  const requestBaseURLPreview = currentBaseURL();
+  const baseURLPreview = requestBaseURLPreview;
   const portText = String(draft.appURLPort || "").trim();
   const portSuffix = portText ? `:${portText}` : "";
   const domainSuffix = String(draft.appDomainSuffix || "apps.example.com").replace(/^\.+/, "");
@@ -1600,7 +1636,7 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
   const pathURL = `${baseURLPreview}/agent/${sampleCode}/`;
   const domainURL = `${draft.appURLScheme}://${sampleCode}.${domainSuffix}${portSuffix}/`;
   const modeText = draft.appURLMode === "domain" ? "只生成泛域名链接" : draft.appURLMode === "dual" ? "同时保留路径和泛域名链接" : "默认生成 /agent/{code} 路径链接";
-  const publicURLModeText = draft.publicURLMode === "request_host" ? "按当前访问域名生成主站链接" : "固定使用 Public Base URL";
+  const publicURLModeText = "浏览器页面按当前访问域名生成";
   const embedModeText = draft.embedPolicy === "deny" ? "禁止任何网站 iframe 嵌入应用" : draft.embedPolicy === "self" ? "只允许本站嵌入应用" : draft.embedPolicy === "allowlist" ? "本站和白名单来源可嵌入应用" : "允许任意网站 iframe 嵌入应用";
 
   return (
@@ -1616,21 +1652,21 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
         <div className="config-main">
           <section className="config-section">
             <div className="config-section-head">
-              <strong>公网访问地址</strong>
-              <span>用户和 Agent 看到的服务器地址</span>
+              <strong>公网兜底地址</strong>
+              <span>没有浏览器请求上下文时使用</span>
             </div>
             <label className="field rich-field">
-              <span>Public Base URL</span>
+              <span>Fallback Base URL</span>
               <input className="mono" value={draft.publicBaseURL} onChange={(event) => setDraft({ ...draft, publicBaseURL: event.target.value })} placeholder="https://pagepilot.example.com" />
-              <em>填浏览器实际访问后台/首页的地址，必须包含协议和端口；不要带路径。会影响首页按钮、二维码、Skill 下载文案。</em>
+              <em>仅作为无请求上下文时的兜底地址，例如后台任务或旧客户端。浏览器页面、按钮、复制链接、Skill/MCP 文案都会优先使用当前打开页面的域名。</em>
             </label>
             <label className="field rich-field">
               <span>主站链接来源</span>
               <select value={draft.publicURLMode} onChange={(event) => setDraft({ ...draft, publicURLMode: event.target.value as "configured" | "request_host" })}>
-                <option value="configured">固定使用 Public Base URL</option>
                 <option value="request_host">按当前访问域名生成</option>
+                <option value="configured">仅兜底场景使用 Fallback Base URL</option>
               </select>
-              <em>选择“按当前访问域名”后，首页、Skill/MCP、OpenAPI、二维码和 /agent 路径模式会跟随浏览器实际访问域名；泛域名应用访问仍由下方独立配置控制。请确认前面是可信反向代理，并正确传递 Host / X-Forwarded-Host。</em>
+              <em>推荐保持“按当前访问域名生成”。浏览器页面内部使用相对路径或当前 origin；Agent/Skill 请求会把连接服务器地址传给后端。泛域名应用访问仍由下方独立配置控制。</em>
             </label>
           </section>
 
@@ -1772,10 +1808,10 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
           <div className="preview-card muted">
             <span>会被影响</span>
             <ul>
-              <li>首页应用打开链接</li>
-              <li>部署成功后的返回 URL</li>
-              <li>二维码和屏幕投放地址</li>
-              <li>Skill 下载说明和 Agent 文案</li>
+              <li>浏览器页面按钮和展示优先使用当前域名</li>
+              <li>部署成功后的复制链接会改写到当前域名</li>
+              <li>二维码、Skill 包等无页面上下文场景使用请求来源或兜底地址</li>
+              <li>泛域名应用访问仍由应用链接规则独立控制</li>
             </ul>
           </div>
           <button className="button primary full" type="button" onClick={() => void save()}><Save size={16} />保存运行设置</button>
@@ -1791,7 +1827,7 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
   const [path, setPath] = useState("SKILL.md");
   const [content, setContent] = useState("");
   const [meta, setMeta] = useState<any>(null);
-  const base = (config?.publicBaseURL || location.origin).replace(/\/+$/, "");
+  const base = currentBaseURL();
 
   const load = useCallback(async (nextPath = path) => {
     try {
@@ -1817,7 +1853,7 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
     await load(path);
   }
 
-  const skillURL = `${base}/skill/hostctl-deploy.zip`;
+  const skillURL = `${base}${skillDownloadPath()}`;
   const prompt = [
     "PAGEPILOT SKILL",
     `请从 ${skillURL} 下载并安装 hostctl-deploy Skill。`,
@@ -1829,7 +1865,7 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
       <div className="panel-head">
         <div><h2>Skill & MCP</h2><p>Skill 是可下载的 Agent 能力包；MCP 是 stdio 工具服务，两者共用 Token 与权限模型。</p></div>
         <div className="actions">
-          <a className="button" href="/skill/hostctl-deploy.zip" target="_blank" rel="noreferrer"><Download size={16} />下载 Skill</a>
+          <a className="button" href={skillDownloadPath()} target="_blank" rel="noreferrer"><Download size={16} />下载 Skill</a>
           {tab === "skill" && <button className="button primary" type="button" onClick={() => void save()}><Save size={16} />保存 Skill</button>}
         </div>
       </div>

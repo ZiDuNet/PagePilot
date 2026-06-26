@@ -163,6 +163,7 @@ def request_json(base: str, token: str, path: str, method: str = "GET",
                  payload: dict | None = None, session_id: str = "", agent: dict | None = None) -> tuple[int, dict]:
     data = None
     headers = {"User-Agent": UA, "Accept": "application/json"}
+    headers["X-Hostctl-Public-Origin"] = base
     agent = agent or load_agent_identity()
     if agent.get("agentId"):
         headers["X-Hostctl-Agent-Id"] = str(agent["agentId"])

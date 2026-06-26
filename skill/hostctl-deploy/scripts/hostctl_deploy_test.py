@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest import mock
 
 
 SCRIPT = pathlib.Path(__file__).with_name("hostctl_deploy.py")
@@ -56,6 +57,38 @@ class ScreenOrientationTests(unittest.TestCase):
 
         self.assertTrue(hostctl_deploy.orientation_check_result(screen, "any")[0])
         self.assertTrue(hostctl_deploy.orientation_check_result(screen, "landscape")[0])
+
+
+class RequestHeaderTests(unittest.TestCase):
+    def test_request_json_sends_public_origin_header(self):
+        captured = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"success": true}'
+
+        def fake_urlopen(req, timeout=0):
+            captured["origin"] = req.headers.get("X-hostctl-public-origin")
+            return FakeResponse()
+
+        with mock.patch.object(hostctl_deploy.urllib.request, "urlopen", fake_urlopen):
+            status, data = hostctl_deploy.request_json(
+                "https://pagepilot.chaoxi.live",
+                "",
+                "/api/config",
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["success"])
+        self.assertEqual(captured["origin"], "https://pagepilot.chaoxi.live")
 
 
 if __name__ == "__main__":

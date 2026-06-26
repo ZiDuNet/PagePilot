@@ -13,7 +13,7 @@ docker compose up -d --build
 完整 Docker 部署、升级、备份、反向代理和排障说明请见 [deploy/DOCKER.md](DOCKER.md)。
 应用访问地址默认使用 `/agent/{code}/`，泛域名或双模式配置请参考 [APP_URL_MODE.md](APP_URL_MODE.md)。
 
-部署前请在 `docker-compose.yml` 中把 `HOSTCTL_PUBLIC_BASE_URL` 改成真实对外地址，例如：
+浏览器页面会按当前打开域名生成首页、后台、Skill/MCP、二维码和路径模式应用链接。`HOSTCTL_PUBLIC_BASE_URL` 只作为无浏览器上下文时的兜底地址，建议在 `docker-compose.yml` 中填一个可访问的默认地址，例如：
 
 ```yaml
 HOSTCTL_PUBLIC_BASE_URL: "https://pagepilot.example.com"

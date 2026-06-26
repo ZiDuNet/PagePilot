@@ -72,13 +72,15 @@ HOSTCTL_APP_URL_PORT: "1143"
 - 主站链接来源：决定首页、后台提示、Skill/MCP 下载说明、OpenAPI、二维码，以及路径模式 `/agent/{code}/` 这些链接用哪个主站域名。
 - 应用链接规则：决定发布后的应用是使用 `/agent/{code}/`，还是使用 `https://{code}.{suffix}/` 泛域名。
 
-`Public Base URL` 是固定主站地址。默认模式下所有主站外链都按它生成。如果希望同一套 PagePilot 能通过当前访问域名生成链接，可以把“主站链接来源”切到“按当前访问域名生成”，或设置：
+浏览器页面默认按当前打开 PagePilot 的域名生成主站链接，例如首页按钮、`/agents/`、`/screens/`、Skill/MCP 文案、下载包默认 server、二维码和 `/agent/{code}/` 路径模式链接。后台里的 Fallback Base URL 只在后台任务、旧客户端或无浏览器上下文时兜底。
+
+如果需要显式保持这个行为，可以设置：
 
 ```yaml
 HOSTCTL_PUBLIC_URL_MODE: "request_host"
 ```
 
-此时 PagePilot 会读取请求里的 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto` 生成主站链接。这个开关不影响应用泛域名；泛域名仍然只看 `HOSTCTL_APP_URL_MODE`、`HOSTCTL_APP_DOMAIN_SUFFIX`、`HOSTCTL_APP_URL_SCHEME` 和 `HOSTCTL_APP_URL_PORT`。
+此时 PagePilot 会优先使用浏览器传入的当前 `origin`，没有浏览器上下文时再读取请求里的 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，最后才使用 Fallback Base URL。这个开关不影响应用泛域名；泛域名仍然只看 `HOSTCTL_APP_URL_MODE`、`HOSTCTL_APP_DOMAIN_SUFFIX`、`HOSTCTL_APP_URL_SCHEME` 和 `HOSTCTL_APP_URL_PORT`。
 
 ## Docker 与外部 Nginx
 

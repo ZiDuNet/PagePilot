@@ -131,6 +131,32 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
+function currentOrigin(): string {
+  return typeof location === "undefined" ? "https://pagepilot.example.com" : location.origin;
+}
+
+function currentBaseURL(): string {
+  return currentOrigin().replace(/\/+$/, "");
+}
+
+function sameSiteURL(url?: string): string {
+  if (!url) return "";
+  if (!/^https?:\/\//i.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.pathname.startsWith("/agent/") && !parsed.pathname.startsWith("/deploy/") && !parsed.pathname.startsWith("/api/")) {
+      return url;
+    }
+    return `${currentOrigin()}${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return url;
+  }
+}
+
+function skillDownloadPath(): string {
+  return `/skill/hostctl-deploy.zip?origin=${encodeURIComponent(currentOrigin())}`;
+}
+
 function useRuntime() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -486,7 +512,7 @@ function MarketplaceCard({ item, onChanged }: { item: MarketplaceDeploy; onChang
   const cardRef = useRef<HTMLElement | null>(null);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
   const title = item.title || item.code || "未命名应用";
-  const appURL = item.filePath || `/agent/${encodeURIComponent(item.code)}/`;
+  const appURL = sameSiteURL(item.filePath) || `/agent/${encodeURIComponent(item.code)}/`;
   const detailURL = item.id || item.publicId ? `/deploy/${encodeURIComponent(item.id || item.publicId || "")}` : appURL;
   const previewHint = previewStatus === "queued"
     ? "排队预览"
@@ -865,11 +891,14 @@ function DeployPage({ config }: { config: RuntimeConfig | null }) {
 }
 
 function DeployResult({ result }: { result: DeployResponse }) {
+  const appURL = sameSiteURL(result.url);
+  const detailURL = sameSiteURL(result.detailUrl || result.url);
+  const versionURL = sameSiteURL(result.versionUrl || "");
   const rows = [
     ["code", result.code],
-    ["访问地址", result.url],
-    ["应用本体", result.detailUrl || result.url],
-    ["版本预览", result.versionUrl || ""],
+    ["访问地址", appURL],
+    ["应用本体", detailURL],
+    ["版本预览", versionURL],
     ["版本", result.versionNumber ? `v${result.versionNumber}` : "-"]
   ];
   return (
@@ -883,7 +912,7 @@ function DeployResult({ result }: { result: DeployResponse }) {
         </div>
       ))}
       <div className="card-actions">
-        <a className="button compact primary" href={result.url} target="_blank" rel="noreferrer">打开</a>
+        <a className="button compact primary" href={appURL} target="_blank" rel="noreferrer">打开</a>
         {result.id && <a className="button compact" href={`/deploy/${encodeURIComponent(result.id)}`}>详情</a>}
       </div>
     </div>
@@ -891,7 +920,7 @@ function DeployResult({ result }: { result: DeployResponse }) {
 }
 
 function AgentsPage({ config }: { config: RuntimeConfig | null }) {
-  const baseURL = (config?.publicBaseURL || location.origin).replace(/\/+$/, "");
+  const baseURL = currentBaseURL();
   const [tab, setTab] = useState<AgentDocTab>("skill");
 
   return (
@@ -901,7 +930,7 @@ function AgentsPage({ config }: { config: RuntimeConfig | null }) {
         <h1>让通用 Agent 接入 PagePilot</h1>
         <p>Skill 适合直接下载给 Agent 使用；MCP 适合支持 stdio JSON-RPC 的客户端。两者都使用同一套 Token、匿名会话和屏幕接口。</p>
         <div className="hero-actions">
-          <a className="button primary" href="/skill/hostctl-deploy.zip"><Download size={18} />下载 Skill</a>
+          <a className="button primary" href={skillDownloadPath()}><Download size={18} />下载 Skill</a>
           <a className="button" href="/openapi.json"><Workflow size={18} />OpenAPI</a>
         </div>
       </div>
@@ -924,7 +953,7 @@ function AgentsPage({ config }: { config: RuntimeConfig | null }) {
 }
 
 function SkillGuide({ config, baseURL }: { config: RuntimeConfig | null; baseURL: string }) {
-  const server = config?.publicBaseURL || "https://pagepilot.example.com";
+  const server = baseURL || config?.publicBaseURL || "https://pagepilot.example.com";
 
   return (
     <>
@@ -970,7 +999,7 @@ function SkillGuide({ config, baseURL }: { config: RuntimeConfig | null; baseURL
 }
 
 function MCPGuide({ config, baseURL }: { config: RuntimeConfig | null; baseURL: string }) {
-  const server = config?.publicBaseURL || baseURL || "https://pagepilot.example.com";
+  const server = baseURL || config?.publicBaseURL || "https://pagepilot.example.com";
 
   return (
     <>
@@ -1023,7 +1052,7 @@ function MCPGuide({ config, baseURL }: { config: RuntimeConfig | null; baseURL: 
 }
 
 function SkillInstallCard({ baseURL }: { baseURL: string }) {
-  const skillURL = `${baseURL}/skill/hostctl-deploy.zip`;
+  const skillURL = `${baseURL}${skillDownloadPath()}`;
   const doctorCommand = `hostctl_deploy.py --server ${baseURL} doctor`;
   const agentPrompt = [
     "PAGEPILOT SKILL",
@@ -1039,7 +1068,7 @@ function SkillInstallCard({ baseURL }: { baseURL: string }) {
           <h2>实时打包</h2>
           <p>复制给 Agent 的安装说明会跟随当前服务器地址自动生成。</p>
         </div>
-        <a className="button primary" href="/skill/hostctl-deploy.zip">
+        <a className="button primary" href={skillDownloadPath()}>
           <Download size={18} />下载 Skill
         </a>
       </div>
@@ -1098,7 +1127,7 @@ function ScreensPage({ config }: { config: RuntimeConfig | null }) {
         <div className="section-head">
           <div>
             <h2>我的屏幕</h2>
-            <p>{error ? "登录注册用户后可查看自己的屏幕。" : `服务器：${config?.publicBaseURL || location.origin}`}</p>
+            <p>{error ? "登录注册用户后可查看自己的屏幕。" : `服务器：${currentOrigin()}`}</p>
           </div>
         </div>
         {error ? <div className="empty-wide">{error}</div> : (
