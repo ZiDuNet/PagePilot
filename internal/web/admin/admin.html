@@ -924,7 +924,7 @@
         <div class="panel-head">
           <div><h2 class="panel-title">Skill & MCP</h2><p class="panel-subtitle">维护 Agent 下载包，并查看 MCP 的接入方式。</p></div>
           <div class="actions">
-            <button class="btn btn-primary" id="skill-save" type="button">保存 Skill</button>
+            <a class="btn btn-light" href="/skill/hostctl-deploy.zip" target="_blank" rel="noreferrer">下载 Skill</a>
           </div>
         </div>
         <div class="section-tabs" role="tablist" aria-label="Skill MCP">
@@ -932,19 +932,11 @@
           <button class="section-tab" id="skill-subtab-mcp" type="button" data-skill-subtab="mcp">MCP</button>
         </div>
         <div id="skill-pane-skill" class="skill-subpane" style="margin-top:16px">
-        <div class="grid-2" style="grid-template-columns:260px minmax(0,1fr);gap:16px">
-          <div>
-            <div class="field">
-              <label>文件</label>
-              <select id="skill-file" class="select"></select>
-            </div>
-            <div id="skill-meta" class="empty">选择文件后开始编辑。</div>
+          <div class="info-grid">
+            <div class="info-tile"><strong>维护方式</strong><span>后台只维护 hostctl-deploy.zip 下载包，不直接编辑 Skill 源文件。</span></div>
+            <div class="info-tile"><strong>下载地址</strong><span>/skill/hostctl-deploy.zip 固定不变，上传覆盖包后立即生效。</span></div>
+            <div class="info-tile"><strong>包状态</strong><span id="skill-meta">加载中...</span></div>
           </div>
-          <div class="field">
-            <label>内容</label>
-            <textarea id="skill-content" class="textarea mono" style="min-height:520px;line-height:1.55" spellcheck="false"></textarea>
-          </div>
-        </div>
         </div>
         <div id="skill-pane-mcp" class="skill-subpane hidden" style="margin-top:16px">
           <div class="info-grid">
@@ -1377,7 +1369,6 @@
   $("refresh-all").addEventListener("click", refreshAll);
   $("anonymous-refresh").addEventListener("click", loadAnonymousSessions);
   $("screens-refresh").addEventListener("click", loadScreens);
-  $("skill-file").addEventListener("change", () => loadSkill($("skill-file").value));
   document.querySelectorAll("[data-skill-subtab]").forEach(btn => {
     btn.addEventListener("click", () => switchSkillSubtab(btn.dataset.skillSubtab));
   });
@@ -1389,7 +1380,6 @@
     });
     if ($("skill-pane-skill")) $("skill-pane-skill").classList.toggle("hidden", state.skillSubtab !== "skill");
     if ($("skill-pane-mcp")) $("skill-pane-mcp").classList.toggle("hidden", state.skillSubtab !== "mcp");
-    if ($("skill-save")) $("skill-save").classList.toggle("hidden", state.skillSubtab !== "skill");
   }
 
   async function refreshAll() {
@@ -1472,18 +1462,17 @@
       if ($("anonymous-table")) $("anonymous-table").innerHTML = `<tr><td colspan="6"><div class="empty">${escapeHtml(err.message)}</div></td></tr>`;
     }
   }
-  async function loadSkill(path = state.skillPath || "SKILL.md") {
+  async function loadSkill() {
     if (!isAdminSession()) {
-      if ($("skill-meta")) $("skill-meta").innerHTML = `<div class="empty">普通用户无法编辑 Skill。</div>`;
+      if ($("skill-meta")) $("skill-meta").textContent = "普通用户无法维护 Skill 下载包。";
       return;
     }
     try {
-      const data = await api(`/api/admin/skill?path=${encodeURIComponent(path)}`);
+      const data = await api("/api/admin/skill");
       state.skill = data;
-      state.skillPath = data.path || path;
       renderSkill();
     } catch (err) {
-      if ($("skill-meta")) $("skill-meta").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      if ($("skill-meta")) $("skill-meta").textContent = err.message;
     }
   }
   function renderStats() {
@@ -2216,36 +2205,10 @@
 
   function renderSkill() {
     const data = state.skill || {};
-    const files = data.files || [];
-    if ($("skill-file")) {
-      const current = data.path || state.skillPath || "SKILL.md";
-      $("skill-file").innerHTML = files.map(f => `<option value="${escapeHtml(f.path)}">${escapeHtml(f.label || f.path)} - ${escapeHtml(f.path)}</option>`).join("");
-      $("skill-file").value = current;
-    }
-    if ($("skill-content")) $("skill-content").value = data.content || "";
-    const currentFile = files.find(f => f.path === data.path) || {};
-    if ($("skill-meta")) $("skill-meta").innerHTML = `
-      <div class="file-row"><span>路径</span><code>${escapeHtml(data.path || "-")}</code></div>
-      <div class="file-row"><span>大小</span><strong>${fmtSize(currentFile.size || (data.content || "").length)}</strong></div>
-      <div class="file-row"><span>更新</span><span>${escapeHtml(fmtTime(currentFile.updatedAt))}</span></div>
-      <div class="hint" style="margin-top:10px">源码保存后不会自动重新打包；请在 React 后台上传维护固定 Skill ZIP。</div>`;
+    const pkg = data.package || {};
+    const label = pkg.source === "uploaded" ? "已上传覆盖包" : pkg.exists ? "内置默认包" : "未上传";
+    if ($("skill-meta")) $("skill-meta").textContent = `${label} / ${fmtSize(pkg.size)} / ${pkg.sha256 || "-"}`;
   }
-
-  $("skill-save").addEventListener("click", async () => {
-    try {
-      const path = $("skill-file").value || state.skillPath || "SKILL.md";
-      const content = $("skill-content").value;
-      await api("/api/admin/skill", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path, content })
-      });
-      toast("Skill 已保存", "success");
-      await loadSkill(path);
-    } catch (err) {
-      toast("保存失败：" + err.message, "error");
-    }
-  });
 
   $("publish-close").addEventListener("click", closePublishModal);
   $("publish-modal").addEventListener("click", e => { if (e.target.id === "publish-modal") closePublishModal(); });

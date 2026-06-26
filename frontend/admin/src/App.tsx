@@ -1808,37 +1808,21 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
 
 function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig | null; showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [tab, setTab] = useState<SkillTab>("skill");
-  const [files, setFiles] = useState<Array<{ path: string; label?: string }>>([]);
-  const [path, setPath] = useState("SKILL.md");
-  const [content, setContent] = useState("");
   const [meta, setMeta] = useState<any>(null);
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const base = currentBaseURL();
 
-  const load = useCallback(async (nextPath = path) => {
+  const load = useCallback(async () => {
     try {
-      const data = await api<any>(`/api/admin/skill?path=${encodeURIComponent(nextPath)}`);
-      setFiles(data.files || []);
-      setPath(data.path || nextPath);
-      setContent(data.content || "");
+      const data = await api<any>("/api/admin/skill");
       setMeta(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [path, setError]);
+  }, [setError]);
 
-  useEffect(() => { void load("SKILL.md"); }, []);
-
-  async function save() {
-    await api("/api/admin/skill", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, content })
-    });
-    showToast("Skill 源文件已保存");
-    await load(path);
-  }
+  useEffect(() => { void load(); }, [load]);
 
   async function uploadPackage() {
     if (!zipFile) return;
@@ -1897,15 +1881,21 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
               <InfoRow label="更新时间" value={formatDate(pkg?.updatedAt)} />
               <InfoRow label="SHA256" value={pkg?.sha256 || "-"} />
             </div>
-            <label className="field"><span>文件</span><select value={path} onChange={(event) => void load(event.target.value)}>{files.map((file) => <option value={file.path} key={file.path}>{file.label || file.path}</option>)}</select></label>
-            <div className="meta-box"><InfoRow label="源码路径" value={meta?.path || path} /><InfoRow label="源码大小" value={formatSize(meta?.size)} /><button className="button compact" type="button" onClick={() => void save()}><Save size={14} />保存源文件</button></div>
             <div className="copy-panel">
               <strong>复制给 AGENT</strong>
               <pre>{prompt}</pre>
               <button className="button compact" type="button" onClick={() => navigator.clipboard.writeText(prompt)}><Copy size={14} />复制</button>
             </div>
           </aside>
-          <textarea className="skill-editor mono" value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} />
+          <div className="skill-package-guide">
+            <h3>只维护下载包</h3>
+            <p>后台不再直接编辑 Skill 源文件。需要调整 Skill 时，在本地修改并打包成 <code>hostctl-deploy.zip</code> 后上传，服务器会把它作为固定下载包提供给 Agent。</p>
+            <ul>
+              <li>内置默认包用于新部署兜底，避免下载 404。</li>
+              <li>上传覆盖包后，下载地址仍保持 <code>/skill/hostctl-deploy.zip</code>。</li>
+              <li>发布后的应用 URL 以后端接口返回为准，Skill/MCP 不自行拼接。</li>
+            </ul>
+          </div>
         </div>
       ) : (
         <div className="doc-grid">

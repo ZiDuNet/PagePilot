@@ -341,7 +341,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /api/account/password", s.handleAccountPassword)
 	s.mux.HandleFunc("GET /api/admin/anonymous-sessions", s.handleAdminAnonymousSessions)
 	s.mux.HandleFunc("GET /api/admin/skill", s.handleAdminGetSkill)
-	s.mux.HandleFunc("PUT /api/admin/skill", s.handleAdminPutSkill)
 	s.mux.HandleFunc("POST /api/admin/skill/package", s.handleAdminUploadSkillPackage)
 	s.mux.HandleFunc("GET /api/admin/users", s.handleAdminListUsers)
 	s.mux.HandleFunc("POST /api/admin/users", s.handleAdminCreateUser)
@@ -2043,18 +2042,8 @@ func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, path)
 }
 
-type adminSkillFile struct {
-	Path      string `json:"path"`
-	Label     string `json:"label"`
-	Size      int64  `json:"size"`
-	UpdatedAt string `json:"updatedAt,omitempty"`
-}
-
 type adminSkillResponse struct {
 	Success bool              `json:"success"`
-	Path    string            `json:"path"`
-	Content string            `json:"content"`
-	Files   []adminSkillFile  `json:"files"`
 	Package adminSkillPackage `json:"package"`
 }
 
@@ -2067,70 +2056,16 @@ type adminSkillPackage struct {
 	UpdatedAt string `json:"updatedAt,omitempty"`
 }
 
-type adminSkillUpdateRequest struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-}
-
 func (s *Server) handleAdminGetSkill(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	if _, authErr := s.authenticateAdmin(r); authErr != nil {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
-	rel := strings.TrimSpace(r.URL.Query().Get("path"))
-	if rel == "" {
-		rel = "SKILL.md"
-	}
-	full, label, apiErr := skillEditablePath(rel)
-	if apiErr != nil {
-		writeError(w, apiErrWithReqID(apiErr, reqID))
-		return
-	}
-	data, err := os.ReadFile(full)
-	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill", err.Error()), reqID))
-		return
-	}
-	files := skillEditableFiles()
-	for i := range files {
-		if files[i].Path == rel {
-			files[i].Label = label
-		}
-	}
 	writeJSON(w, http.StatusOK, adminSkillResponse{
 		Success: true,
-		Path:    rel,
-		Content: string(data),
-		Files:   files,
 		Package: s.skillPackageInfo(),
 	})
-}
-
-func (s *Server) handleAdminPutSkill(w http.ResponseWriter, r *http.Request) {
-	reqID := requestIDFromContext(r.Context())
-	if _, authErr := s.authenticateAdmin(r); authErr != nil {
-		writeError(w, apiErrWithReqID(authErr, reqID))
-		return
-	}
-	var req adminSkillUpdateRequest
-	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
-		return
-	}
-	full, _, apiErr := skillEditablePath(req.Path)
-	if apiErr != nil {
-		writeError(w, apiErrWithReqID(apiErr, reqID))
-		return
-	}
-	if len(req.Content) > 512*1024 {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill", "skill file is too large"), reqID))
-		return
-	}
-	if err := os.WriteFile(full, []byte(req.Content), 0o644); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill", err.Error()), reqID))
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "path": req.Path})
 }
 
 func (s *Server) handleAdminUploadSkillPackage(w http.ResponseWriter, r *http.Request) {
@@ -2218,39 +2153,6 @@ func validateSkillZip(data []byte) error {
 	return nil
 }
 
-func skillEditablePath(rel string) (string, string, *APIError) {
-	rel = filepath.ToSlash(strings.TrimSpace(rel))
-	allowed := map[string]string{
-		"SKILL.md":                  "Skill 说明",
-		"scripts/hostctl_deploy.py": "Python 脚本",
-	}
-	label, ok := allowed[rel]
-	if !ok {
-		return "", "", NewError(CodeInvalidInput, "skill", "skill file is not editable")
-	}
-	return filepath.Join(skillRoot(), filepath.FromSlash(rel)), label, nil
-}
-
-func skillEditableFiles() []adminSkillFile {
-	paths := []struct {
-		rel   string
-		label string
-	}{
-		{"SKILL.md", "Skill 说明"},
-		{"scripts/hostctl_deploy.py", "Python 脚本"},
-	}
-	files := make([]adminSkillFile, 0, len(paths))
-	for _, p := range paths {
-		item := adminSkillFile{Path: p.rel, Label: p.label}
-		if st, err := os.Stat(filepath.Join(skillRoot(), filepath.FromSlash(p.rel))); err == nil {
-			item.Size = st.Size()
-			item.UpdatedAt = st.ModTime().Format(time.RFC3339)
-		}
-		files = append(files, item)
-	}
-	return files
-}
-
 func (s *Server) managedSkillZipPath() string {
 	if v := strings.TrimSpace(os.Getenv("HOSTCTL_SKILL_ZIP")); v != "" {
 		return v
@@ -2285,13 +2187,6 @@ func (s *Server) skillPackageInfo() adminSkillPackage {
 		info.Sha256 = hex.EncodeToString(sum[:])
 	}
 	return info
-}
-
-func skillRoot() string {
-	if v := strings.TrimSpace(os.Getenv("HOSTCTL_SKILL_DIR")); v != "" {
-		return v
-	}
-	return filepath.Join("skill", "hostctl-deploy")
 }
 
 // handleAdminSession validates the admin UI bearer token or admin cookie.

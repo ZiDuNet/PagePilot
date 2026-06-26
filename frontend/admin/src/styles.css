@@ -646,15 +646,28 @@ td small { color: var(--muted); }
   font-size: 12px;
   line-height: 1.5;
 }
-.skill-editor {
-  width: 100%;
-  min-height: 620px;
+.skill-package-guide {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  outline: 0;
-  resize: vertical;
-  padding: 14px;
-  line-height: 1.55;
+  border-radius: 14px;
+  background: #fff;
+  padding: 18px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, .06);
+}
+.skill-package-guide h3 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+.skill-package-guide p {
+  margin: 0 0 14px;
+  color: var(--muted-strong);
+  line-height: 1.75;
+}
+.skill-package-guide ul {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--muted);
+  line-height: 1.8;
+  font-size: 13px;
 }
 .doc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .doc-block {

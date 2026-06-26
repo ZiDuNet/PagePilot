@@ -243,6 +243,29 @@ func TestAdminUploadSkillZipPersistsManagedPackage(t *testing.T) {
 	}
 }
 
+func TestAdminSkillSourceFileWriteIsNotAllowed(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	admin, err := authSvc.CreateUser(t.Context(), "admin", "password123", true, -1)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	token, err := authSvc.Generate(t.Context(), "admin-token", true, admin.ID, nil)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/skill", strings.NewReader(`{"path":"SKILL.md","content":"bad"}`))
+	req.Header.Set("Authorization", "Bearer "+token.Plaintext)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusOK {
+		t.Fatalf("PUT /api/admin/skill unexpectedly succeeded: %s", rr.Body.String())
+	}
+}
+
 func makeTestSkillZip(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
