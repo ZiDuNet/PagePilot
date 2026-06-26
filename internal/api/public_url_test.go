@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,10 +110,13 @@ func TestRequestHostDoesNotOverrideDomainAppURL(t *testing.T) {
 	}
 }
 
-func TestSkillDownloadInjectsRequestHostWhenEnabled(t *testing.T) {
+func TestSkillDownloadReturnsManagedZipWithoutRuntimeInjection(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	t.Setenv("HOSTCTL_SKILL_DIR", filepath.Join("..", "..", "skill", "hostctl-deploy"))
+	want := makeTestSkillZip(t, map[string]string{
+		"hostctl-deploy/scripts/hostctl_deploy.py": `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "http://localhost:8787")`,
+	})
+	writeManagedSkillZip(t, srv, want)
 
 	req := httptest.NewRequest(http.MethodGet, "/skill/hostctl-deploy.zip", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -123,7 +128,10 @@ func TestSkillDownloadInjectsRequestHostWhenEnabled(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body size = %d", rr.Code, rr.Body.Len())
 	}
-	zr, err := zip.NewReader(bytes.NewReader(rr.Body.Bytes()), int64(rr.Body.Len()))
+	if !bytes.Equal(rr.Body.Bytes(), want) {
+		t.Fatalf("downloaded zip was modified at runtime")
+	}
+	zr, err := zip.NewReader(bytes.NewReader(want), int64(len(want)))
 	if err != nil {
 		t.Fatalf("open skill zip: %v", err)
 	}
@@ -144,90 +152,98 @@ func TestSkillDownloadInjectsRequestHostWhenEnabled(t *testing.T) {
 		script = string(data)
 		break
 	}
-	if !strings.Contains(script, `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "https://pagepilot2.dell.4dbim.cc")`) {
-		t.Fatalf("script default server was not injected with request host")
+	if strings.Contains(script, "pagepilot.chaoxi.live") || strings.Contains(script, "pagepilot2.dell.4dbim.cc") {
+		t.Fatalf("managed skill zip should not receive runtime origin injection: %s", script)
 	}
 }
 
-func TestSkillDownloadInjectsBrowserOriginWhenProxyHostIsStale(t *testing.T) {
+func TestSkillDownloadMissingManagedZipReturnsNotFound(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	t.Setenv("HOSTCTL_SKILL_DIR", filepath.Join("..", "..", "skill", "hostctl-deploy"))
 
 	req := httptest.NewRequest(http.MethodGet, "/skill/hostctl-deploy.zip", nil)
-	req.Header.Set("X-Forwarded-Proto", "https")
-	req.Header.Set("X-Forwarded-Host", "pagepilot.dell.4dbim.cc")
-	req.Header.Set("X-Hostctl-Current-Origin", "https://pagepilot.chaoxi.live")
 	rr := httptest.NewRecorder()
 
 	srv.handleSkillDownload(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body size = %d", rr.Code, rr.Body.Len())
-	}
-	zr, err := zip.NewReader(bytes.NewReader(rr.Body.Bytes()), int64(rr.Body.Len()))
-	if err != nil {
-		t.Fatalf("open skill zip: %v", err)
-	}
-	var script string
-	for _, f := range zr.File {
-		if f.Name != "hostctl-deploy/scripts/hostctl_deploy.py" {
-			continue
-		}
-		rc, err := f.Open()
-		if err != nil {
-			t.Fatalf("open script in zip: %v", err)
-		}
-		data, err := io.ReadAll(rc)
-		_ = rc.Close()
-		if err != nil {
-			t.Fatalf("read script in zip: %v", err)
-		}
-		script = string(data)
-		break
-	}
-	if !strings.Contains(script, `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "https://pagepilot.chaoxi.live")`) {
-		t.Fatalf("script default server was not injected with browser origin")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusNotFound)
 	}
 }
 
-func TestSkillDownloadInjectsOriginQueryWhenAnchorCannotSendHeader(t *testing.T) {
-	srv, _, cleanup := newTokenTestServer(t)
+func TestAdminUploadSkillZipPersistsManagedPackage(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	t.Setenv("HOSTCTL_SKILL_DIR", filepath.Join("..", "..", "skill", "hostctl-deploy"))
-
-	req := httptest.NewRequest(http.MethodGet, "/skill/hostctl-deploy.zip?origin=https%3A%2F%2Fpagepilot.chaoxi.live", nil)
-	req.Header.Set("X-Forwarded-Proto", "https")
-	req.Header.Set("X-Forwarded-Host", "pagepilot.dell.4dbim.cc")
+	admin, err := authSvc.CreateUser(t.Context(), "admin", "password123", true, -1)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	token, err := authSvc.Generate(t.Context(), "admin-token", true, admin.ID, nil)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	want := makeTestSkillZip(t, map[string]string{
+		"hostctl-deploy/SKILL.md": "managed package",
+	})
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", "hostctl-deploy.zip")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := fw.Write(want); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/skill/package", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+token.Plaintext)
 	rr := httptest.NewRecorder()
 
-	srv.handleSkillDownload(rr, req)
+	srv.mux.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body size = %d", rr.Code, rr.Body.Len())
+		t.Fatalf("upload status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
 	}
-	zr, err := zip.NewReader(bytes.NewReader(rr.Body.Bytes()), int64(rr.Body.Len()))
-	if err != nil {
-		t.Fatalf("open skill zip: %v", err)
+	req = httptest.NewRequest(http.MethodGet, "/skill/hostctl-deploy.zip", nil)
+	rr = httptest.NewRecorder()
+	srv.handleSkillDownload(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("download status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
 	}
-	var script string
-	for _, f := range zr.File {
-		if f.Name != "hostctl-deploy/scripts/hostctl_deploy.py" {
-			continue
-		}
-		rc, err := f.Open()
+	if !bytes.Equal(rr.Body.Bytes(), want) {
+		t.Fatalf("downloaded package differs from uploaded package")
+	}
+}
+
+func makeTestSkillZip(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range files {
+		w, err := zw.Create(name)
 		if err != nil {
-			t.Fatalf("open script in zip: %v", err)
+			t.Fatalf("create zip entry: %v", err)
 		}
-		data, err := io.ReadAll(rc)
-		_ = rc.Close()
-		if err != nil {
-			t.Fatalf("read script in zip: %v", err)
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatalf("write zip entry: %v", err)
 		}
-		script = string(data)
-		break
 	}
-	if !strings.Contains(script, `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "https://pagepilot.chaoxi.live")`) {
-		t.Fatalf("script default server was not injected with origin query")
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func writeManagedSkillZip(t *testing.T, srv *Server, data []byte) {
+	t.Helper()
+	path := srv.managedSkillZipPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write skill zip: %v", err)
 	}
 }

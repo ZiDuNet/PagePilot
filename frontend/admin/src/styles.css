@@ -631,6 +631,21 @@ td small { color: var(--muted); }
   gap: 16px;
   align-items: start;
 }
+.skill-zip-upload {
+  min-height: 124px;
+  align-content: center;
+  margin-bottom: 12px;
+  padding: 16px;
+}
+.skill-zip-upload strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+.skill-zip-upload span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
 .skill-editor {
   width: 100%;
   min-height: 620px;

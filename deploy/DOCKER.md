@@ -12,7 +12,7 @@
 
 ## 快速启动
 
-PagePilot 不需要配置入口域名。浏览器访问时，首页、后台、`/agents/`、`/screens/`、Skill/MCP 文案、下载包默认 server、二维码和 `/agent/{code}/` 路径模式链接都会跟随当前打开的域名或 IP。
+PagePilot 不需要配置入口域名。浏览器访问时，首页、后台、`/agents/`、`/screens/`、Skill/MCP 文案、二维码和 `/agent/{code}/` 路径模式链接都会跟随当前打开的域名或 IP。Skill ZIP 下载包由后台上传维护，包内默认 server 不会在下载时动态改写。
 
 如果同一套服务通过多个入口访问，PagePilot 会按用户实际打开的入口生成链接。外层反向代理建议透传 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。
 

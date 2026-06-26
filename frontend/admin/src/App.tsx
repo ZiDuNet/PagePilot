@@ -304,7 +304,7 @@ function sameSiteURL(url?: string) {
 }
 
 function skillDownloadPath() {
-  return `/skill/hostctl-deploy.zip?origin=${encodeURIComponent(currentOrigin())}`;
+  return "/skill/hostctl-deploy.zip";
 }
 
 function siteURL(code: string) {
@@ -1812,6 +1812,8 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
   const [path, setPath] = useState("SKILL.md");
   const [content, setContent] = useState("");
   const [meta, setMeta] = useState<any>(null);
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
   const base = currentBaseURL();
 
   const load = useCallback(async (nextPath = path) => {
@@ -1834,11 +1836,32 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, content })
     });
-    showToast("Skill 已保存");
+    showToast("Skill 源文件已保存");
     await load(path);
   }
 
+  async function uploadPackage() {
+    if (!zipFile) return;
+    setUploading(true);
+    try {
+      const body = new FormData();
+      body.append("file", zipFile);
+      const data = await api<any>("/api/admin/skill/package", {
+        method: "POST",
+        body
+      });
+      setMeta((prev: any) => ({ ...(prev || {}), package: data.package }));
+      setZipFile(null);
+      showToast("Skill 下载包已上传");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
+    }
+  }
+
   const skillURL = `${base}${skillDownloadPath()}`;
+  const pkg = meta?.package;
   const prompt = [
     "PAGEPILOT SKILL",
     `请从 ${skillURL} 下载并安装 hostctl-deploy Skill。`,
@@ -1848,10 +1871,10 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
   return (
     <section className="panel">
       <div className="panel-head">
-        <div><h2>Skill & MCP</h2><p>Skill 是可下载的 Agent 能力包；MCP 是 stdio 工具服务，两者共用 Token 与权限模型。</p></div>
+        <div><h2>Skill & MCP</h2><p>Skill 下载包由后台上传维护；MCP 是 stdio 工具服务，两者共用 Token 与权限模型。</p></div>
         <div className="actions">
           <a className="button" href={skillDownloadPath()} target="_blank" rel="noreferrer"><Download size={16} />下载 Skill</a>
-          {tab === "skill" && <button className="button primary" type="button" onClick={() => void save()}><Save size={16} />保存 Skill</button>}
+          {tab === "skill" && <button className="button primary" type="button" onClick={() => void uploadPackage()} disabled={!zipFile || uploading}><Upload size={16} />{uploading ? "上传中..." : "上传 ZIP"}</button>}
         </div>
       </div>
       <div className="segmented slim">
@@ -1861,8 +1884,20 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
       {tab === "skill" ? (
         <div className="skill-layout">
           <aside>
+            <label className="upload-zone skill-zip-upload">
+              <input type="file" accept=".zip,application/zip" onChange={(event) => setZipFile(event.target.files?.[0] || null)} />
+              <Upload size={20} />
+              <strong>{zipFile ? zipFile.name : "上传 hostctl-deploy.zip"}</strong>
+              <span>{zipFile ? formatSize(zipFile.size) : "这个 ZIP 会成为 /skill/hostctl-deploy.zip 的固定下载包"}</span>
+            </label>
+            <div className="meta-box">
+              <InfoRow label="下载包" value={pkg?.exists ? "已上传" : "未上传"} />
+              <InfoRow label="包大小" value={pkg?.exists ? formatSize(pkg?.size) : "-"} />
+              <InfoRow label="更新时间" value={formatDate(pkg?.updatedAt)} />
+              <InfoRow label="SHA256" value={pkg?.sha256 || "-"} />
+            </div>
             <label className="field"><span>文件</span><select value={path} onChange={(event) => void load(event.target.value)}>{files.map((file) => <option value={file.path} key={file.path}>{file.label || file.path}</option>)}</select></label>
-            <div className="meta-box"><InfoRow label="路径" value={meta?.path || path} /><InfoRow label="大小" value={formatSize(meta?.size)} /><InfoRow label="下载包" value="实时打包" /></div>
+            <div className="meta-box"><InfoRow label="源码路径" value={meta?.path || path} /><InfoRow label="源码大小" value={formatSize(meta?.size)} /><button className="button compact" type="button" onClick={() => void save()}><Save size={14} />保存源文件</button></div>
             <div className="copy-panel">
               <strong>复制给 AGENT</strong>
               <pre>{prompt}</pre>

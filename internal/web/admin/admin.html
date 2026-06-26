@@ -2229,7 +2229,7 @@
       <div class="file-row"><span>路径</span><code>${escapeHtml(data.path || "-")}</code></div>
       <div class="file-row"><span>大小</span><strong>${fmtSize(currentFile.size || (data.content || "").length)}</strong></div>
       <div class="file-row"><span>更新</span><span>${escapeHtml(fmtTime(currentFile.updatedAt))}</span></div>
-      <div class="hint" style="margin-top:10px">当前文件会随 Skill 下载包一起提供。</div>`;
+      <div class="hint" style="margin-top:10px">源码保存后不会自动重新打包；请在 React 后台上传维护固定 Skill ZIP。</div>`;
   }
 
   $("skill-save").addEventListener("click", async () => {

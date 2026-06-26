@@ -3,6 +3,7 @@ package api
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -13,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"math/big"
@@ -158,7 +160,7 @@ func (s *Server) requestBaseURL(r *http.Request) string {
 }
 
 func baseURLFromRequest(r *http.Request) string {
-	if base := baseURLFromClientOrigin(r, false); base != "" {
+	if base := baseURLFromClientOrigin(r); base != "" {
 		return base
 	}
 	host := forwardedHost(r)
@@ -175,11 +177,8 @@ func baseURLFromRequest(r *http.Request) string {
 	return scheme + "://" + host
 }
 
-func baseURLFromClientOrigin(r *http.Request, allowQuery bool) string {
+func baseURLFromClientOrigin(r *http.Request) string {
 	origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("X-Hostctl-Current-Origin")), "/")
-	if origin == "" && allowQuery {
-		origin = strings.TrimRight(strings.TrimSpace(r.URL.Query().Get("origin")), "/")
-	}
 	if origin == "" || !baseURLLooksValid(origin) {
 		return ""
 	}
@@ -343,6 +342,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/admin/anonymous-sessions", s.handleAdminAnonymousSessions)
 	s.mux.HandleFunc("GET /api/admin/skill", s.handleAdminGetSkill)
 	s.mux.HandleFunc("PUT /api/admin/skill", s.handleAdminPutSkill)
+	s.mux.HandleFunc("POST /api/admin/skill/package", s.handleAdminUploadSkillPackage)
 	s.mux.HandleFunc("GET /api/admin/users", s.handleAdminListUsers)
 	s.mux.HandleFunc("POST /api/admin/users", s.handleAdminCreateUser)
 	s.mux.HandleFunc("PATCH /api/admin/users/{id}", s.handleAdminUpdateUser)
@@ -2025,61 +2025,15 @@ func (s *Server) handleScreenGuideUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
-	root := skillRoot()
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
+	path := s.managedSkillZipPath()
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
 		http.NotFound(w, r)
 		return
 	}
-	base := s.requestBaseURL(r)
-	if browserOrigin := baseURLFromClientOrigin(r, true); browserOrigin != "" {
-		base = browserOrigin
-	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy-skill.zip"`)
-	zw := zip.NewWriter(w)
-	defer zw.Close()
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		if strings.HasPrefix(rel, "__pycache__/") || strings.Contains(rel, "/__pycache__/") || strings.HasSuffix(rel, ".pyc") {
-			return nil
-		}
-		fw, err := zw.Create(filepath.ToSlash(filepath.Join("hostctl-deploy", rel)))
-		if err != nil {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		data = injectSkillServerURL(rel, data, base)
-		_, _ = fw.Write(data)
-		return nil
-	})
-}
-
-func injectSkillServerURL(rel string, data []byte, base string) []byte {
-	if base == "" {
-		return data
-	}
-	text := string(data)
-	switch rel {
-	case "SKILL.md":
-		text = strings.ReplaceAll(text, "If unset, the script uses `http://localhost:8787`.", "If unset, the script uses `"+base+"`.")
-		text = strings.ReplaceAll(text, "If unset, the script uses `https://pagepilot.dell.4dbim.cc:1143`.", "If unset, the script uses `"+base+"`.")
-		text = strings.ReplaceAll(text, "python skill/hostctl-deploy/scripts/hostctl_deploy.py --server http://127.0.0.1:8787 doctor", "python skill/hostctl-deploy/scripts/hostctl_deploy.py doctor")
-	case "scripts/hostctl_deploy.py":
-		text = strings.ReplaceAll(text, `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "http://localhost:8787")`, `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "`+base+`")`)
-		text = strings.ReplaceAll(text, `parser.add_argument("--server", help="hostctl server URL (default: $HOSTCTL_SERVER or http://localhost:8787)")`, `parser.add_argument("--server", help="hostctl server URL (default: $HOSTCTL_SERVER or `+base+`)")`)
-	}
-	return []byte(text)
+	http.ServeFile(w, r, path)
 }
 
 type adminSkillFile struct {
@@ -2090,10 +2044,19 @@ type adminSkillFile struct {
 }
 
 type adminSkillResponse struct {
-	Success bool             `json:"success"`
-	Path    string           `json:"path"`
-	Content string           `json:"content"`
-	Files   []adminSkillFile `json:"files"`
+	Success bool              `json:"success"`
+	Path    string            `json:"path"`
+	Content string            `json:"content"`
+	Files   []adminSkillFile  `json:"files"`
+	Package adminSkillPackage `json:"package"`
+}
+
+type adminSkillPackage struct {
+	Exists    bool   `json:"exists"`
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	Sha256    string `json:"sha256,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
 }
 
 type adminSkillUpdateRequest struct {
@@ -2132,6 +2095,7 @@ func (s *Server) handleAdminGetSkill(w http.ResponseWriter, r *http.Request) {
 		Path:    rel,
 		Content: string(data),
 		Files:   files,
+		Package: s.skillPackageInfo(),
 	})
 }
 
@@ -2159,6 +2123,91 @@ func (s *Server) handleAdminPutSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "path": req.Path})
+}
+
+func (s *Server) handleAdminUploadSkillPackage(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
+	if err := r.ParseMultipartForm(21 << 20); err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill_package", "multipart file is required"), reqID))
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill_package", "file field is required"), reqID))
+		return
+	}
+	defer file.Close()
+	name := strings.ToLower(strings.TrimSpace(header.Filename))
+	if !strings.HasSuffix(name, ".zip") {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill_package", "skill package must be a .zip file"), reqID))
+		return
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		return
+	}
+	if len(data) == 0 || len(data) > 20<<20 {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill_package", "skill package size must be between 1 byte and 20 MB"), reqID))
+		return
+	}
+	if err := validateSkillZip(data); err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill_package", err.Error()), reqID))
+		return
+	}
+	path := s.managedSkillZipPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".hostctl-deploy-*.zip")
+	if err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		return
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		return
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"package": s.skillPackageInfo(),
+	})
+}
+
+func validateSkillZip(data []byte) error {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return fmt.Errorf("invalid zip package")
+	}
+	if len(zr.File) == 0 {
+		return fmt.Errorf("zip package is empty")
+	}
+	for _, f := range zr.File {
+		name := filepath.ToSlash(f.Name)
+		if strings.HasPrefix(name, "/") || strings.Contains(name, "../") || strings.Contains(name, `\`) {
+			return fmt.Errorf("zip package contains unsafe path %q", f.Name)
+		}
+	}
+	return nil
 }
 
 func skillEditablePath(rel string) (string, string, *APIError) {
@@ -2192,6 +2241,34 @@ func skillEditableFiles() []adminSkillFile {
 		files = append(files, item)
 	}
 	return files
+}
+
+func (s *Server) managedSkillZipPath() string {
+	if v := strings.TrimSpace(os.Getenv("HOSTCTL_SKILL_ZIP")); v != "" {
+		return v
+	}
+	base := filepath.Dir(s.cfg.DBPath)
+	if base == "." || base == "" {
+		base = filepath.Join("data")
+	}
+	return filepath.Join(base, "skill", "hostctl-deploy.zip")
+}
+
+func (s *Server) skillPackageInfo() adminSkillPackage {
+	path := s.managedSkillZipPath()
+	info := adminSkillPackage{Path: path}
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return info
+	}
+	info.Exists = true
+	info.Size = st.Size()
+	info.UpdatedAt = st.ModTime().UTC().Format(time.RFC3339)
+	if data, err := os.ReadFile(path); err == nil {
+		sum := sha256.Sum256(data)
+		info.Sha256 = hex.EncodeToString(sum[:])
+	}
+	return info
 }
 
 func skillRoot() string {

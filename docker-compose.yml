@@ -7,7 +7,7 @@
 # Full deployment guide: deploy/DOCKER.md
 #
 # Persistent bind mounts:
-#   ./data/docker/hostctl  -> /var/lib/hostctl      SQLite database and app metadata
+#   ./data/docker/hostctl  -> /var/lib/hostctl      SQLite database, app metadata, and managed Skill ZIP
 #   ./data/docker/sql      -> /var/lib/hostctl/sql  SQL files for maintenance/backups/migrations
 #   ./data/docker/hosted   -> /var/www/hosted       deployed static sites
 #   ./data/docker/logs     -> /var/log/hostctl      service logs, if file logging is enabled later
