@@ -320,7 +320,7 @@ type Store interface {
 	// 注意：磁盘文件清理由调用方负责。
 	DeleteSite(ctx context.Context, code string) error
 
-	// ===== 应用商城（marketplace） =====
+	// ===== 创作市场（marketplace） =====
 
 	// ListMarketplaceDeploys 分页 + 搜索 + 排序 + 状态过滤，返回 marketplace 卡片数据。
 	// sort: "newest" | "oldest" | "views_desc" | "views_asc" | "likes_desc" | "likes_asc"
@@ -346,7 +346,7 @@ type Store interface {
 	// SetSiteVisibility 设置 site.visibility（public/unlisted）。
 	SetSiteVisibility(ctx context.Context, code, visibility string) error
 
-	// SetSitePinned 设置或取消首页应用商城置顶。
+	// SetSitePinned 设置或取消创作市场置顶。
 	SetSitePinned(ctx context.Context, code string, pinned bool) error
 
 	// TouchSiteUpdated 把 site.updated_at 更新为当前时间。

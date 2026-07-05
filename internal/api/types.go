@@ -47,7 +47,7 @@ type DeployRequest struct {
 	// Source 标记本次部署来源，仅用于审计。默认 "api"。
 	Source string `json:"source,omitempty"`
 
-	// visibility 控制是否进入首页应用商城。public 公开展示，unlisted 仅链接可访问。
+	// visibility 控制是否进入创作市场。public 公开展示，unlisted 仅链接可访问。
 	Visibility string `json:"visibility,omitempty"`
 
 	// accessPassword 设置新站点访问密码。匿名会话和用户 Token 均可设置。
@@ -103,7 +103,7 @@ type DeployResponse struct {
 	// primaryVersionStrategy 该 site 的主 URL 选版本策略
 	PrimaryVersionStrategy PrimaryVersionStrategy `json:"primaryVersionStrategy"`
 
-	// visibility 控制是否进入首页应用商城：public / unlisted。
+	// visibility 控制是否进入创作市场：public / unlisted。
 	Visibility string `json:"visibility"`
 
 	RequestID string `json:"requestId,omitempty"`

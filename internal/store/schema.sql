@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at  DATETIME NOT NULL
 );
 
--- 应用商城点赞记录（防重复）
+-- 创作市场点赞记录（防重复）
 CREATE TABLE IF NOT EXISTS likes (
     site_code        TEXT NOT NULL,
     user_fingerprint TEXT NOT NULL,             -- IP 或 cookie hash，限制每用户/site 一次

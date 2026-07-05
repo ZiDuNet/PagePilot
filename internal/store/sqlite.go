@@ -1276,7 +1276,7 @@ func (s *SQLiteStore) UpdateSiteStatus(ctx context.Context, code, status string)
 	return nil
 }
 
-// SetSiteVisibility 设置站点是否进入首页应用商城。
+// SetSiteVisibility 设置站点是否进入创作市场。
 func (s *SQLiteStore) SetSiteVisibility(ctx context.Context, code, visibility string) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sites SET visibility = ?, updated_at = ? WHERE code = ?`,
@@ -1291,7 +1291,7 @@ func (s *SQLiteStore) SetSiteVisibility(ctx context.Context, code, visibility st
 	return nil
 }
 
-// SetSitePinned 设置或取消首页应用商城置顶。
+// SetSitePinned 设置或取消创作市场置顶。
 func (s *SQLiteStore) SetSitePinned(ctx context.Context, code string, pinned bool) error {
 	now := time.Now().UTC()
 	var pinnedAt any

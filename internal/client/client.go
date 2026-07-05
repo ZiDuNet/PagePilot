@@ -187,7 +187,7 @@ func parseAPIError(m map[string]any) *api.APIError {
 	return out
 }
 
-// SearchMarketplace 调用 GET /api/deploys —— 公开应用商城搜索。
+// SearchMarketplace 调用 GET /api/deploys —— 公开创作市场搜索。
 // q 可空；sort 取 newest/oldest/likes_desc/views_desc；page / pageSize 默认值由服务端兜底。
 func (c *Client) SearchMarketplace(ctx context.Context, q, sort string, page, pageSize int) (map[string]any, error) {
 	qs := url.Values{}
@@ -258,7 +258,7 @@ func (c *Client) SetSiteAccessPassword(ctx context.Context, code, password strin
 	return resp, nil
 }
 
-// SetSitePin 设置或取消管理员应用商城置顶。
+// SetSitePin 设置或取消管理员创作市场置顶。
 func (c *Client) SetSitePin(ctx context.Context, code string, pinned bool) (map[string]any, error) {
 	var resp map[string]any
 	if err := c.doPatch(ctx,

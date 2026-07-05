@@ -304,7 +304,7 @@ function sameSiteURL(url?: string) {
 }
 
 function skillDownloadPath() {
-  return "/skill/hostctl-deploy.zip";
+  return "/skill/pagep.zip";
 }
 
 function siteURL(code: string) {
@@ -849,7 +849,7 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
         <label className="check-line"><input checked={append} type="checkbox" onChange={(event) => setAppend(event.target.checked)} />更新现有发布，追加为新版本</label>
         {append && <div className="hint-box">更新必须填写已有 <code>code</code>。它不会创建新链接，只给原站点追加版本；公开方式和访问密码沿用原设置。</div>}
         <div className="form-grid">
-          <label className="field"><span>可见性</span><select value={visibility} disabled={append} onChange={(event) => setVisibility(event.target.value)}><option value="public">公开进应用商城</option><option value="unlisted">未公开，仅链接访问</option></select></label>
+          <label className="field"><span>可见性</span><select value={visibility} disabled={append} onChange={(event) => setVisibility(event.target.value)}><option value="public">公开进创作市场</option><option value="unlisted">未公开，仅链接访问</option></select></label>
           <label className="field"><span>访问密码</span><input type="password" value={password} disabled={append} onChange={(event) => setPassword(event.target.value)} placeholder="可选，至少 4 位" /></label>
         </div>
 
@@ -1274,7 +1274,7 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
           <button className="button primary" type="button" onClick={() => void bind()}>绑定屏幕</button>
         </div>
         <div className="panel">
-          <div className="panel-head"><div><h2>投放规则</h2><p>后台不会让用户手写 code 投屏，统一从自己的站点或应用商城选择。</p></div></div>
+          <div className="panel-head"><div><h2>投放规则</h2><p>后台不会让用户手写 code 投屏，统一从自己的站点或创作市场选择。</p></div></div>
           <InfoRow label="权限" value="仅注册用户可投屏" />
           <InfoRow label="内容" value="投放 App URL 和播放 manifest" />
           <InfoRow label="远程指令" value="刷新、截图、休眠、唤醒、软关机" />
@@ -1308,13 +1308,13 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
         <Modal title={`投放到 ${pickScreen.name || pickScreen.id}`} onClose={() => setPickScreen(null)}>
           <div className="segmented">
             <button className={pickTab === "mine" ? "active" : ""} type="button" onClick={() => setPickTab("mine")}>我的站点</button>
-            <button className={pickTab === "market" ? "active" : ""} type="button" onClick={() => setPickTab("market")}>应用商城</button>
+            <button className={pickTab === "market" ? "active" : ""} type="button" onClick={() => setPickTab("market")}>创作市场</button>
           </div>
           <div className="choice-list">
             {(pickTab === "mine" ? sites : market).map((site) => (
               <button className="choice-card" type="button" key={site.code} onClick={() => void publish(pickScreen, site.code)}>
                 <strong>{site.code}</strong>
-                <span>{"title" in site ? site.title || site.description || "应用商城站点" : `${site.versionCount || 0} 个版本`}</span>
+                <span>{"title" in site ? site.title || site.description || "创作市场作品" : `${site.versionCount || 0} 个版本`}</span>
               </button>
             ))}
           </div>
@@ -1849,8 +1849,8 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
   const packageLabel = pkg?.source === "uploaded" ? "已上传覆盖包" : pkg?.exists ? "内置默认包" : "未上传";
   const prompt = [
     "PAGEPILOT SKILL",
-    `请从 ${skillURL} 下载并安装 hostctl-deploy Skill。`,
-    `安装后使用 \`hostctl_deploy.py --server ${base} doctor\` 检查连接，然后用它把网页发布到 PagePilot。`
+    `请从 ${skillURL} 下载并安装 pagep Skill。`,
+    `安装后使用 \`pagep doctor --server ${base}\` 检查连接，然后用它把网页发布到 PagePilot。`
   ].join("\n");
 
   return (
@@ -1872,8 +1872,8 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
             <label className="upload-zone skill-zip-upload">
               <input type="file" accept=".zip,application/zip" onChange={(event) => setZipFile(event.target.files?.[0] || null)} />
               <Upload size={20} />
-              <strong>{zipFile ? zipFile.name : "上传 hostctl-deploy.zip"}</strong>
-              <span>{zipFile ? formatSize(zipFile.size) : "这个 ZIP 会成为 /skill/hostctl-deploy.zip 的固定下载包"}</span>
+              <strong>{zipFile ? zipFile.name : "上传 pagep.zip"}</strong>
+              <span>{zipFile ? formatSize(zipFile.size) : "这个 ZIP 会成为 /skill/pagep.zip 的固定下载包"}</span>
             </label>
             <div className="meta-box">
               <InfoRow label="下载包" value={packageLabel} />
@@ -1889,17 +1889,17 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
           </aside>
           <div className="skill-package-guide">
             <h3>只维护下载包</h3>
-            <p>后台不再直接编辑 Skill 源文件。需要调整 Skill 时，在本地修改并打包成 <code>hostctl-deploy.zip</code> 后上传，服务器会把它作为固定下载包提供给 Agent。</p>
+            <p>后台不再直接编辑 Skill 源文件。需要调整 Skill 时，在本地修改并打包成 <code>pagep.zip</code> 后上传，服务器会把它作为固定下载包提供给 Agent。</p>
             <ul>
               <li>内置默认包用于新部署兜底，避免下载 404。</li>
-              <li>上传覆盖包后，下载地址仍保持 <code>/skill/hostctl-deploy.zip</code>。</li>
+              <li>上传覆盖包后，下载地址保持 <code>/skill/pagep.zip</code>，旧的 <code>/skill/hostctl-deploy.zip</code> 兼容可用。</li>
               <li>发布后的应用 URL 以后端接口返回为准，Skill/MCP 不自行拼接。</li>
             </ul>
           </div>
         </div>
       ) : (
         <div className="doc-grid">
-          <DocBlock title="启动方式" lines={[`hostctl-mcp --server ${base} --token YOUR_TOKEN`, "私有服务器请替换 --server；屏幕能力必须使用注册用户 Token。"]} />
+          <DocBlock title="启动方式" lines={[`pagep-mcp --server ${base} --token YOUR_TOKEN`, "私有服务器请替换 --server；屏幕能力必须使用注册用户 Token。"]} />
           <DocBlock title="发布工具" lines={["deploy_site: 新建发布或追加版本，支持多文件和访问密码。", "list_sites: 查询当前用户或匿名 session 的站点。", "set_access_password: 设置或清除访问密码。", "claim_anonymous_session: 将匿名发布归属到注册用户。"]} />
           <DocBlock title="屏幕工具" lines={["list_screens: 查询用户屏幕。", "publish_screen: 从自己的站点或商城选择投放。", "request_screen_screenshot: 下发一次截图指令。", "send_screen_command: refresh、sleep、wake、shutdown。"]} />
           <DocBlock title="匿名身份" lines={["Agent 匿名以 X-Hostctl-Session 为所有权依据。", "X-Hostctl-Agent-Id、Agent-Label、IP、UA 只用于后台展示和排查。", "网页匿名使用浏览器 HttpOnly cookie，同样计入匿名发布。"]} />

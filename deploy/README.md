@@ -43,7 +43,7 @@ Docker 默认把这些目录挂载到宿主机的 `./data/docker/` 下：
 
 - 用户端 React 工程位于 `frontend/user`，构建产物为 `internal/web/user/app`。
 - 后台 React 工程位于 `frontend/admin`，构建产物为 `internal/web/admin/app`。
-- 内置 Skill 下载包位于 `internal/web/skill/hostctl-deploy.zip`，用于保证新部署时 `/skill/hostctl-deploy.zip` 可直接下载。
+- 内置 Skill 下载包位于 `internal/web/skill/hostctl-deploy.zip`，用于保证新部署时 `/skill/pagep.zip` 可直接下载；旧 `/skill/hostctl-deploy.zip` 保留兼容。
 - Go 服务通过 `embed` 打包这些产物，所以源码方式发布二进制前需要先构建前端，并确认内置 Skill ZIP 是最新的。
 
 ## 1. 准备服务器
@@ -107,7 +107,7 @@ sudo systemctl reload caddy
 
 Caddy 直接把整个站点反向代理到 hostctl 即可。hostctl 自己处理首页、后台、API、Skill 下载、应用访问与应用访问路由，不需要在 Caddy 里维护路径白名单。
 
-后台“Skill & MCP”页只维护 `hostctl-deploy.zip` 下载包，不再直接编辑 Skill 源文件。需要调整 Skill 时，请在仓库或本地修改并打包，再上传 ZIP 覆盖内置包。
+后台“Skill & MCP”页只维护 `pagep.zip` 下载包，不再直接编辑 Skill 源文件。需要调整 Skill 时，请在仓库或本地修改并打包，再上传 ZIP 覆盖内置包。
 
 ## 5. 首次登录
 
@@ -136,7 +136,7 @@ curl -fsS https://host.example.com/deploy.html >/dev/null
 curl -fsS https://host.example.com/api-docs.html >/dev/null
 curl -fsS https://host.example.com/screens/ >/dev/null
 curl -fsS https://host.example.com/admin >/dev/null
-curl -fsS https://host.example.com/skill/hostctl-deploy.zip >/dev/null
+curl -fsS https://host.example.com/skill/pagep.zip >/dev/null
 ```
 
 登录后台后，也可以在 Agent 技能里执行：

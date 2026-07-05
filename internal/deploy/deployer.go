@@ -927,7 +927,7 @@ func (d *Deployer) ListAnonymousSessions(ctx context.Context, limit int) ([]stor
 	return d.store.ListAnonymousSessions(ctx, limit)
 }
 
-// ===== Marketplace（公开应用商城） =====
+// ===== Marketplace（公开创作市场） =====
 
 func (d *Deployer) ListMarketplaceDeploys(ctx context.Context, q, status, sort string, page, pageSize int) ([]store.MarketplaceDeploy, int, error) {
 	return d.store.ListMarketplaceDeploys(ctx, q, status, sort, page, pageSize)

@@ -282,6 +282,50 @@ h1, h2, h3, p { margin-top: 0; }
 .metric strong { display: block; margin-top: 8px; font-size: 25px; line-height: 1; }
 .metric em { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; font-style: normal; }
 
+.flow-section {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--shadow-soft);
+  padding: 20px;
+}
+.flow-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.flow-step {
+  min-height: 172px;
+  border: 1px solid rgba(14, 116, 144, 0.16);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.88), rgba(240,249,255,0.74)),
+    #fff;
+  padding: 16px;
+}
+.flow-step span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border-radius: 999px;
+  background: #e0f2fe;
+  color: #075985;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 900;
+}
+.flow-step strong {
+  display: block;
+  margin-top: 14px;
+  font-size: 17px;
+}
+.flow-step p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .market-section,
 .panel-table,
 .doc-block,
@@ -293,6 +337,16 @@ h1, h2, h3, p { margin-top: 0; }
   box-shadow: var(--shadow-soft);
 }
 .market-section { padding: 20px; }
+.market-page {
+  display: grid;
+  gap: 18px;
+}
+.market-hero {
+  background:
+    radial-gradient(circle at 12% 18%, rgba(34, 211, 238, 0.26), transparent 28%),
+    radial-gradient(circle at 88% 12%, rgba(167, 139, 250, 0.24), transparent 30%),
+    linear-gradient(145deg, rgba(255,255,255,0.88), rgba(224,242,254,0.76), rgba(238,242,255,0.68));
+}
 .section-head {
   display: flex;
   align-items: flex-end;
@@ -362,6 +416,28 @@ h1, h2, h3, p { margin-top: 0; }
   font-weight: 850;
 }
 .search-box input { width: 100%; min-width: 0; }
+.quick-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+.quick-filters button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.84);
+  color: #475569;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 850;
+}
+.quick-filters button:hover,
+.quick-filters button.active {
+  border-color: rgba(14, 165, 233, 0.36);
+  background: #e0f2fe;
+  color: #075985;
+}
 .card-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -464,6 +540,90 @@ h1, h2, h3, p { margin-top: 0; }
 }
 .locked-preview strong { display: block; margin-top: 8px; color: #fff; }
 .locked-preview span { display: block; margin-top: 6px; font-size: 12px; }
+.drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+}
+.drawer-shade {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgba(15, 23, 42, 0.46);
+}
+.drawer-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(760px, 100%);
+  height: 100%;
+  overflow: auto;
+  background:
+    linear-gradient(180deg, rgba(248, 251, 255, 0.98), rgba(255, 255, 255, 0.98)),
+    #fff;
+  box-shadow: -28px 0 70px rgba(15, 23, 42, 0.26);
+}
+.drawer-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(248, 251, 255, 0.92);
+  backdrop-filter: blur(14px);
+  padding: 18px;
+}
+.drawer-head h2 {
+  margin: 5px 0 0;
+  font-size: 24px;
+}
+.drawer-body {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+.drawer-preview {
+  height: 360px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+}
+.drawer-preview iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+.use-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.use-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  padding: 14px;
+}
+.use-card strong {
+  display: block;
+  font-size: 15px;
+}
+.use-card p {
+  min-height: 58px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
 .open-corner {
   position: absolute;
   right: 10px;
@@ -1099,7 +1259,9 @@ h1, h2, h3, p { margin-top: 0; }
   }
   .feature-board,
   .stat-strip,
+  .flow-grid,
   .card-grid,
+  .use-grid,
   .content-page .info-grid {
     grid-template-columns: 1fr;
   }
@@ -1144,6 +1306,9 @@ h1, h2, h3, p { margin-top: 0; }
   }
   .pager .button {
     width: 100%;
+  }
+  .drawer-preview {
+    height: 280px;
   }
   .page-indicator {
     justify-content: center;

@@ -126,9 +126,9 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 用户注册 / 登录或使用 Bearer Token 后，可以调用 `/api/session/claim` 认领当前匿名 session。认领后该 session 已发布的站点会迁移到 `user:{userId}`，一个用户可以认领多个匿名 session。
 - Token 必须归属到用户。创建 Token 时默认永久有效，也可传 `expiresAt` 或 `ttlSeconds` 创建临时 Token。
 - 管理员控制台、令牌管理、配置写入以及整站删除都需要管理员权限（`isAdmin=true`）。
-- 后台“Skill & MCP”只维护固定下载包。默认内置包会保证 `/skill/hostctl-deploy.zip` 不返回 404；管理员上传 ZIP 后会覆盖内置包。源码修改应在仓库或本地完成并重新打包，不能在后台直接编辑。
+- 后台“Skill & MCP”只维护固定下载包。默认内置包会保证 `/skill/pagep.zip` 不返回 404；旧的 `/skill/hostctl-deploy.zip` 保留兼容。管理员上传 ZIP 后会覆盖内置包。源码修改应在仓库或本地完成并重新打包，不能在后台直接编辑。
 - 公共市场、点赞、静态页面以及内容读取保持公开。
-- 首页应用商城保留点赞排行；管理员置顶会优先于所有排序，置顶分组内部仍按当前选择的排序（如 `likes_desc`）排列。
+- 创作市场保留点赞排行；管理员置顶会优先于所有排序，置顶分组内部仍按当前选择的排序（如 `likes_desc`）排列。
 - 访问密码输入入口保持公开，匿名访客也可以输入密码查看加密站点；验证通过后浏览器获得 5 分钟签名访问票据，站点改密码后旧票据立即失效。
 - 屏幕投放只允许注册用户 Token 或登录用户会话调用；匿名 session 不能绑定屏幕或投屏。
 - 屏幕 APP 不持有用户 Token，只持有可吊销的 Device Token；Device Token 只能拉取自己的 manifest、建立自己的 WebSocket 控制通道、上报心跳和按指令回传截图。
@@ -185,7 +185,7 @@ bin/hostctl admin pin-site my-landing --unpin
 
 ## Agent 技能
 
-内置技能位于 [skill/hostctl-deploy/SKILL.md](skill/hostctl-deploy/SKILL.md)。它的 Python 包装器仅依赖标准库，可以脱离 Go CLI 单独运行。后台和用户端说明里的下载地址固定为 `/skill/hostctl-deploy.zip`，服务端优先返回后台上传的 ZIP，没有上传包时返回内置默认包。
+内置 Skill 位于 [skill/hostctl-deploy/SKILL.md](skill/hostctl-deploy/SKILL.md)。它的 Python 包装器仅依赖标准库，可以脱离 Go CLI 单独运行。后台和用户端主下载地址为 `/skill/pagep.zip`，旧地址 `/skill/hostctl-deploy.zip` 保留兼容；服务端优先返回后台上传的 ZIP，没有上传包时返回内置默认包。
 
 ```bash
 python skill/hostctl-deploy/scripts/hostctl_deploy.py doctor --server http://127.0.0.1:8787

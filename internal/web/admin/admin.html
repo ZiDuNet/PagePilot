@@ -802,7 +802,7 @@
           <div class="field"><label>一句话描述</label><input id="d-desc" class="input" maxlength="240" placeholder="例如：产品发布页 v1"></div>
           <div class="field"><label>标题</label><input id="d-title" class="input" placeholder="Product Launch"></div>
           <div class="field"><label>自定义 / 更新 code</label><input id="d-code" class="input mono" placeholder="my-landing"><div class="hint"><label><input id="d-append" type="checkbox"> 更新现有发布，追加为新版本</label><br>勾选后必须填写已有 code。code 可从 /agent/{code}/ 链接、站点管理或部署结果里查看；追加版本不会创建新链接，只能更新你拥有的站点。</div></div>
-          <div class="field"><label>可见性</label><select id="d-visibility" class="select"><option value="public">公开进应用商城</option><option value="unlisted">未公开，仅链接访问</option></select><div class="hint">可见性只控制是否进入应用商城；访问密码在下方单独设置。</div></div>
+          <div class="field"><label>可见性</label><select id="d-visibility" class="select"><option value="public">公开进创作市场</option><option value="unlisted">未公开，仅链接访问</option></select><div class="hint">可见性只控制是否进入创作市场；访问密码在下方单独设置。</div></div>
           <div class="field"><label>访问密码</label><input id="d-access-password" class="input" type="password" autocomplete="new-password" placeholder="可选，至少 4 位"><div class="hint">创建新站点时生效；追加版本不会修改原访问密码，可在站点管理里调整。</div></div>
           <div id="drop-zone" class="file-zone">
             <div>
@@ -924,7 +924,7 @@
         <div class="panel-head">
           <div><h2 class="panel-title">Skill & MCP</h2><p class="panel-subtitle">维护 Agent 下载包，并查看 MCP 的接入方式。</p></div>
           <div class="actions">
-            <a class="btn btn-light" href="/skill/hostctl-deploy.zip" target="_blank" rel="noreferrer">下载 Skill</a>
+            <a class="btn btn-light" href="/skill/pagep.zip" target="_blank" rel="noreferrer">下载 Skill</a>
           </div>
         </div>
         <div class="section-tabs" role="tablist" aria-label="Skill MCP">
@@ -934,7 +934,7 @@
         <div id="skill-pane-skill" class="skill-subpane" style="margin-top:16px">
           <div class="info-grid">
             <div class="info-tile"><strong>维护方式</strong><span>后台只维护 hostctl-deploy.zip 下载包，不直接编辑 Skill 源文件。</span></div>
-            <div class="info-tile"><strong>下载地址</strong><span>/skill/hostctl-deploy.zip 固定不变，上传覆盖包后立即生效。</span></div>
+            <div class="info-tile"><strong>下载地址</strong><span>/skill/pagep.zip 固定不变，上传覆盖包后立即生效；旧地址保留兼容。</span></div>
             <div class="info-tile"><strong>包状态</strong><span id="skill-meta">加载中...</span></div>
           </div>
         </div>
@@ -946,7 +946,7 @@
           </div>
           <div class="field" style="margin-top:16px">
             <label>MCP 启动示例</label>
-            <pre class="code-block mono">hostctl-mcp --server https://pagepilot.example.com --token YOUR_TOKEN</pre>
+            <pre class="code-block mono">pagep-mcp --server https://pagepilot.example.com --token YOUR_TOKEN</pre>
           </div>
           <div class="field">
             <label>常用能力</label>
@@ -1003,7 +1003,7 @@
     <div class="modal-body">
       <div class="modal-tabs">
         <button class="modal-tab active" type="button" data-publish-tab="mine">我的站点</button>
-        <button class="modal-tab" type="button" data-publish-tab="market">应用商城</button>
+        <button class="modal-tab" type="button" data-publish-tab="market">创作市场</button>
       </div>
       <div class="toolbar" style="margin-top:0">
         <input id="publish-search" class="input" placeholder="搜索 code / 标题">
@@ -1825,7 +1825,7 @@
     document.querySelectorAll("[data-publish-tab]").forEach(btn => btn.classList.toggle("active", btn.dataset.publishTab === state.publishTab));
     const rows = publishCandidates();
     if (!rows.length) {
-      box.innerHTML = `<div class="empty">${state.publishTab === "market" ? "应用商城没有匹配站点。" : "没有匹配的我的站点。"}</div>`;
+      box.innerHTML = `<div class="empty">${state.publishTab === "market" ? "创作市场没有匹配作品。" : "没有匹配的我的站点。"}</div>`;
       return;
     }
     box.innerHTML = rows.map(site => {
@@ -1970,7 +1970,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ visibility: next })
       });
-      toast(next === "public" ? "已进入应用商城" : "已设为未公开", "success");
+      toast(next === "public" ? "已进入创作市场" : "已设为未公开", "success");
       await loadSites();
     } catch (err) { toast("可见性设置失败：" + err.message, "error"); }
   }
@@ -2095,7 +2095,7 @@
         <div class="file-row"><span>大小</span><strong>${fmtSize(res.size)}</strong></div>
         ${res.qrCode ? `<img src="${res.qrCode}" alt="QR Code" style="width:132px;height:132px;margin:14px auto;display:block">` : ""}
         <div class="actions"><a class="btn btn-primary" href="${escapeHtml(res.url)}" target="_blank">打开</a><button class="btn btn-light" id="copy-result">复制链接</button><button class="btn btn-light" id="versions-result">版本管理</button></div>
-        <iframe src="${escapeHtml(res.url)}" sandbox="allow-scripts allow-same-origin" style="width:100%;height:280px;border:1px solid #e8f0f5;border-radius:12px;margin-top:14px;background:white"></iframe>`;
+        <iframe src="${escapeHtml(res.url)}" sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals" style="width:100%;height:280px;border:1px solid #e8f0f5;border-radius:12px;margin-top:14px;background:white"></iframe>`;
       $("copy-result").addEventListener("click", () => navigator.clipboard.writeText(res.url).then(() => toast("已复制", "success")));
       $("versions-result").addEventListener("click", () => openVersions(res.code));
       toast("部署成功", "success");

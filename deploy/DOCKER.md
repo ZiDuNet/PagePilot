@@ -31,7 +31,7 @@ docker compose logs -f hostctl
 
 - 用户端 React：`frontend/user` 构建到 `internal/web/user/app`。
 - 后台 React：`frontend/admin` 构建到 `internal/web/admin/app`。
-- 内置 Skill 包：`internal/web/skill/hostctl-deploy.zip`，由 `skill/hostctl-deploy` 重新打包得到。
+- 内置 Skill 包：`internal/web/skill/hostctl-deploy.zip`，由 `skill/hostctl-deploy` 重新打包得到，对外主下载地址为 `/skill/pagep.zip`。
 - `/admin`、`/deploy.html`、`/api-docs.html`、`/agents/`、`/screens/` 都应由 PagePilot 服务自身返回。
 
 ## 首次管理员
@@ -95,7 +95,7 @@ server {
 
 浏览器页面会把当前 `origin` 传给后端；普通 HTTP 请求会依赖 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto` 判断真实公网域名和协议。反向代理仍建议保留这些头，不要把内网地址写进去。
 
-后台“Skill & MCP”页只维护下载包，不提供源码编辑。需要调整 Skill 时，请在仓库或本地修改 `skill/hostctl-deploy`，打包成 `hostctl-deploy.zip` 后在后台上传。上传包保存在数据目录下，优先级高于服务端内置包；删除或缺失上传包时会回退到内置包。
+后台“Skill & MCP”页只维护下载包，不提供源码编辑。需要调整 Skill 时，请在仓库或本地修改 `skill/hostctl-deploy`，打包成 `pagep.zip` 后在后台上传。上传包保存在数据目录下，优先级高于服务端内置包；删除或缺失上传包时会回退到内置包。
 
 ## 常用命令
 
@@ -173,7 +173,7 @@ docker compose up -d
 | 现象 | 检查项 |
 |---|---|
 | 首页可访问但 `/deploy.html` 或 `/screens/` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
-| `/skill/hostctl-deploy.zip` 404 | 确认镜像包含 `internal/web/skill/hostctl-deploy.zip`，并已重新构建；正常情况下没有后台上传包也会返回内置默认包。 |
+| `/skill/pagep.zip` 404 | 确认镜像包含 `internal/web/skill/hostctl-deploy.zip`，并已重新构建；正常情况下没有后台上传包也会返回内置默认包。旧 `/skill/hostctl-deploy.zip` 也保留兼容。 |
 | 二维码或分享链接域名错误 | 请先确认浏览器当前打开的域名正确；再检查反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，不要把内网地址透传给后端。 |
 | Skill/MCP 发布后返回内网链接 | 检查 `--server` 或 `HOSTCTL_SERVER` 是否使用了内网地址。路径模式下要返回公网链接，就让 Skill/MCP 用公网入口调用 PagePilot。 |
 | 登录默认管理员失败 | 如果数据库已有用户，默认管理员不会再次创建；请用已有管理员或备份恢复。 |

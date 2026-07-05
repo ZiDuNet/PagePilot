@@ -72,7 +72,7 @@ type DeployerPort interface {
 	ClaimAnonymousSession(ctx context.Context, id, userID string) (store.AnonymousSessionClaimResult, error)
 	ListAnonymousSessions(ctx context.Context, limit int) ([]store.AnonymousSession, error)
 
-	// ===== 应用商城（marketplace） =====
+	// ===== 创作市场（marketplace） =====
 
 	ListMarketplaceDeploys(ctx context.Context, q, status, sort string, page, pageSize int) ([]store.MarketplaceDeploy, int, error)
 	GetMarketplaceDeploy(ctx context.Context, code string) (store.MarketplaceDeploy, error)
@@ -286,7 +286,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/session/claim", s.handleClaimAnonymousSession)
 	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 
-	// 应用商城（公开 API：/api/deploys）
+	// 创作市场（公开 API：/api/deploys）
 	s.mux.HandleFunc("GET /api/deploys", s.handleListMarketplace)
 	s.mux.HandleFunc("GET /api/deploys/{publicId}", s.handleGetMarketplaceDeploy)
 	s.mux.HandleFunc("POST /api/deploys/{code}/like", s.handleLikeDeploy)
@@ -358,7 +358,10 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/", http.FileServer(http.FS(web.AdminAppFS()))))
 	s.mux.HandleFunc("GET /agents/", s.handleAgentGuideUI)
 	s.mux.HandleFunc("GET /screens/", s.handleScreenGuideUI)
+	s.mux.HandleFunc("GET /market", s.handleUserAppUI)
+	s.mux.HandleFunc("GET /market/", s.handleUserAppUI)
 	s.mux.HandleFunc("GET /skill/hostctl-deploy.zip", s.handleSkillDownload)
+	s.mux.HandleFunc("GET /skill/pagep.zip", s.handleSkillDownload)
 	// admin 子资源（admin.css / admin.js 等）从 embed 子树取
 	s.mux.Handle("GET /admin/static/", http.StripPrefix("/admin/static/", http.FileServer(http.FS(web.AdminSubFS()))))
 
@@ -399,6 +402,7 @@ func (s *Server) withMiddleware(h http.Handler) http.Handler {
 		start := time.Now()
 		reqID := newRequestID()
 		w.Header().Set("X-Request-Id", reqID)
+		s.applyBaseSecurityHeaders(w)
 
 		// 把 reqID 放进 context，handler 可以取出加到错误响应里
 		r = r.WithContext(withRequestID(r.Context(), reqID))
@@ -467,6 +471,12 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Hostctl-Session, X-Hostctl-Agent-Id, X-Hostctl-Agent-Label")
+}
+
+func (s *Server) applyBaseSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 }
 
 func originAllowed(origin, allowed string) bool {
@@ -799,7 +809,7 @@ func randomHex(n int) string {
 // 让 errors 在 import 中可见（Day 3+ 会用 errors.Is）
 var _ = errors.Is
 
-// ===== 应用商城（公开 API：/api/deploys） =====
+// ===== 创作市场（公开 API：/api/deploys） =====
 
 // marketplaceDeployResponse 是 GET /api/deploys 列表里单条记录的 JSON 形态，
 // 字段命名保持稳定，便于前端和 Agent 复用。
@@ -829,7 +839,7 @@ type marketplaceDeployResponse struct {
 	PinnedAt               *string `json:"pinnedAt"`
 }
 
-// handleListMarketplace 处理 GET /api/deploys —— 公开列出所有 deploy（应用商城）。
+// handleListMarketplace 处理 GET /api/deploys —— 公开列出所有 deploy（创作市场）。
 // 支持 query: q / status / sort / page / pageSize
 func (s *Server) handleListMarketplace(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -2001,29 +2011,27 @@ func (s *Server) handleAdminUI(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(web.AdminHTML())
 }
 
-func (s *Server) handleAgentGuideUI(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleUserAppUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	bytes, err := fs.ReadFile(web.UserSubFS(), "agents.html")
+	bytes, err := fs.ReadFile(web.UserSubFS(), "index.html")
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	_, _ = w.Write(bytes)
+}
+
+func (s *Server) handleAgentGuideUI(w http.ResponseWriter, r *http.Request) {
+	s.handleUserAppUI(w, r)
 }
 
 func (s *Server) handleScreenGuideUI(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	bytes, err := fs.ReadFile(web.UserSubFS(), "screens.html")
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	_, _ = w.Write(bytes)
+	s.handleUserAppUI(w, r)
 }
 
 func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
+	filename := "pagep.zip"
 	path := s.managedSkillZipPath()
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
@@ -2033,12 +2041,12 @@ func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/zip")
-		w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy.zip"`)
-		http.ServeContent(w, r, "hostctl-deploy.zip", time.Time{}, bytes.NewReader(data))
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+		http.ServeContent(w, r, filename, time.Time{}, bytes.NewReader(data))
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="hostctl-deploy.zip"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	http.ServeFile(w, r, path)
 }
 
@@ -2917,7 +2925,7 @@ func (s *Server) handleAdminListSites(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, SiteListResponse{Success: true, Sites: items})
 }
 
-// handleAdminSetSitePin 允许管理员置顶或取消置顶首页应用商城站点。
+// handleAdminSetSitePin 允许管理员置顶或取消置顶创作市场站点。
 func (s *Server) handleAdminSetSitePin(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	code := r.PathValue("code")
@@ -3304,9 +3312,9 @@ func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, sub, ab
 }
 
 func (s *Server) setHostedContentSecurityHeaders(w http.ResponseWriter) {
-	csp := "sandbox allow-scripts allow-forms allow-popups allow-downloads; " +
+	csp := "sandbox allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-pointer-lock allow-top-navigation-by-user-activation; " +
 		"default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; " +
-		"img-src * data: blob:; media-src * data: blob:; font-src * data:; " +
+		"img-src * data: blob:; media-src * data: blob:; font-src * data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval'; " +
 		"connect-src *; frame-src *; child-src *"
 	if frameAncestors := s.frameAncestorsDirective(); frameAncestors != "" {
 		csp += "; " + frameAncestors
