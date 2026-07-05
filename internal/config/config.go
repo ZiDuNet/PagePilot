@@ -29,6 +29,23 @@ type Config struct {
 
 	BootstrapAdminUsername string
 	BootstrapAdminPassword string
+
+	EmailVerificationEnabled bool
+	SMTPHost                 string
+	SMTPPort                 string
+	SMTPUsername             string
+	SMTPPassword             string
+	SMTPFrom                 string
+	SMTPSecure               string
+
+	StorageBackend     string
+	OSSProvider        string
+	OSSEndpoint        string
+	OSSBucket          string
+	OSSAccessKeyID     string
+	OSSAccessKeySecret string
+	OSSPrefix          string
+	OSSPublicBaseURL   string
 }
 
 // Default returns runtime defaults, overridable by environment variables.
@@ -46,6 +63,9 @@ func Default() Config {
 		MaxFilesPerSite:      100,
 		CooldownSeconds:      10,
 		AnonymousDeployLimit: 5,
+		StorageBackend:       "local",
+		OSSProvider:          "aliyun",
+		SMTPSecure:           "starttls",
 	}
 
 	if v := os.Getenv("HOSTCTL_HTTP_ADDR"); v != "" {
@@ -119,6 +139,51 @@ func Default() Config {
 	if v := os.Getenv("HOSTCTL_ADMIN_PASSWORD"); v != "" {
 		c.BootstrapAdminPassword = v
 	}
+	if v := os.Getenv("HOSTCTL_EMAIL_VERIFICATION_ENABLED"); v != "" {
+		c.EmailVerificationEnabled = parseBoolEnv(v)
+	}
+	if v := os.Getenv("HOSTCTL_SMTP_HOST"); v != "" {
+		c.SMTPHost = v
+	}
+	if v := os.Getenv("HOSTCTL_SMTP_PORT"); v != "" {
+		c.SMTPPort = v
+	}
+	if v := os.Getenv("HOSTCTL_SMTP_USERNAME"); v != "" {
+		c.SMTPUsername = v
+	}
+	if v := os.Getenv("HOSTCTL_SMTP_PASSWORD"); v != "" {
+		c.SMTPPassword = v
+	}
+	if v := os.Getenv("HOSTCTL_SMTP_FROM"); v != "" {
+		c.SMTPFrom = v
+	}
+	if v := os.Getenv("HOSTCTL_SMTP_SECURE"); v != "" {
+		c.SMTPSecure = v
+	}
+	if v := os.Getenv("HOSTCTL_STORAGE_BACKEND"); v != "" {
+		c.StorageBackend = normalizeStorageBackend(v)
+	}
+	if v := os.Getenv("HOSTCTL_OSS_PROVIDER"); v != "" {
+		c.OSSProvider = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("HOSTCTL_OSS_ENDPOINT"); v != "" {
+		c.OSSEndpoint = v
+	}
+	if v := os.Getenv("HOSTCTL_OSS_BUCKET"); v != "" {
+		c.OSSBucket = v
+	}
+	if v := os.Getenv("HOSTCTL_OSS_ACCESS_KEY_ID"); v != "" {
+		c.OSSAccessKeyID = v
+	}
+	if v := os.Getenv("HOSTCTL_OSS_ACCESS_KEY_SECRET"); v != "" {
+		c.OSSAccessKeySecret = v
+	}
+	if v := os.Getenv("HOSTCTL_OSS_PREFIX"); v != "" {
+		c.OSSPrefix = v
+	}
+	if v := os.Getenv("HOSTCTL_OSS_PUBLIC_BASE_URL"); v != "" {
+		c.OSSPublicBaseURL = v
+	}
 
 	if v := os.Getenv("APP_URL_MODE"); v != "" {
 		c.AppURLMode = v
@@ -182,10 +247,57 @@ func Default() Config {
 	if v := os.Getenv("ADMIN_PASSWORD"); v != "" {
 		c.BootstrapAdminPassword = v
 	}
+	if v := os.Getenv("EMAIL_VERIFICATION_ENABLED"); v != "" {
+		c.EmailVerificationEnabled = parseBoolEnv(v)
+	}
+	if v := os.Getenv("SMTP_HOST"); v != "" {
+		c.SMTPHost = v
+	}
+	if v := os.Getenv("SMTP_PORT"); v != "" {
+		c.SMTPPort = v
+	}
+	if v := os.Getenv("SMTP_USERNAME"); v != "" {
+		c.SMTPUsername = v
+	}
+	if v := os.Getenv("SMTP_PASSWORD"); v != "" {
+		c.SMTPPassword = v
+	}
+	if v := os.Getenv("SMTP_FROM"); v != "" {
+		c.SMTPFrom = v
+	}
+	if v := os.Getenv("SMTP_SECURE"); v != "" {
+		c.SMTPSecure = v
+	}
+	if v := os.Getenv("STORAGE_BACKEND"); v != "" {
+		c.StorageBackend = normalizeStorageBackend(v)
+	}
+	if v := os.Getenv("OSS_PROVIDER"); v != "" {
+		c.OSSProvider = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("OSS_ENDPOINT"); v != "" {
+		c.OSSEndpoint = v
+	}
+	if v := os.Getenv("OSS_BUCKET"); v != "" {
+		c.OSSBucket = v
+	}
+	if v := os.Getenv("OSS_ACCESS_KEY_ID"); v != "" {
+		c.OSSAccessKeyID = v
+	}
+	if v := os.Getenv("OSS_ACCESS_KEY_SECRET"); v != "" {
+		c.OSSAccessKeySecret = v
+	}
+	if v := os.Getenv("OSS_PREFIX"); v != "" {
+		c.OSSPrefix = v
+	}
+	if v := os.Getenv("OSS_PUBLIC_BASE_URL"); v != "" {
+		c.OSSPublicBaseURL = v
+	}
 
 	c.CORSAllowOrigins = NormalizeCORSAllowOrigins(c.CORSAllowOrigins)
 	c.EmbedPolicy = NormalizeEmbedPolicy(c.EmbedPolicy)
 	c.EmbedAllowOrigins = NormalizeOriginList(c.EmbedAllowOrigins)
+	c.StorageBackend = normalizeStorageBackend(c.StorageBackend)
+	c.SMTPSecure = strings.ToLower(strings.TrimSpace(c.SMTPSecure))
 
 	if os.Getenv("HOSTCTL_DEV") == "1" {
 		if c.HostedDir == "/var/www/hosted" {
@@ -243,7 +355,38 @@ func (c Config) Validate() error {
 	if c.AnonymousDeployLimit < -1 {
 		return fmt.Errorf("AnonymousDeployLimit must be -1 or greater")
 	}
+	switch c.StorageBackend {
+	case "", "local", "oss":
+	default:
+		return fmt.Errorf("StorageBackend must be local or oss")
+	}
+	if c.StorageBackend == "oss" {
+		if c.OSSEndpoint == "" || c.OSSBucket == "" {
+			return fmt.Errorf("OSS endpoint and bucket are required when StorageBackend is oss")
+		}
+	}
+	if c.EmailVerificationEnabled && (c.SMTPHost == "" || c.SMTPFrom == "") {
+		return fmt.Errorf("SMTP host and from are required when email verification is enabled")
+	}
 	return nil
+}
+
+func parseBoolEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on", "enabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeStorageBackend(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "oss", "aliyun", "aliyun-oss", "object":
+		return "oss"
+	default:
+		return "local"
+	}
 }
 
 // NormalizeEmbedPolicy 规范化应用 iframe 嵌入策略。

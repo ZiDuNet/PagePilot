@@ -1,8 +1,6 @@
-// Package web 提供 hostctl 内置的 Web 资源：
-//   - user/：用户端站点
-//   - admin/：管理后台 React 产物 + 旧单页 fallback
-//
-// 所有内容通过 go:embed 打进二进制，避免运行时磁盘依赖。
+// Package web provides PagePilot built-in web assets.
+// Only current React build outputs are embedded at runtime; older static HTML
+// files in the repository are intentionally excluded from the binary.
 package web
 
 import (
@@ -11,10 +9,10 @@ import (
 	"sync"
 )
 
-//go:embed admin admin/app admin/app/index.html admin/admin.html
+//go:embed admin/app admin/app/index.html
 var adminFS embed.FS
 
-//go:embed user
+//go:embed user/app user/app/index.html
 var userFS embed.FS
 
 //go:embed skill/hostctl-deploy.zip
@@ -26,13 +24,10 @@ var (
 	adminHTMLErr   error
 )
 
-// AdminHTML 返回管理后台 HTML。优先使用 React 构建产物，未构建时回退到旧单页。
+// AdminHTML returns the admin React entrypoint.
 func AdminHTML() []byte {
 	adminHTMLOnce.Do(func() {
 		adminHTMLBytes, adminHTMLErr = fs.ReadFile(adminFS, "admin/app/index.html")
-		if adminHTMLErr != nil {
-			adminHTMLBytes, adminHTMLErr = fs.ReadFile(adminFS, "admin/admin.html")
-		}
 	})
 	if adminHTMLErr != nil {
 		panic(adminHTMLErr)
@@ -40,26 +35,25 @@ func AdminHTML() []byte {
 	return adminHTMLBytes
 }
 
-// UserSubFS 返回用户端站点子目录的 fs.FS（已剥离 "user/" 前缀）。
+// UserSubFS returns the current user React app build.
 func UserSubFS() fs.FS {
-	sub, err := fs.Sub(userFS, "user")
+	sub, err := fs.Sub(userFS, "user/app")
 	if err != nil {
 		panic(err)
 	}
 	return sub
 }
 
-// AdminSubFS 返回管理后台资源子目录的 fs.FS（已剥离 "admin/" 前缀）。
-// 用于 /admin/static/* 路径下的额外资源（CSS/JS/图标等）。
+// AdminSubFS returns admin assets for legacy /admin/static requests.
 func AdminSubFS() fs.FS {
-	sub, err := fs.Sub(adminFS, "admin")
+	sub, err := fs.Sub(adminFS, "admin/app")
 	if err != nil {
 		panic(err)
 	}
 	return sub
 }
 
-// AdminAppFS 返回管理后台 React 构建产物子目录。
+// AdminAppFS returns the admin React app build.
 func AdminAppFS() fs.FS {
 	sub, err := fs.Sub(adminFS, "admin/app")
 	if err != nil {
@@ -68,7 +62,7 @@ func AdminAppFS() fs.FS {
 	return sub
 }
 
-// SkillPackage 返回内置的 hostctl-deploy Skill ZIP。
+// SkillPackage returns the built-in pagep Skill ZIP.
 func SkillPackage() ([]byte, error) {
 	return skillPackageFS.ReadFile("skill/hostctl-deploy.zip")
 }

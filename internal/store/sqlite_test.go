@@ -195,7 +195,7 @@ func TestMarketplacePinnedDeploysStayAboveLikeRanking(t *testing.T) {
 		t.Fatalf("pin low site: %v", err)
 	}
 
-	deploys, total, err := store.ListMarketplaceDeploys(ctx, "", "", "likes_desc", 1, 10)
+	deploys, total, err := store.ListMarketplaceDeploys(ctx, "", "", "likes_desc", "", "", "", "", 1, 10)
 	if err != nil {
 		t.Fatalf("list marketplace: %v", err)
 	}

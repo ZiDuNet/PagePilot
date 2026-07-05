@@ -1,12 +1,12 @@
 {
   "name": "pagepilot-user-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
-    "test:preview": "node scripts/previewScheduler.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

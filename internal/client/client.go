@@ -190,12 +190,22 @@ func parseAPIError(m map[string]any) *api.APIError {
 // SearchMarketplace 调用 GET /api/deploys —— 公开创作市场搜索。
 // q 可空；sort 取 newest/oldest/likes_desc/views_desc；page / pageSize 默认值由服务端兜底。
 func (c *Client) SearchMarketplace(ctx context.Context, q, sort string, page, pageSize int) (map[string]any, error) {
+	return c.SearchMarketplaceWithFilters(ctx, q, sort, "", "", page, pageSize)
+}
+
+func (c *Client) SearchMarketplaceWithFilters(ctx context.Context, q, sort, category, kind string, page, pageSize int) (map[string]any, error) {
 	qs := url.Values{}
 	if q != "" {
 		qs.Set("q", q)
 	}
 	if sort != "" {
 		qs.Set("sort", sort)
+	}
+	if category != "" {
+		qs.Set("category", category)
+	}
+	if kind != "" {
+		qs.Set("kind", kind)
 	}
 	if page > 0 {
 		qs.Set("page", fmt.Sprintf("%d", page))
@@ -209,6 +219,14 @@ func (c *Client) SearchMarketplace(ctx context.Context, q, sort string, page, pa
 	}
 	var out map[string]any
 	if err := c.doGet(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) MarketCategories(ctx context.Context) (map[string]any, error) {
+	var out map[string]any
+	if err := c.doGet(ctx, "/api/market/categories", &out); err != nil {
 		return nil, err
 	}
 	return out, nil

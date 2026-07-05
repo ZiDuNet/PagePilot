@@ -84,6 +84,10 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate screens device info: %w", err)
 	}
+	if err := migrateFavoritesTable(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate favorites: %w", err)
+	}
 
 	// 给老 site 补 public_id（NULL 的填上）
 	if err := backfillSitesPublicID(db); err != nil {
@@ -179,6 +183,7 @@ func migrateSitesAddMarketplaceColumns(db *sql.DB) error {
 		{"like_count", "INTEGER NOT NULL DEFAULT 0"},
 		{"status", "TEXT NOT NULL DEFAULT 'active'"},
 		{"visibility", "TEXT NOT NULL DEFAULT 'public'"},
+		{"category", "TEXT NOT NULL DEFAULT ''"},
 		{"access_password_hash", "TEXT NOT NULL DEFAULT ''"},
 		{"is_pinned", "BOOLEAN NOT NULL DEFAULT 0"},
 		{"pinned_at", "DATETIME"},
@@ -217,6 +222,25 @@ func migrateScreensAddDeviceInfo(db *sql.DB) error {
 		_, err := db.Exec(fmt.Sprintf(`ALTER TABLE screens ADD COLUMN %s %s`, c.name, c.ddl))
 		if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
 			return fmt.Errorf("alter screens add %s: %w", c.name, err)
+		}
+	}
+	return nil
+}
+
+func migrateFavoritesTable(db *sql.DB) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS favorites (
+			site_code   TEXT NOT NULL,
+			owner_id    TEXT NOT NULL,
+			created_at  DATETIME NOT NULL,
+			PRIMARY KEY (site_code, owner_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_favorites_owner ON favorites(owner_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_favorites_site ON favorites(site_code)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -297,6 +321,7 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	if visibility == "" {
 		visibility = "public"
 	}
+	category := strings.TrimSpace(site.Category)
 	var expiresAt any
 	if site.ExpiresAt != nil {
 		expiresAt = site.ExpiresAt.UTC()
@@ -312,9 +337,9 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sites (code, public_id, owner_token_id, current_version, primary_version_strategy,
-		                   visibility, view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source)
-		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, site.Code, publicID, site.OwnerTokenID, strategy, visibility, site.ViewCount, site.LikeCount, status, site.AccessPasswordHash, site.IsPinned, pinnedAt, expiresAt, site.CreatedAt.UTC(), updatedAt.UTC(), site.Source)
+		                   visibility, category, view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source)
+		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, site.Code, publicID, site.OwnerTokenID, strategy, visibility, category, site.ViewCount, site.LikeCount, status, site.AccessPasswordHash, site.IsPinned, pinnedAt, expiresAt, site.CreatedAt.UTC(), updatedAt.UTC(), site.Source)
 	if err != nil {
 		return fmt.Errorf("insert site: %w", err)
 	}
@@ -331,11 +356,11 @@ func (s *SQLiteStore) GetSite(ctx context.Context, code string) (Site, error) {
 	var isPinned int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT code, public_id, owner_token_id, current_version, primary_version_strategy,
-		       visibility, view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source
+		       visibility, category, view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source
 		FROM sites WHERE code = ?
 	`, code).Scan(
 		&site.Code, &site.PublicID, &site.OwnerTokenID, &cur, &site.PrimaryVersionStrategy,
-		&site.Visibility, &site.ViewCount, &site.LikeCount, &site.Status, &site.AccessPasswordHash, &isPinned, &pinnedAt, &expiresAt, &site.CreatedAt, &updatedAt, &site.Source,
+		&site.Visibility, &site.Category, &site.ViewCount, &site.LikeCount, &site.Status, &site.AccessPasswordHash, &isPinned, &pinnedAt, &expiresAt, &site.CreatedAt, &updatedAt, &site.Source,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Site{}, ErrNotFound
@@ -885,6 +910,8 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 			s.like_count,
 			COALESCE(s.status, 'active') AS status,
 			COALESCE(s.visibility, 'public') AS visibility,
+			COALESCE(s.category, '') AS category,
+			COALESCE(cv.main_entry, '') AS main_entry,
 			CASE WHEN COALESCE(s.access_password_hash, '') <> '' THEN 1 ELSE 0 END AS access_protected,
 			COALESCE(s.is_pinned, 0) AS is_pinned,
 			s.pinned_at,
@@ -893,6 +920,7 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 			MAX(v.created_at) AS last_version_at
 		FROM sites s
 		LEFT JOIN versions v ON v.site_code = s.code
+		LEFT JOIN versions cv ON cv.site_code = s.code AND cv.version_number = s.current_version
 		GROUP BY s.code
 		ORDER BY COALESCE(s.is_pinned, 0) DESC, s.pinned_at DESC, s.created_at DESC
 	`)
@@ -913,7 +941,7 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 		if err := rows.Scan(
 			&item.Code, &item.PublicID, &item.OwnerTokenID, &cur, &item.CreatedAt, &updatedAt, &item.Source,
 			&item.ViewCount, &item.LikeCount, &item.Status,
-			&item.Visibility, &accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
+			&item.Visibility, &item.Category, &item.MainEntry, &accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
 		); err != nil {
 			return nil, fmt.Errorf("scan site row: %w", err)
 		}
@@ -979,6 +1007,12 @@ func (s *SQLiteStore) DeleteSite(ctx context.Context, code string) error {
 			return fmt.Errorf("delete likes: %w", err)
 		}
 	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM favorites WHERE site_code = ?`, code); err != nil {
+		if !contains(err.Error(), "no such table") {
+			return fmt.Errorf("delete favorites: %w", err)
+		}
+	}
 	res, err := tx.ExecContext(ctx,
 		`DELETE FROM sites WHERE code = ?`, code)
 	if err != nil {
@@ -1010,8 +1044,11 @@ const marketplaceSelectCols = `
 	cv.total_size            AS file_size,
 	s.primary_version_strategy AS primary_version_strategy,
 	COALESCE(s.visibility, 'public') AS visibility,
+	COALESCE(s.category, '') AS category,
 	s.view_count             AS view_count,
 	s.like_count             AS like_count,
+	(SELECT COUNT(*) FROM favorites fcnt WHERE fcnt.site_code = s.code) AS favorite_count,
+	CASE WHEN ? <> '' AND EXISTS (SELECT 1 FROM favorites fme WHERE fme.site_code = s.code AND fme.owner_id = ?) THEN 1 ELSE 0 END AS favorited,
 	s.status                 AS status,
 	CASE WHEN COALESCE(s.access_password_hash, '') <> '' THEN 1 ELSE 0 END AS access_protected,
 	COALESCE(s.is_pinned, 0) AS is_pinned,
@@ -1045,17 +1082,20 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	var strategy sql.NullString
 	var status sql.NullString
 	var visibility sql.NullString
+	var category sql.NullString
 	var accessProtected int
 	var isPinned int
+	var favorited int
 	var pinnedAt sql.NullString
 	if err := sc.Scan(
 		&d.ID, &d.Code, &d.OwnerTokenID, &curVer, &curVerID, &title, &desc, &mainEntry, &fileSize,
-		&strategy, &visibility, &d.ViewCount, &d.LikeCount, &status, &accessProtected, &isPinned, &pinnedAt, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
+		&strategy, &visibility, &category, &d.ViewCount, &d.LikeCount, &d.FavoriteCount, &favorited, &status, &accessProtected, &isPinned, &pinnedAt, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
 	); err != nil {
 		return d, err
 	}
 	d.AccessProtected = accessProtected != 0
 	d.IsPinned = isPinned != 0
+	d.Favorited = favorited != 0
 	if curVer.Valid {
 		v := curVer.Int64
 		d.CurrentVersion = &v
@@ -1084,6 +1124,9 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	}
 	if visibility.Valid {
 		d.Visibility = visibility.String
+	}
+	if category.Valid {
+		d.Category = category.String
 	}
 	if d.Status == "" {
 		d.Status = "active"
@@ -1120,7 +1163,7 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 
 // ListMarketplaceDeploys 分页 + 搜索 + 排序 + 状态过滤。
 // 返回 deploys 列表 + total（用于分页显示）。
-func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sort string, page, pageSize int) ([]MarketplaceDeploy, int, error) {
+func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sort, category, kind, ownerTokenID, favoriteOwnerID string, page, pageSize int) ([]MarketplaceDeploy, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -1140,13 +1183,47 @@ func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sor
 		where = append(where, `s.status = ?`)
 		args = append(args, status)
 	}
+	if category != "" {
+		where = append(where, `COALESCE(s.category, '') = ?`)
+		args = append(args, category)
+	}
+	switch kind {
+	case "html":
+		where = append(where, `(LOWER(cv.main_entry) LIKE '%.html' OR LOWER(cv.main_entry) LIKE '%.htm')`)
+	case "md", "markdown":
+		where = append(where, `(LOWER(cv.main_entry) LIKE '%.md' OR LOWER(cv.main_entry) LIKE '%.markdown')`)
+	case "protected":
+		where = append(where, `COALESCE(s.access_password_hash, '') <> ''`)
+	case "featured":
+		where = append(where, `COALESCE(s.is_pinned, 0) = 1`)
+	case "mine":
+		if ownerTokenID == "" {
+			where = append(where, `1 = 0`)
+		} else {
+			where = append(where, `s.owner_token_id = ?`)
+			args = append(args, ownerTokenID)
+		}
+	case "favorites":
+		if favoriteOwnerID == "" {
+			where = append(where, `1 = 0`)
+		} else {
+			where = append(where, `EXISTS (SELECT 1 FROM favorites ff WHERE ff.site_code = s.code AND ff.owner_id = ?)`)
+			args = append(args, favoriteOwnerID)
+		}
+	}
 	whereSQL := ""
 	if len(where) > 0 {
 		whereSQL = "WHERE " + strings.Join(where, " AND ")
 	}
 
-	orderSQL := "s.created_at DESC"
+	orderSQL := "s.like_count DESC, s.view_count DESC, s.updated_at DESC"
 	switch sort {
+	case "", "hot":
+		orderSQL = "s.like_count DESC, s.view_count DESC, s.updated_at DESC"
+	case "newest":
+		orderSQL = "s.created_at DESC"
+	case "featured":
+		orderSQL = "COALESCE(s.is_pinned, 0) DESC, s.like_count DESC, s.updated_at DESC"
 	case "oldest":
 		orderSQL = "s.created_at ASC"
 	case "views_desc":
@@ -1170,7 +1247,8 @@ func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sor
 	listSQL := `SELECT ` + marketplaceSelectCols + marketplaceFrom + whereSQL + `
 		ORDER BY ` + orderSQL + `
 		LIMIT ? OFFSET ?`
-	listArgs := append(args, pageSize, (page-1)*pageSize)
+	listArgs := append([]any{favoriteOwnerID, favoriteOwnerID}, args...)
+	listArgs = append(listArgs, pageSize, (page-1)*pageSize)
 	rows, err := s.db.QueryContext(ctx, listSQL, listArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list marketplace: %w", err)
@@ -1190,7 +1268,7 @@ func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sor
 
 // GetMarketplaceDeploy 按 code 取单条 marketplace 数据。
 func (s *SQLiteStore) GetMarketplaceDeploy(ctx context.Context, code string) (MarketplaceDeploy, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+marketplaceSelectCols+marketplaceFrom+` WHERE s.code = ?`, code)
+	row := s.db.QueryRowContext(ctx, `SELECT `+marketplaceSelectCols+marketplaceFrom+` WHERE s.code = ?`, "", "", code)
 	d, err := scanMarketplaceRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MarketplaceDeploy{}, ErrNotFound
@@ -1203,7 +1281,7 @@ func (s *SQLiteStore) GetMarketplaceDeploy(ctx context.Context, code string) (Ma
 
 // GetMarketplaceDeployByUUID 按 public_id 取单条 marketplace 数据。
 func (s *SQLiteStore) GetMarketplaceDeployByUUID(ctx context.Context, publicID string) (MarketplaceDeploy, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+marketplaceSelectCols+marketplaceFrom+` WHERE s.public_id = ?`, publicID)
+	row := s.db.QueryRowContext(ctx, `SELECT `+marketplaceSelectCols+marketplaceFrom+` WHERE s.public_id = ?`, "", "", publicID)
 	d, err := scanMarketplaceRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MarketplaceDeploy{}, ErrNotFound
@@ -1261,6 +1339,46 @@ func (s *SQLiteStore) AddLike(ctx context.Context, code, userFingerprint string)
 	return newCount, nil
 }
 
+func (s *SQLiteStore) SetFavorite(ctx context.Context, code, ownerID string, favorited bool) (int64, bool, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return 0, false, fmt.Errorf("favorite owner is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if favorited {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO favorites (site_code, owner_id, created_at) VALUES (?, ?, ?)`,
+			code, ownerID, time.Now().UTC()); err != nil {
+			return 0, false, fmt.Errorf("insert favorite: %w", err)
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM favorites WHERE site_code = ? AND owner_id = ?`,
+			code, ownerID); err != nil {
+			return 0, false, fmt.Errorf("delete favorite: %w", err)
+		}
+	}
+	var count int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM favorites WHERE site_code = ?`, code).Scan(&count); err != nil {
+		return 0, false, fmt.Errorf("count favorite: %w", err)
+	}
+	var exists int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT CASE WHEN EXISTS (SELECT 1 FROM favorites WHERE site_code = ? AND owner_id = ?) THEN 1 ELSE 0 END`,
+		code, ownerID).Scan(&exists); err != nil {
+		return 0, false, fmt.Errorf("read favorite: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("commit favorite: %w", err)
+	}
+	return count, exists != 0, nil
+}
+
 // UpdateSiteStatus 设置 site.status。
 func (s *SQLiteStore) UpdateSiteStatus(ctx context.Context, code, status string) error {
 	res, err := s.db.ExecContext(ctx,
@@ -1283,6 +1401,20 @@ func (s *SQLiteStore) SetSiteVisibility(ctx context.Context, code, visibility st
 		visibility, time.Now().UTC(), code)
 	if err != nil {
 		return fmt.Errorf("set site visibility: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLiteStore) SetSiteCategory(ctx context.Context, code, category string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sites SET category = ?, updated_at = ? WHERE code = ?`,
+		strings.TrimSpace(category), time.Now().UTC(), code)
+	if err != nil {
+		return fmt.Errorf("set site category: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {

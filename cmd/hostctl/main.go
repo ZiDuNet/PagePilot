@@ -223,6 +223,8 @@ func readSource(source string) (files []api.DeployFile, mainEntry string, err er
 
 	// 目录：递归读取所有文件
 	mainEntry = ""
+	readmeEntry := ""
+	pageEntry := ""
 	entries := []string{}
 	err = filepath.Walk(source, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -257,13 +259,21 @@ func readSource(source string) (files []api.DeployFile, mainEntry string, err er
 				Content: string(b),
 			})
 		}
-		// 默认主入口优先级：index.html > 第一个 .html 文件 > 第一个文件
-		if mainEntry == "" {
+		// 默认主入口优先级：index.html > README.md > 第一个 HTML/Markdown
+		lowerRel := strings.ToLower(rel)
+		if lowerRel == "index.html" || lowerRel == "index.htm" {
 			mainEntry = rel
+		} else if (lowerRel == "readme.md" || lowerRel == "readme.markdown") && readmeEntry == "" {
+			readmeEntry = rel
+		} else if (strings.HasSuffix(lowerRel, ".html") || strings.HasSuffix(lowerRel, ".htm") || strings.HasSuffix(lowerRel, ".md") || strings.HasSuffix(lowerRel, ".markdown")) && pageEntry == "" {
+			pageEntry = rel
 		}
-		if rel == "index.html" {
-			mainEntry = rel
-		}
+	}
+	if mainEntry == "" {
+		mainEntry = readmeEntry
+	}
+	if mainEntry == "" {
+		mainEntry = pageEntry
 	}
 	if mainEntry == "" {
 		mainEntry = "index.html"
@@ -341,10 +351,11 @@ func cmdDeploy() *cobra.Command {
 		customCode  string
 		filename    string
 		accessPass  string
+		category    string
 	)
 	c := &cobra.Command{
 		Use:   "deploy <source>",
-		Short: "Deploy a static site from a file or directory",
+		Short: "Deploy a static site from HTML, Markdown, ZIP, or a directory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if description == "" {
@@ -367,6 +378,7 @@ func cmdDeploy() *cobra.Command {
 				Files:          files,
 				Source:         "cli",
 				AccessPassword: accessPass,
+				Category:       category,
 			}
 			if customCode != "" {
 				req.EnableCustomCode = true
@@ -386,8 +398,9 @@ func cmdDeploy() *cobra.Command {
 	c.Flags().StringVarP(&description, "description", "d", "", "deployment description (required, max 240 chars)")
 	c.Flags().StringVarP(&title, "title", "t", "", "site title (optional metadata)")
 	c.Flags().StringVarP(&customCode, "code", "c", "", "custom short code (^[a-z0-9-]{3,32}$)")
-	c.Flags().StringVarP(&filename, "filename", "f", "", "main entry filename (default: index.html)")
+	c.Flags().StringVarP(&filename, "filename", "f", "", "main entry filename; optional for ZIP/directories")
 	c.Flags().StringVar(&accessPass, "access-password", "", "optional visit password for a new user-owned site")
+	c.Flags().StringVar(&category, "category", "", "marketplace category slug, e.g. landing/dashboard/docs/tool/game/screen")
 	_ = c.MarkFlagRequired("description")
 	return c
 }
@@ -1068,6 +1081,8 @@ func cmdMarket() *cobra.Command {
 	// market search [query]
 	var (
 		mSort     string
+		mCategory string
+		mKind     string
 		mPage     int
 		mPageSize int
 	)
@@ -1082,7 +1097,7 @@ func cmdMarket() *cobra.Command {
 			}
 			ctx, cancel := withSignalCancel()
 			defer cancel()
-			resp, err := buildClient().SearchMarketplace(ctx, q, mSort, mPage, mPageSize)
+			resp, err := buildClient().SearchMarketplaceWithFilters(ctx, q, mSort, mCategory, mKind, mPage, mPageSize)
 			if err != nil {
 				printErr(err)
 				return errSilent
@@ -1096,6 +1111,8 @@ func cmdMarket() *cobra.Command {
 		},
 	}
 	searchC.Flags().StringVar(&mSort, "sort", "newest", "sort: newest / oldest / likes_desc / views_desc")
+	searchC.Flags().StringVar(&mCategory, "category", "", "marketplace category slug, e.g. landing/dashboard/docs/tool/game/screen")
+	searchC.Flags().StringVar(&mKind, "kind", "", "derived filter: html / md / protected / featured / mine")
 	searchC.Flags().IntVar(&mPage, "page", 1, "page number")
 	searchC.Flags().IntVar(&mPageSize, "page-size", 24, "page size (max 50)")
 
@@ -1121,7 +1138,31 @@ func cmdMarket() *cobra.Command {
 		},
 	}
 
-	root.AddCommand(searchC, showC)
+	categoriesC := &cobra.Command{
+		Use:   "categories",
+		Short: "List marketplace categories",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := withSignalCancel()
+			defer cancel()
+			resp, err := buildClient().MarketCategories(ctx)
+			if err != nil {
+				printErr(err)
+				return errSilent
+			}
+			if flagJSON {
+				_ = json.NewEncoder(os.Stdout).Encode(resp)
+				return nil
+			}
+			items, _ := resp["categories"].([]any)
+			for _, it := range items {
+				m, _ := it.(map[string]any)
+				fmt.Printf("%-16s %-18s %s\n", asString(m["slug"]), asString(m["label"]), asString(m["note"]))
+			}
+			return nil
+		},
+	}
+
+	root.AddCommand(searchC, showC, categoriesC)
 	return root
 }
 
@@ -1186,6 +1227,13 @@ func toInt64(v any) int64 {
 		return int64(f)
 	}
 	return 0
+}
+
+func asString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 // ===== 子命令：like =====

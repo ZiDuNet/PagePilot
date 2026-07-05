@@ -54,6 +54,26 @@ services:
       HOSTCTL_ADMIN_USERNAME: "admin"
       HOSTCTL_ADMIN_PASSWORD: "123456"
 
+      # Optional registration email verification. Keep disabled until SMTP is ready.
+      HOSTCTL_EMAIL_VERIFICATION_ENABLED: "false"
+      HOSTCTL_SMTP_HOST: ""
+      HOSTCTL_SMTP_PORT: "587"
+      HOSTCTL_SMTP_USERNAME: ""
+      HOSTCTL_SMTP_PASSWORD: ""
+      HOSTCTL_SMTP_FROM: ""
+      HOSTCTL_SMTP_SECURE: "starttls"
+
+      # Storage backend. "local" is fully supported; "oss" is configuration-ready
+      # for the next storage adapter phase.
+      HOSTCTL_STORAGE_BACKEND: "local"
+      HOSTCTL_OSS_PROVIDER: "aliyun"
+      HOSTCTL_OSS_ENDPOINT: ""
+      HOSTCTL_OSS_BUCKET: ""
+      HOSTCTL_OSS_ACCESS_KEY_ID: ""
+      HOSTCTL_OSS_ACCESS_KEY_SECRET: ""
+      HOSTCTL_OSS_PREFIX: "pagepilot/"
+      HOSTCTL_OSS_PUBLIC_BASE_URL: ""
+
     volumes:
       - ./data/docker/hostctl:/var/lib/hostctl
       - ./data/docker/sql:/var/lib/hostctl/sql

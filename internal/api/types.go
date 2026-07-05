@@ -13,16 +13,17 @@ const (
 )
 
 // DeployRequest 是 POST /api/deploy 的请求体。
-// 严格对齐项目 OpenAPI 3.1：
-//   - filename 必填且必须 `\.html?$`（主入口文件名）
-//   - description 必填，≤240 字符
+// 兼容旧客户端，同时扩展 PagePilot 的多形态发布：
+//   - filename 可选；单 content 模式建议传 HTML/Markdown 入口文件名
+//   - files 模式可传目录文件；单 ZIP 文件会在服务端解压并自动识别入口
+//   - description 必填，<=240 字符
 //   - code pattern: ^[a-z0-9](?:[a-z0-9-]{2,30}[a-z0-9])?$
 //
-// 多文件扩展（hostctl 独有，OpenAPI 兼容）：
+// 多文件扩展：
 //   - files[]: 可选；提供时与 content 二选一
 //   - 每个文件 path 走严格白名单（HTML/CSS/JS/字体/图片/任意静态资源均可）
 type DeployRequest struct {
-	// filename 必填；主入口 HTML 文件名，必须 .html 或 .htm
+	// filename 可选；主入口文件名，支持 .html/.htm/.md/.markdown。ZIP/目录可留空自动识别。
 	Filename string `json:"filename"`
 
 	// description 必填，≤240 字符
@@ -34,7 +35,7 @@ type DeployRequest struct {
 	// 单 HTML 模式：主入口的全文内容
 	Content string `json:"content,omitempty"`
 
-	// 多文件模式：HTML + JS + CSS + 字体 + 图片等所有静态资源
+	// 多文件模式：HTML/Markdown + JS + CSS + 字体 + 图片等所有静态资源；单 ZIP 文件会自动解压。
 	Files []DeployFile `json:"files,omitempty"`
 
 	// 短码
@@ -50,6 +51,9 @@ type DeployRequest struct {
 	// visibility 控制是否进入创作市场。public 公开展示，unlisted 仅链接可访问。
 	Visibility string `json:"visibility,omitempty"`
 
+	// category 是创作市场分类 slug。为空表示未分类；旧客户端可不传。
+	Category string `json:"category,omitempty"`
+
 	// accessPassword 设置新站点访问密码。匿名会话和用户 Token 均可设置。
 	AccessPassword string `json:"accessPassword,omitempty"`
 }
@@ -60,6 +64,26 @@ type DeployFile struct {
 	Path          string `json:"path"`
 	Content       string `json:"content,omitempty"`
 	ContentBase64 string `json:"contentBase64,omitempty"`
+}
+
+// MarketCategory 是创作市场的可维护应用分类。
+type MarketCategory struct {
+	Slug  string `json:"slug"`
+	Label string `json:"label"`
+	Note  string `json:"note,omitempty"`
+}
+
+type MarketCategoriesResponse struct {
+	Success    bool             `json:"success,omitempty"`
+	Categories []MarketCategory `json:"categories"`
+}
+
+type MarketCategoriesRequest struct {
+	Categories []MarketCategory `json:"categories"`
+}
+
+type SiteCategoryRequest struct {
+	Category string `json:"category"`
 }
 
 // DeployResponse 是 POST /api/deploy 成功响应。
@@ -105,6 +129,9 @@ type DeployResponse struct {
 
 	// visibility 控制是否进入创作市场：public / unlisted。
 	Visibility string `json:"visibility"`
+
+	// category 是创作市场分类 slug。
+	Category string `json:"category,omitempty"`
 
 	RequestID string `json:"requestId,omitempty"`
 

@@ -1193,9 +1193,9 @@
     $("login-password").closest(".field").classList.toggle("hidden", state.loginMode === "token");
     $("captcha-field").classList.toggle("hidden", state.loginMode === "token");
     $("register-toggle").classList.toggle("hidden", state.loginMode === "token" || state.needsSetup);
-    $("auth-title").textContent = state.loginMode === "token" ? "Token 登录" : (setup ? "创建管理员" : (registering ? "注册 PagePilot" : "登录 PagePilot"));
+    $("auth-title").textContent = setup ? "创建管理员" : (registering ? "注册 PagePilot" : "登录 PagePilot");
     $("auth-copy").textContent = registering ? "创建普通用户账号，注册后可以登录工作台并绑定 Agent。" : "登录后进入你的工作台；管理员会看到更多全站管理入口。";
-    $("login-submit").textContent = state.loginMode === "token" ? "Token 登录" : (setup ? "创建管理员" : (registering ? "注册账号" : "登录"));
+    $("login-submit").textContent = setup ? "创建管理员" : (registering ? "注册账号" : "登录");
     $("token-login-toggle").textContent = state.loginMode === "token" ? "账号密码" : "使用 Token";
     $("register-toggle").textContent = registering ? "已有账号，去登录" : "注册账号";
     $("login-hint").textContent = setup ? "当前没有管理员账号，先创建第一个管理员。" : "登录后会写入 HttpOnly 用户 session cookie。";

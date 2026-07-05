@@ -169,8 +169,12 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 		Content:     req.Content,
 		Files:       req.Files,
 	}
-	rfiles, apiErr := d.resolveContent(pseudoReq, mainEntry)
+	rfiles, resolvedMainEntry, apiErr := d.resolveContent(pseudoReq, mainEntry)
 	if apiErr != nil {
+		return nil, apiErr
+	}
+	mainEntry = resolvedMainEntry
+	if apiErr := validateEntrypoint(rfiles, mainEntry); apiErr != nil {
 		return nil, apiErr
 	}
 

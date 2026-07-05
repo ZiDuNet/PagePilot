@@ -159,16 +159,17 @@ func toolList() []toolDef {
 	return []toolDef{
 		{
 			Name:        "deploy_site",
-			Description: "把本地路径（文件或目录）部署为可访问的静态网站。修改已有项目时必须传原 custom_code；custom_code 已存在会默认追加版本，保持同一 code 和访问地址。description 必填（≤240 字符）。",
+			Description: "把本地 HTML、Markdown、ZIP 或目录部署为可访问的静态网站。修改已有项目时必须传原 custom_code；custom_code 已存在会默认追加版本，保持同一 code 和访问地址。description 必填（≤240 字符）。",
 			InputSchema: jsonSchema{
 				Type: "object",
 				Properties: map[string]*schemaProp{
-					"source":          {Type: "string", Description: "本地路径。文件 = 单 HTML；目录 = 多文件 site"},
+					"source":          {Type: "string", Description: "本地路径。支持单 HTML、单 Markdown、网站 ZIP 或多文件目录。ZIP 会由服务器识别入口目录。"},
 					"description":     {Type: "string", Description: "必填，≤240 字符，说明本次部署内容"},
 					"title":           {Type: "string", Description: "站点标题，建议填写可读名称；不要使用 index.html 这类文件名"},
 					"custom_code":     {Type: "string", Description: "自定义短码，^[a-z0-9-]{3,32}$；留空自动生成"},
 					"create_version":  {Type: "boolean", Description: "custom_code 已存在时，true 追加版本；false/省略 报 CONFLICT"},
-					"visibility":      {Type: "string", Description: "public 进入商城；unlisted 仅链接访问", Enum: []string{"public", "unlisted"}},
+					"visibility":      {Type: "string", Description: "public 进入创作市场；unlisted 仅链接访问", Enum: []string{"public", "unlisted"}},
+					"category":        {Type: "string", Description: "新作品的创作市场分类 slug，例如 landing/dashboard/docs/tool/game/screen。追加版本时通常不传。"},
 					"access_password": {Type: "string", Description: "Optional visit password for a new site. Empty means public."},
 				},
 				Required: []string{"source", "description", "title"},
@@ -276,10 +277,20 @@ func toolList() []toolDef {
 				Type: "object",
 				Properties: map[string]*schemaProp{
 					"q":         {Type: "string", Description: "可选关键词（标题 / 文件名 / code）"},
-					"sort":      {Type: "string", Description: "排序：newest(默认) / oldest / likes_desc / views_desc"},
+					"sort":      {Type: "string", Description: "排序：hot / newest(默认) / featured / oldest / likes_desc / views_desc"},
+					"category":  {Type: "string", Description: "真实市场分类 slug，例如 landing/dashboard/docs/tool/game/screen"},
+					"kind":      {Type: "string", Description: "派生筛选：html / md / protected / featured / mine。旧接口 category=html 等仍兼容。"},
 					"page":      {Type: "integer", Description: "页码，默认 1"},
 					"page_size": {Type: "integer", Description: "每页数量，默认 12，最大 50"},
 				},
+			},
+		},
+		{
+			Name:        "list_market_categories",
+			Description: "列出当前 PagePilot 创作市场分类。Agent 新建发布前应先调用它，再选择 category。",
+			InputSchema: jsonSchema{
+				Type:       "object",
+				Properties: map[string]*schemaProp{},
 			},
 		},
 		{
@@ -431,6 +442,8 @@ func handleToolCall(ctx context.Context, c *client.Client, params json.RawMessag
 		resultText, callErr = toolDeleteVersion(ctx, c, p.Arguments)
 	case "search_marketplace":
 		resultText, callErr = toolSearchMarketplace(ctx, c, p.Arguments)
+	case "list_market_categories":
+		resultText, callErr = toolListMarketCategories(ctx, c)
 	case "get_deploy_detail":
 		resultText, callErr = toolGetDeployDetail(ctx, c, p.Arguments)
 	case "like_deploy":
@@ -472,6 +485,7 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 	accessPassword, _ := args["access_password"].(string)
 	createVersion, _ := args["create_version"].(bool)
 	visibility, _ := args["visibility"].(string)
+	category, _ := args["category"].(string)
 
 	if source == "" {
 		return "", fmt.Errorf("source is required")
@@ -520,6 +534,9 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 	}
 	if accessPassword != "" {
 		reqBody["accessPassword"] = accessPassword
+	}
+	if strings.TrimSpace(category) != "" && !createVersion {
+		reqBody["category"] = strings.TrimSpace(category)
 	}
 	if customCode != "" {
 		reqBody["enableCustomCode"] = true
@@ -924,9 +941,20 @@ func toolDeleteVersion(ctx context.Context, c *client.Client, args map[string]an
 func toolSearchMarketplace(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
 	q, _ := args["q"].(string)
 	sort, _ := args["sort"].(string)
+	category, _ := args["category"].(string)
+	kind, _ := args["kind"].(string)
 	page := toInt64(args["page"])
 	pageSize := toInt64(args["page_size"])
-	resp, err := c.SearchMarketplace(ctx, q, sort, int(page), int(pageSize))
+	resp, err := c.SearchMarketplaceWithFilters(ctx, q, sort, category, kind, int(page), int(pageSize))
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolListMarketCategories(ctx context.Context, c *client.Client) (string, error) {
+	resp, err := c.MarketCategories(ctx)
 	if err != nil {
 		return "", err
 	}

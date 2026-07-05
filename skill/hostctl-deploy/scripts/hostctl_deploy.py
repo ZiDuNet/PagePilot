@@ -255,6 +255,8 @@ def read_source(source_arg: str) -> tuple[list[dict], str]:
     files_payload: list[dict] = []
     total_size = 0
     main_entry = ""
+    readme_entry = ""
+    page_entry = ""
     walked = sorted(p for p in root.rglob("*") if p.is_file())
     if len(walked) > MAX_FILES_PER_SITE:
         die(f"Too many files ({len(walked)}); limit is {MAX_FILES_PER_SITE}.")
@@ -270,11 +272,14 @@ def read_source(source_arg: str) -> tuple[list[dict], str]:
             files_payload.append({"path": rel, "contentBase64": base64.b64encode(data).decode("ascii")})
         else:
             files_payload.append({"path": rel, "content": data.decode("utf-8", "replace")})
-        if not main_entry:
+        lower_rel = rel.lower()
+        if lower_rel in ("index.html", "index.htm"):
             main_entry = rel
-        if rel == "index.html":
-            main_entry = rel
-    return files_payload, main_entry or "index.html"
+        elif lower_rel in ("readme.md", "readme.markdown") and not readme_entry:
+            readme_entry = rel
+        elif (lower_rel.endswith((".html", ".htm", ".md", ".markdown"))) and not page_entry:
+            page_entry = rel
+    return files_payload, main_entry or readme_entry or page_entry or "index.html"
 
 
 def ensure_description(args) -> None:
@@ -301,6 +306,8 @@ def add_deploy_options(payload: dict, args) -> None:
         payload["title"] = args.title
     if getattr(args, "visibility", ""):
         payload["visibility"] = args.visibility
+    if getattr(args, "category", "") and not getattr(args, "create_version", False):
+        payload["category"] = args.category
     if getattr(args, "access_password", ""):
         payload["accessPassword"] = args.access_password
 
@@ -532,12 +539,21 @@ def cmd_market_search(args) -> int:
         qs_map["q"] = args.query
     if args.sort:
         qs_map["sort"] = args.sort
+    if getattr(args, "category", ""):
+        qs_map["category"] = args.category
+    if getattr(args, "kind", ""):
+        qs_map["kind"] = args.kind
     if args.page:
         qs_map["page"] = str(args.page)
     if args.page_size:
         qs_map["pageSize"] = str(args.page_size)
     qs = urllib.parse.urlencode(qs_map)
     status, data = request_json(server_url(args), "", "/api/deploys" + (("?" + qs) if qs else ""))
+    return print_result(status, data)
+
+
+def cmd_market_categories(args) -> int:
+    status, data = request_json(server_url(args), "", "/api/market/categories")
     return print_result(status, data)
 
 
@@ -834,7 +850,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_claim_session)
 
     def add_common_deploy_flags(p, *, with_code: bool, with_create_version: bool):
-        p.add_argument("source", help="Path to an HTML file or a site directory")
+        p.add_argument("source", help="Path to an HTML file, Markdown file, website ZIP, or site directory")
         p.add_argument("--description", "-d", required=True, help="Required concise description, max 240 chars")
         p.add_argument("--title", "-t", required=True, help="Required meaningful Chinese site/version title")
         p.add_argument("--filename", "-f", help="Main entry filename (default: source or index.html)")
@@ -843,7 +859,8 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--update", action="store_true", help="Require updating an existing remembered/explicit code; refuse to create a new link.")
         if with_create_version:
             p.add_argument("--create-version", action="store_true", help="Deprecated: deploy now appends automatically when --code is present")
-        p.add_argument("--visibility", choices=["public", "unlisted"], default="", help="public enters marketplace; unlisted is link-only")
+        p.add_argument("--visibility", choices=["public", "unlisted"], default="", help="public enters Creation Market; unlisted is link-only")
+        p.add_argument("--category", default="", help="Creation Market category slug for new sites, e.g. landing/dashboard/docs/tool/game/screen")
         p.add_argument("--access-password", help="Optional visit password. Existing codes are updated after deploy.")
 
     p = sub.add_parser("deploy", help="Deploy a new site from a file or directory")
@@ -898,10 +915,14 @@ def build_parser() -> argparse.ArgumentParser:
     market_sub = p_market.add_subparsers(dest="market_cmd", required=True)
     pm = market_sub.add_parser("search", help="Search/browse deploys")
     pm.add_argument("query", nargs="?")
-    pm.add_argument("--sort", default="newest", help="newest, oldest, likes_desc, views_desc")
+    pm.add_argument("--sort", default="newest", help="hot, newest, featured, oldest, likes_desc, views_desc")
+    pm.add_argument("--category", default="", help="market category slug, e.g. landing/dashboard/docs/tool/game/screen")
+    pm.add_argument("--kind", default="", help="derived filter: html, md, protected, featured, mine")
     pm.add_argument("--page", type=int, default=1)
     pm.add_argument("--page-size", type=int, default=24)
     pm.set_defaults(func=cmd_market_search)
+    pm = market_sub.add_parser("categories", help="List market categories")
+    pm.set_defaults(func=cmd_market_categories)
     pm = market_sub.add_parser("show", help="Show one deploy")
     pm.add_argument("public_id")
     pm.set_defaults(func=cmd_market_show)

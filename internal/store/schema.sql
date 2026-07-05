@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS sites (
     current_version            INTEGER,                          -- 当前对外服务的版本号；NULL = 已下线
     primary_version_strategy   TEXT NOT NULL DEFAULT 'likes',    -- 'likes' | 'latest'
     visibility                 TEXT NOT NULL DEFAULT 'public',   -- 'public' | 'unlisted'
+    category                   TEXT NOT NULL DEFAULT '',         -- 创作市场分类 slug
     view_count                 INTEGER NOT NULL DEFAULT 0,       -- 访问数（页面 GET）
     like_count                 INTEGER NOT NULL DEFAULT 0,       -- 点赞数
     status                     TEXT NOT NULL DEFAULT 'active',   -- 'active' | 'inactive'
@@ -85,6 +86,16 @@ CREATE TABLE IF NOT EXISTS likes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_likes_site ON likes(site_code);
+
+CREATE TABLE IF NOT EXISTS favorites (
+    site_code   TEXT NOT NULL,
+    owner_id    TEXT NOT NULL,
+    created_at  DATETIME NOT NULL,
+    PRIMARY KEY (site_code, owner_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_favorites_owner ON favorites(owner_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_favorites_site ON favorites(site_code);
 
 CREATE TABLE IF NOT EXISTS anonymous_sessions (
     id            TEXT PRIMARY KEY,

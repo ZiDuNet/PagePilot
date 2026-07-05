@@ -88,6 +88,7 @@ type CaptchaResponse struct {
 	Success bool   `json:"success"`
 	ID      string `json:"id"`
 	Prompt  string `json:"prompt"`
+	Image   string `json:"image,omitempty"`
 }
 
 type AdminLoginResponse struct {

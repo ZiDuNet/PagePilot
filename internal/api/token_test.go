@@ -223,6 +223,10 @@ func (s marketplaceDeploysStub) ListMarketplaceDeploys(
 	string,
 	string,
 	string,
+	string,
+	string,
+	string,
+	string,
 	int,
 	int,
 ) ([]store.MarketplaceDeploy, int, error) {

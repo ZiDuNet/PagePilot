@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"log"
@@ -65,6 +66,8 @@ type DeployerPort interface {
 	SetUploadLimits(ctx context.Context, singleFileBytes, siteTotalBytes int64, filesPerSite int) error
 	SetCORSAllowOrigins(ctx context.Context, origins string) error
 	SetEmbedPolicy(ctx context.Context, policy, allowOrigins string) error
+	GetMarketCategories(ctx context.Context) ([]MarketCategory, error)
+	SetMarketCategories(ctx context.Context, categories []MarketCategory) error
 	CreateAnonymousSession(ctx context.Context, id string) (store.AnonymousSession, error)
 	GetAnonymousSession(ctx context.Context, id string) (store.AnonymousSession, error)
 	UpdateAnonymousSessionMeta(ctx context.Context, id, agentID, agentLabel, deviceIP, userAgent string) error
@@ -74,13 +77,15 @@ type DeployerPort interface {
 
 	// ===== 创作市场（marketplace） =====
 
-	ListMarketplaceDeploys(ctx context.Context, q, status, sort string, page, pageSize int) ([]store.MarketplaceDeploy, int, error)
+	ListMarketplaceDeploys(ctx context.Context, q, status, sort, category, kind, ownerTokenID, favoriteOwnerID string, page, pageSize int) ([]store.MarketplaceDeploy, int, error)
 	GetMarketplaceDeploy(ctx context.Context, code string) (store.MarketplaceDeploy, error)
 	GetMarketplaceDeployByUUID(ctx context.Context, publicID string) (store.MarketplaceDeploy, error)
 	IncrementViewCount(ctx context.Context, code string) error
 	AddLike(ctx context.Context, code, fingerprint string) (int64, error)
+	SetFavorite(ctx context.Context, code, ownerID string, favorited bool) (int64, bool, error)
 	SiteExists(ctx context.Context, code string) (bool, error)
 	GetSite(ctx context.Context, code string) (store.Site, error)
+	SetSiteCategory(ctx context.Context, code, category string) error
 	SetSiteAccessPassword(ctx context.Context, code, password string) error
 
 	CreateScreenPairing(ctx context.Context, pairing store.ScreenPairing) error
@@ -245,9 +250,9 @@ func (s *Server) rewriteDeployResponseURLs(r *http.Request, resp *DeployResponse
 	if resp.AgentGuideURL != "" {
 		base := strings.TrimRight(s.requestBaseURL(r), "/")
 		if base == "" {
-			resp.AgentGuideURL = "/api-docs.html"
+			resp.AgentGuideURL = "/admin?tab=apiDocs"
 		} else {
-			resp.AgentGuideURL = base + "/api-docs.html"
+			resp.AgentGuideURL = base + "/admin?tab=apiDocs"
 		}
 	}
 }
@@ -287,9 +292,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 
 	// 创作市场（公开 API：/api/deploys）
+	s.mux.HandleFunc("GET /api/market/categories", s.handleGetMarketCategories)
 	s.mux.HandleFunc("GET /api/deploys", s.handleListMarketplace)
 	s.mux.HandleFunc("GET /api/deploys/{publicId}", s.handleGetMarketplaceDeploy)
 	s.mux.HandleFunc("POST /api/deploys/{code}/like", s.handleLikeDeploy)
+	s.mux.HandleFunc("POST /api/deploys/{code}/favorite", s.handleFavoriteDeploy)
 	s.mux.HandleFunc("GET /api/deploys/{code}/qr", s.handleQRCode)
 	s.mux.HandleFunc("POST /api/deploys/{code}/access", s.handleSiteAccessLogin)
 	s.mux.HandleFunc("PATCH /api/deploys/{code}/access", s.handleSetSiteAccessPassword)
@@ -342,6 +349,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/admin/anonymous-sessions", s.handleAdminAnonymousSessions)
 	s.mux.HandleFunc("GET /api/admin/skill", s.handleAdminGetSkill)
 	s.mux.HandleFunc("POST /api/admin/skill/package", s.handleAdminUploadSkillPackage)
+	s.mux.HandleFunc("PUT /api/admin/market/categories", s.handleAdminPutMarketCategories)
 	s.mux.HandleFunc("GET /api/admin/users", s.handleAdminListUsers)
 	s.mux.HandleFunc("POST /api/admin/users", s.handleAdminCreateUser)
 	s.mux.HandleFunc("PATCH /api/admin/users/{id}", s.handleAdminUpdateUser)
@@ -350,12 +358,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/config", s.handlePutConfig)
 	s.mux.HandleFunc("GET /api/admin/sites", s.handleAdminListSites)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/pin", s.handleAdminSetSitePin)
+	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/category", s.handleAdminSetSiteCategory)
 	s.mux.HandleFunc("DELETE /api/admin/sites/{code}", s.handleAdminDeleteSite)
 
 	// admin 后台单页
 	s.mux.HandleFunc("GET /admin", s.handleAdminUI)
 	s.mux.HandleFunc("GET /admin/", s.handleAdminUI)
 	s.mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/", http.FileServer(http.FS(web.AdminAppFS()))))
+	s.mux.Handle("GET /app/assets/", http.StripPrefix("/app/", http.FileServer(http.FS(web.UserSubFS()))))
+	s.mux.HandleFunc("GET /index.html", s.handleUserAppUI)
+	s.mux.HandleFunc("GET /deploy.html", s.handleUserAppUI)
+	s.mux.HandleFunc("GET /api-docs.html", s.handleAPIDocsRedirect)
+	s.mux.HandleFunc("GET /detail.html", s.handleMarketRedirect)
 	s.mux.HandleFunc("GET /agents/", s.handleAgentGuideUI)
 	s.mux.HandleFunc("GET /screens/", s.handleScreenGuideUI)
 	s.mux.HandleFunc("GET /market", s.handleUserAppUI)
@@ -371,12 +385,10 @@ func (s *Server) routes() {
 	// /agent/{code}/{path...}：当前版本的多文件子路径（CSS/JS/图片等）
 	// /agent/{code}/versions/{version}：历史版本预览入口
 	// /agent/{code}/versions/{version}/{path...}：历史版本的多文件子路径
-	// /deploy/{uuid}：详情页（SPA）
 	s.mux.HandleFunc("GET /agent/{code}", s.handleAppServe)
 	s.mux.HandleFunc("GET /agent/{code}/{path...}", s.handleAppServe)
 	s.mux.HandleFunc("GET /agent/{code}/versions/{version}", s.handleAppServe)
 	s.mux.HandleFunc("GET /agent/{code}/versions/{version}/{path...}", s.handleAppServe)
-	s.mux.HandleFunc("GET /deploy/{uuid}", s.handleDetailUI)
 
 	// 用户端 SPA：根路径托管 user/ 目录（首页 / 部署 / API 文档 / 静态资源）
 	s.mux.Handle("GET /", http.FileServer(http.FS(web.UserSubFS())))
@@ -653,6 +665,7 @@ func (s *Server) handleClaimAnonymousSession(w http.ResponseWriter, r *http.Requ
 		writeError(w, apiErrWithReqID(NewError(code, "anonymous_session", err.Error()), reqID))
 		return
 	}
+	clearAnonymousSessionCookie(w)
 	writeJSON(w, http.StatusOK, SessionClaimResponse{
 		Success:        true,
 		SessionID:      result.SessionID,
@@ -738,6 +751,17 @@ func setAnonymousSessionCookie(w http.ResponseWriter, id string) {
 		Value:    id,
 		Path:     "/",
 		MaxAge:   60 * 60 * 24 * 365,
+		SameSite: http.SameSiteLaxMode,
+		HttpOnly: true,
+	})
+}
+
+func clearAnonymousSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "hostctl_anon_session",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
 		SameSite: http.SameSiteLaxMode,
 		HttpOnly: true,
 	})
@@ -830,13 +854,89 @@ type marketplaceDeployResponse struct {
 	UpdatedAt              string  `json:"updatedAt"`
 	ViewCount              int64   `json:"viewCount"`
 	LikeCount              int64   `json:"likeCount"`
+	FavoriteCount          int64   `json:"favoriteCount"`
+	Favorited              bool    `json:"favorited"`
 	VersionCount           int     `json:"versionCount"`
 	ExpiresAt              *string `json:"expiresAt"`
 	Status                 string  `json:"status"`
 	Visibility             string  `json:"visibility"`
+	Category               string  `json:"category,omitempty"`
 	AccessProtected        bool    `json:"accessProtected"`
 	IsPinned               bool    `json:"isPinned"`
 	PinnedAt               *string `json:"pinnedAt"`
+}
+
+var marketCategorySlugRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$`)
+
+func DefaultMarketCategories() []MarketCategory {
+	return []MarketCategory{
+		{Slug: "landing", Label: "活动落地页", Note: "官网、活动、产品介绍"},
+		{Slug: "dashboard", Label: "数据看板", Note: "报表、监控、可视化"},
+		{Slug: "docs", Label: "文档报告", Note: "Markdown、教程、说明书"},
+		{Slug: "tool", Label: "效率工具", Note: "表单、计算器、工作流"},
+		{Slug: "game", Label: "互动游戏", Note: "小游戏、课堂互动"},
+		{Slug: "screen", Label: "屏幕展示", Note: "门店、展厅、会议屏"},
+	}
+}
+
+func NormalizeMarketCategories(categories []MarketCategory) ([]MarketCategory, *APIError) {
+	out := make([]MarketCategory, 0, len(categories))
+	seen := map[string]bool{}
+	for _, item := range categories {
+		slug := strings.ToLower(strings.TrimSpace(item.Slug))
+		label := strings.TrimSpace(item.Label)
+		note := strings.TrimSpace(item.Note)
+		if slug == "" && label == "" && note == "" {
+			continue
+		}
+		if !marketCategorySlugRe.MatchString(slug) {
+			return nil, NewError(CodeInvalidInput, "market_categories", "category slug must use lowercase letters, numbers, and hyphens")
+		}
+		if label == "" {
+			return nil, NewError(CodeInvalidInput, "market_categories", "category label is required")
+		}
+		if seen[slug] {
+			return nil, NewError(CodeInvalidInput, "market_categories", "category slug must be unique")
+		}
+		seen[slug] = true
+		out = append(out, MarketCategory{Slug: slug, Label: label, Note: note})
+	}
+	if len(out) == 0 {
+		return nil, NewError(CodeInvalidInput, "market_categories", "at least one category is required")
+	}
+	return out, nil
+}
+
+func (s *Server) handleGetMarketCategories(w http.ResponseWriter, r *http.Request) {
+	categories, err := s.deployer.GetMarketCategories(r.Context())
+	if err != nil {
+		writeError(w, NewError(CodeInternal, "market_categories", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, MarketCategoriesResponse{Categories: categories})
+}
+
+func (s *Server) handleAdminPutMarketCategories(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	var req MarketCategoriesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "market_categories", "invalid JSON body"), reqID))
+		return
+	}
+	categories, apiErr := NormalizeMarketCategories(req.Categories)
+	if apiErr != nil {
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+		return
+	}
+	if err := s.deployer.SetMarketCategories(r.Context(), categories); err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "market_categories", err.Error()), reqID))
+		return
+	}
+	writeJSON(w, http.StatusOK, MarketCategoriesResponse{Success: true, Categories: categories})
 }
 
 // handleListMarketplace 处理 GET /api/deploys —— 公开列出所有 deploy（创作市场）。
@@ -845,16 +945,36 @@ func (s *Server) handleListMarketplace(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	status := r.URL.Query().Get("status")
 	sort := r.URL.Query().Get("sort")
+	category := strings.TrimSpace(r.URL.Query().Get("category"))
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	page := parseIntDefault(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntDefault(r.URL.Query().Get("pageSize"), 24)
+	if kind == "" {
+		switch category {
+		case "html", "md", "markdown", "protected", "featured", "mine", "favorites":
+			kind = category
+			category = ""
+		}
+	}
 
-	deploys, total, err := s.deployer.ListMarketplaceDeploys(r.Context(), q, status, sort, page, pageSize)
+	actor, isAdmin := s.marketplaceActor(r)
+	ownerTokenID := ""
+	if kind == "mine" || kind == "favorites" {
+		if actor == "" {
+			writeError(w, NewError(CodeUnauthorized, "marketplace", "login required"))
+			return
+		}
+		if kind == "mine" {
+			ownerTokenID = actor
+		}
+	}
+
+	deploys, total, err := s.deployer.ListMarketplaceDeploys(r.Context(), q, status, sort, category, kind, ownerTokenID, actor, page, pageSize)
 	if err != nil {
 		writeError(w, NewError(CodeInternal, "marketplace", "list marketplace: "+err.Error()))
 		return
 	}
 
-	actor, isAdmin := s.marketplaceActor(r)
 	out := make([]marketplaceDeployResponse, 0, len(deploys))
 	for _, d := range deploys {
 		out = append(out, s.toMarketplaceResponse(r, d, actor, isAdmin))
@@ -930,6 +1050,45 @@ func (s *Server) handleLikeDeploy(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleFavoriteDeploy(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	code := r.PathValue("code")
+	if code == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "favorite", "missing code"), reqID))
+		return
+	}
+	actor, _, authErr := s.authenticateActor(r)
+	if authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	var req struct {
+		Favorited bool `json:"favorited"`
+	}
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+	if _, err := s.deployer.GetSite(r.Context(), code); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "favorite", "deploy not found"), reqID))
+			return
+		}
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "favorite", "get site: "+err.Error()), reqID))
+		return
+	}
+	count, favorited, err := s.deployer.SetFavorite(r.Context(), code, actor, req.Favorited)
+	if err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "favorite", err.Error()), reqID))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":       true,
+		"code":          code,
+		"favorited":     favorited,
+		"favoriteCount": count,
+	})
+}
+
 // toMarketplaceResponse 把 store.MarketplaceDeploy 转成对外的 JSON 形态。
 // 拼接好 filePath / qrCodePath（绝对 URL）方便前端直接用。
 func (s *Server) marketplaceActor(r *http.Request) (string, bool) {
@@ -982,10 +1141,13 @@ func (s *Server) toMarketplaceResponse(r *http.Request, d store.MarketplaceDeplo
 		UpdatedAt:              d.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		ViewCount:              d.ViewCount,
 		LikeCount:              d.LikeCount,
+		FavoriteCount:          d.FavoriteCount,
+		Favorited:              d.Favorited,
 		VersionCount:           d.VersionCount,
 		ExpiresAt:              expiresAt,
 		Status:                 d.Status,
 		Visibility:             d.Visibility,
+		Category:               d.Category,
 		AccessProtected:        d.AccessProtected,
 		IsPinned:               d.IsPinned,
 		PinnedAt:               pinnedAt,
@@ -2022,6 +2184,14 @@ func (s *Server) handleUserAppUI(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(bytes)
 }
 
+func (s *Server) handleAPIDocsRedirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/admin?tab=apiDocs", http.StatusFound)
+}
+
+func (s *Server) handleMarketRedirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/market", http.StatusFound)
+}
+
 func (s *Server) handleAgentGuideUI(w http.ResponseWriter, r *http.Request) {
 	s.handleUserAppUI(w, r)
 }
@@ -2274,9 +2444,8 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCaptcha(w http.ResponseWriter, r *http.Request) {
-	a := randomIntRange(2, 18)
-	b := randomIntRange(2, 18)
 	id := "cap_" + randomHex(12)
+	answer := fmt.Sprintf("%04d", randomIntRange(0, 9999))
 	s.captchaMu.Lock()
 	now := time.Now()
 	for key, item := range s.captchas {
@@ -2285,15 +2454,30 @@ func (s *Server) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.captchas[id] = captchaChallenge{
-		Answer:    strconv.Itoa(a + b),
+		Answer:    answer,
 		ExpiresAt: now.Add(5 * time.Minute),
 	}
 	s.captchaMu.Unlock()
 	writeJSON(w, http.StatusOK, CaptchaResponse{
 		Success: true,
 		ID:      id,
-		Prompt:  fmt.Sprintf("%d + %d = ?", a, b),
+		Prompt:  "输入图片中的 4 位数字",
+		Image:   captchaSVGDataURL(answer),
 	})
+}
+
+func captchaSVGDataURL(answer string) string {
+	// Lightweight SVG captcha: enough to stop casual automated form posts
+	// without adding image dependencies to the server binary.
+	escaped := html.EscapeString(answer)
+	svg := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="132" height="46" viewBox="0 0 132 46">
+<rect width="132" height="46" rx="12" fill="#ecfeff"/>
+<path d="M4 34 C32 12, 52 52, 82 18 S112 28, 128 12" fill="none" stroke="#38bdf8" stroke-width="3" opacity=".55"/>
+<path d="M8 15 H124 M12 28 H120" stroke="#0f172a" stroke-width="1" opacity=".08"/>
+<text x="66" y="31" text-anchor="middle" font-family="ui-monospace,Consolas,monospace" font-size="25" font-weight="900" letter-spacing="7" fill="#0f172a" transform="rotate(-3 66 23)">%s</text>
+<circle cx="24" cy="12" r="2" fill="#f472b6"/><circle cx="106" cy="35" r="2.5" fill="#22c55e"/><circle cx="118" cy="14" r="1.8" fill="#f59e0b"/>
+</svg>`, escaped)
+	return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg))
 }
 
 func randomIntRange(min, max int) int {
@@ -2345,7 +2529,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "register", "username already exists or password is invalid"), reqID))
 		return
 	}
-	s.claimCurrentAnonymousSession(r, user.ID)
+	if s.claimCurrentAnonymousSession(r, user.ID) {
+		clearAnonymousSessionCookie(w)
+	}
 	writeJSON(w, http.StatusOK, RegisterResponse{Success: true, UserID: user.ID, Username: user.Username})
 }
 
@@ -2386,7 +2572,9 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "username or password is incorrect"), reqID))
 		return
 	}
-	s.claimCurrentAnonymousSession(r, res.User.ID)
+	if s.claimCurrentAnonymousSession(r, res.User.ID) {
+		clearAnonymousSessionCookie(w)
+	}
 	setAdminSessionCookie(w, res.Plaintext, int((7 * 24 * time.Hour).Seconds()))
 	mode := "prod"
 	if !s.requireAuth {
@@ -2401,14 +2589,16 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) claimCurrentAnonymousSession(r *http.Request, userID string) {
+func (s *Server) claimCurrentAnonymousSession(r *http.Request, userID string) bool {
 	sessionID := anonymousSessionIDFromRequest(r)
 	if sessionID == "" {
-		return
+		return false
 	}
 	if _, err := s.deployer.ClaimAnonymousSession(r.Context(), sessionID, userID); err != nil {
 		s.logger.Printf("failed to claim anonymous session %s for user %s: %v", sessionID, userID, err)
+		return false
 	}
+	return true
 }
 
 func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
@@ -2474,6 +2664,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		AnonymousPolicy: AnonymousPolicy{
 			DeployLimit: s.cfg.AnonymousDeployLimit,
 		},
+		Email:   s.emailConfig(),
+		Storage: s.storageConfig(),
 		Version: s.version,
 	})
 }
@@ -2695,7 +2887,32 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		AnonymousPolicy: AnonymousPolicy{
 			DeployLimit: s.cfg.AnonymousDeployLimit,
 		},
+		Email:   s.emailConfig(),
+		Storage: s.storageConfig(),
 	})
+}
+
+func (s *Server) emailConfig() EmailConfig {
+	return EmailConfig{
+		VerificationEnabled: s.cfg.EmailVerificationEnabled,
+		SMTPConfigured:      s.cfg.SMTPHost != "" && s.cfg.SMTPFrom != "",
+		SMTPHost:            s.cfg.SMTPHost,
+		SMTPFrom:            s.cfg.SMTPFrom,
+		SMTPSecure:          s.cfg.SMTPSecure,
+	}
+}
+
+func (s *Server) storageConfig() StorageConfig {
+	return StorageConfig{
+		Backend:          s.cfg.StorageBackend,
+		HostedDir:        s.cfg.HostedDir,
+		OSSProvider:      s.cfg.OSSProvider,
+		OSSEndpoint:      s.cfg.OSSEndpoint,
+		OSSBucket:        s.cfg.OSSBucket,
+		OSSPrefix:        s.cfg.OSSPrefix,
+		OSSPublicBaseURL: s.cfg.OSSPublicBaseURL,
+		OSSConfigured:    s.cfg.OSSEndpoint != "" && s.cfg.OSSBucket != "",
+	}
 }
 
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
@@ -2914,6 +3131,8 @@ func (s *Server) handleAdminListSites(w http.ResponseWriter, r *http.Request) {
 			LikeCount:       site.LikeCount,
 			Status:          site.Status,
 			Visibility:      site.Visibility,
+			Category:        site.Category,
+			Filename:        site.MainEntry,
 			AccessProtected: site.AccessProtected,
 			IsPinned:        site.IsPinned,
 			PinnedAt:        site.PinnedAt,
@@ -2970,6 +3189,47 @@ func (s *Server) handleAdminSetSitePin(w http.ResponseWriter, r *http.Request) {
 		resp.PinnedAt = &t
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleAdminSetSiteCategory(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	code := r.PathValue("code")
+	if code == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "path", "missing code in path"), reqID))
+		return
+	}
+	actor, isAdmin, authErr := s.authenticateActor(r)
+	if authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	site, err := s.deployer.GetSite(r.Context(), code)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			return
+		}
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_category", err.Error()), reqID))
+		return
+	}
+	if !isAdmin && site.OwnerTokenID != actor {
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "site_category", "you can only update your own site category"), reqID))
+		return
+	}
+	var req SiteCategoryRequest
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+	category := strings.TrimSpace(req.Category)
+	if category != "" && !marketCategorySlugRe.MatchString(category) {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "site_category", "category slug is invalid"), reqID))
+		return
+	}
+	if err := s.deployer.SetSiteCategory(r.Context(), code, category); err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_category", err.Error()), reqID))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "code": code, "category": category})
 }
 
 // handleAdminDeleteSite 删除整个 site。
@@ -3298,6 +3558,17 @@ func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, sub, ab
 	s.setHostedContentSecurityHeaders(w)
 	setHostedContentCORSHeaders(w, r)
 	lowerSub := strings.ToLower(sub)
+	if strings.HasSuffix(lowerSub, ".md") || strings.HasSuffix(lowerSub, ".markdown") {
+		body, err := os.ReadFile(absFull)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		rendered := renderHostedMarkdown(body)
+		http.ServeContent(w, r, filepath.Base(absFull)+".html", fileModTime(absFull), strings.NewReader(rendered))
+		return
+	}
 	if !strings.HasSuffix(lowerSub, ".html") && !strings.HasSuffix(lowerSub, ".htm") {
 		http.ServeFile(w, r, absFull)
 		return
@@ -3310,6 +3581,103 @@ func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, sub, ab
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, filepath.Base(absFull), fileModTime(absFull), strings.NewReader(injectHostedHTMLCompat(body, routePrefix)))
 }
+
+func renderHostedMarkdown(body []byte) string {
+	lines := strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n")
+	var out strings.Builder
+	out.WriteString("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Markdown</title>")
+	out.WriteString("<style>body{margin:0;background:#f8fbff;color:#0f172a;font:16px/1.72 -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}.page{max-width:920px;margin:0 auto;padding:48px 22px 72px}h1,h2,h3{line-height:1.18;margin:1.45em 0 .55em;color:#075985}h1{font-size:38px}h2{font-size:28px}h3{font-size:22px}p{margin:.7em 0}a{color:#0284c7}img{max-width:100%;height:auto;border-radius:14px;border:1px solid #dbeafe;box-shadow:0 16px 42px rgba(14,116,144,.12)}pre{overflow:auto;padding:16px;border-radius:14px;background:#0f172a;color:#e2e8f0}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92em}p code,li code{padding:.12em .36em;border-radius:7px;background:#e0f2fe;color:#075985}blockquote{margin:1em 0;padding:.1em 1em;border-left:4px solid #38bdf8;background:#ecfeff}ul,ol{padding-left:1.35em}hr{border:0;border-top:1px solid #bae6fd;margin:2em 0}</style></head><body><main class=\"page\">")
+	inCode := false
+	var paragraph []string
+	flushParagraph := func() {
+		if len(paragraph) == 0 {
+			return
+		}
+		out.WriteString("<p>")
+		out.WriteString(renderMarkdownInline(strings.Join(paragraph, " ")))
+		out.WriteString("</p>")
+		paragraph = paragraph[:0]
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			flushParagraph()
+			if inCode {
+				out.WriteString("</code></pre>")
+				inCode = false
+			} else {
+				inCode = true
+				out.WriteString("<pre><code>")
+			}
+			continue
+		}
+		if inCode {
+			out.WriteString(html.EscapeString(line))
+			out.WriteByte('\n')
+			continue
+		}
+		if trimmed == "" {
+			flushParagraph()
+			continue
+		}
+		if trimmed == "---" || trimmed == "***" {
+			flushParagraph()
+			out.WriteString("<hr>")
+			continue
+		}
+		if strings.HasPrefix(trimmed, ">") {
+			flushParagraph()
+			out.WriteString("<blockquote>")
+			out.WriteString(renderMarkdownInline(strings.TrimSpace(strings.TrimPrefix(trimmed, ">"))))
+			out.WriteString("</blockquote>")
+			continue
+		}
+		if level, text := markdownHeading(trimmed); level > 0 {
+			flushParagraph()
+			out.WriteString(fmt.Sprintf("<h%d>%s</h%d>", level, renderMarkdownInline(text), level))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			flushParagraph()
+			out.WriteString("<ul><li>")
+			out.WriteString(renderMarkdownInline(strings.TrimSpace(trimmed[2:])))
+			out.WriteString("</li></ul>")
+			continue
+		}
+		paragraph = append(paragraph, trimmed)
+	}
+	flushParagraph()
+	if inCode {
+		out.WriteString("</code></pre>")
+	}
+	out.WriteString("</main></body></html>")
+	return out.String()
+}
+
+func markdownHeading(line string) (int, string) {
+	count := 0
+	for count < len(line) && count < 6 && line[count] == '#' {
+		count++
+	}
+	if count == 0 || count >= len(line) || line[count] != ' ' {
+		return 0, ""
+	}
+	return count, strings.TrimSpace(line[count+1:])
+}
+
+func renderMarkdownInline(text string) string {
+	escaped := html.EscapeString(text)
+	escaped = markdownImagesRe.ReplaceAllString(escaped, `<img src="$2" alt="$1">`)
+	escaped = markdownLinksRe.ReplaceAllString(escaped, `<a href="$2" rel="noreferrer">$1</a>`)
+	escaped = markdownCodeRe.ReplaceAllString(escaped, `<code>$1</code>`)
+	return escaped
+}
+
+var (
+	markdownImagesRe = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
+	markdownLinksRe  = regexp.MustCompile(`\[(.*?)\]\((https?://[^)\s]+|[^)\s]+)\)`)
+	markdownCodeRe   = regexp.MustCompile("`([^`]+)`")
+)
 
 func (s *Server) setHostedContentSecurityHeaders(w http.ResponseWriter) {
 	csp := "sandbox allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-pointer-lock allow-top-navigation-by-user-activation; " +
@@ -3417,18 +3785,4 @@ func hostedHTMLCompatScript(routePrefix string) string {
 		" },0);\n" +
 		"},true);\n" +
 		"})();\n</script>\n"
-}
-
-// handleDetailUI 处理 GET /deploy/{uuid}（详情页 SPA）。
-// dev 模式：返回用户端 SPA 详情页（user/detail.html），SPA 自己根据 URL 解析参数。
-// 生产环境由 Caddy 把 /deploy/{uuid} 指向 detail.html。
-func (s *Server) handleDetailUI(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	bytes, err := fs.ReadFile(web.UserSubFS(), "detail.html")
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	_, _ = w.Write(bytes)
 }

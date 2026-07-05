@@ -16,11 +16,32 @@ type ConfigResponse struct {
 	CooldownSeconds   int             `json:"cooldownSeconds"`
 	Limits            Limits          `json:"limits"`
 	AnonymousPolicy   AnonymousPolicy `json:"anonymousPolicy"`
+	Email             EmailConfig     `json:"email"`
+	Storage           StorageConfig   `json:"storage"`
 	Version           string          `json:"version"`
 }
 
 type AnonymousPolicy struct {
 	DeployLimit int `json:"deployLimit"`
+}
+
+type EmailConfig struct {
+	VerificationEnabled bool   `json:"verificationEnabled"`
+	SMTPConfigured      bool   `json:"smtpConfigured"`
+	SMTPHost            string `json:"smtpHost,omitempty"`
+	SMTPFrom            string `json:"smtpFrom,omitempty"`
+	SMTPSecure          string `json:"smtpSecure,omitempty"`
+}
+
+type StorageConfig struct {
+	Backend          string `json:"backend"`
+	HostedDir        string `json:"hostedDir,omitempty"`
+	OSSProvider      string `json:"ossProvider,omitempty"`
+	OSSEndpoint      string `json:"ossEndpoint,omitempty"`
+	OSSBucket        string `json:"ossBucket,omitempty"`
+	OSSPrefix        string `json:"ossPrefix,omitempty"`
+	OSSPublicBaseURL string `json:"ossPublicBaseURL,omitempty"`
+	OSSConfigured    bool   `json:"ossConfigured"`
 }
 
 // Limits 是配额描述。
@@ -57,6 +78,8 @@ type ConfigUpdateResponse struct {
 	CooldownSeconds   int             `json:"cooldownSeconds"`
 	Limits            Limits          `json:"limits"`
 	AnonymousPolicy   AnonymousPolicy `json:"anonymousPolicy"`
+	Email             EmailConfig     `json:"email"`
+	Storage           StorageConfig   `json:"storage"`
 }
 
 // ===== 站点列表（GET /api/admin/sites） =====
@@ -74,6 +97,8 @@ type SiteListItem struct {
 	LikeCount       int64      `json:"likeCount"`
 	Status          string     `json:"status"`
 	Visibility      string     `json:"visibility"`
+	Category        string     `json:"category,omitempty"`
+	Filename        string     `json:"filename,omitempty"`
 	AccessProtected bool       `json:"accessProtected"`
 	IsPinned        bool       `json:"isPinned"`
 	PinnedAt        *time.Time `json:"pinnedAt,omitempty"`

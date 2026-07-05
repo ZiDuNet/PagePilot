@@ -2,12 +2,16 @@
 package deploy
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,8 +36,9 @@ var (
 	// 长度 3-32，必须小写字母/数字开头结尾，中间可有 -
 	customCodeRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{2,30}[a-z0-9])?$`)
 
-	// filename 必须 .html 或 .htm 结尾（对齐 OpenAPI `\.html?$`）
-	htmlFilenameRe = regexp.MustCompile(`(?i)\.html?$`)
+	htmlFilenameRe     = regexp.MustCompile(`(?i)\.html?$`)
+	markdownFilenameRe = regexp.MustCompile(`(?i)\.(md|markdown)$`)
+	zipFilenameRe      = regexp.MustCompile(`(?i)\.zip$`)
 
 	// 自动生成的短码（nanoid 默认 6 字符 [0-9a-zA-Z]）也要满足 OpenAPI pattern。
 	// nanoid 默认含大写字母，但 OpenAPI 仅允许小写。我们把生成的码全部 lowercase
@@ -67,10 +72,9 @@ type resolvedFile struct {
 
 // Deploy 执行一次部署。
 // 支持两种模式：
-//   - 单 HTML：req.Content（filename 必填，必须 .html/.htm）
-//   - 多文件：req.Files（filename 必填，必须 .html/.htm，作为主入口）
+//   - 单文件：req.Content（filename 支持 .html/.htm/.md/.markdown）
+//   - 多文件：req.Files（自动识别 HTML/Markdown 入口；单 ZIP 会解压并剥离外层目录）
 //
-// 严格对齐项目 OpenAPI 3.1。
 // ownerTokenID 用于按 token 维度限流；clientIP 用于按 IP 维度限流。
 func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerTokenID, clientIP string) (*api.DeployResponse, *api.APIError) {
 	// 0. 冷却检查（必须最先；任何字段错误都不应该消耗冷却）
@@ -82,21 +86,13 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			WithHint("Slow down. Use createVersion=true to iterate on an existing code instead of creating new ones.")
 	}
 
-	// 1. filename 必填且必须 .html/.htm（对齐 OpenAPI `\.html?$`）
-	filename := strings.TrimSpace(req.Filename)
-	if filename == "" {
-		return nil, api.NewError(api.CodeInvalidInput, "validate",
-			"filename is required").WithHint("filename must be the main HTML entry, e.g. 'index.html'.")
+	// 1. filename 作为入口提示；多文件/ZIP 可留空，由后端自动识别。
+	filenameHint := strings.TrimSpace(req.Filename)
+	if filenameHint != "" {
+		if apiErr := validateFilePath(filenameHint); apiErr != nil {
+			return nil, apiErr
+		}
 	}
-	if !htmlFilenameRe.MatchString(filename) {
-		return nil, api.NewError(api.CodeInvalidInput, "validate",
-			fmt.Sprintf("filename %q must end with .html or .htm", filename))
-	}
-	// filename 同时也要过路径白名单（防 ../foo.html）
-	if apiErr := validateFilePath(filename); apiErr != nil {
-		return nil, apiErr
-	}
-	mainEntry := filename
 
 	// 2. description 必填 + 长度
 	desc := strings.TrimSpace(req.Description)
@@ -112,13 +108,14 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	if visibilityErr != nil {
 		return nil, visibilityErr
 	}
+	category := normalizeCategory(req.Category)
 
-	// 3. 解析 + 校验内容（content 或 files）
-	rfiles, apiErr := d.resolveContent(req, mainEntry)
+	// 3. 解析 + 校验内容（content、files 或单 ZIP）
+	rfiles, mainEntry, apiErr := d.resolveContent(req, filenameHint)
 	if apiErr != nil {
 		return nil, apiErr
 	}
-	if apiErr := validateEntrypointHTML(rfiles, mainEntry); apiErr != nil {
+	if apiErr := validateEntrypoint(rfiles, mainEntry); apiErr != nil {
 		return nil, apiErr
 	}
 
@@ -146,6 +143,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 				"you can only append versions to sites you own").
 				WithHint("Use the same account, token, or anonymous session that created this site.")
 		}
+		category = site.Category
 	}
 
 	if err := d.writeFiles(code, versionNumber, rfiles); err != nil {
@@ -185,6 +183,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			OwnerTokenID:           ownerTokenID,
 			PrimaryVersionStrategy: string(api.StrategyLikes),
 			Visibility:             visibility,
+			Category:               category,
 			AccessPasswordHash:     accessHash,
 			CreatedAt:              now,
 			Source:                 normalizeSource(req.Source),
@@ -264,7 +263,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	agentGuideURL := ""
 	if isNewSite {
 		preserveHint = "Use createVersion=true with the same code to publish updates."
-		agentGuideURL = "/api-docs.html"
+		agentGuideURL = "/admin?tab=apiDocs"
 	}
 	return &api.DeployResponse{
 		Success:                true,
@@ -282,6 +281,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		AgentGuideURL:          agentGuideURL,
 		PrimaryVersionStrategy: strategy,
 		Visibility:             site.Visibility,
+		Category:               site.Category,
 		CooldownSeconds:        d.cfg.CooldownSeconds,
 		NextAvailableAt:        time.Now().UTC().Add(retryAfter),
 		VersionCount:           len(allVersions),
@@ -291,29 +291,37 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 }
 
 // resolveContent 把请求里的 content 或 files 解析成统一的 resolvedFile 列表。
-// 同时做所有大小、路径、数量校验。
-func (d *Deployer) resolveContent(req api.DeployRequest, mainEntry string) ([]resolvedFile, *api.APIError) {
+// 同时做所有大小、路径、数量校验，并返回最终入口文件。
+func (d *Deployer) resolveContent(req api.DeployRequest, filenameHint string) ([]resolvedFile, string, *api.APIError) {
 	hasContent := req.Content != ""
 	hasFiles := len(req.Files) > 0
 
 	if !hasContent && !hasFiles {
-		return nil, api.NewError(api.CodeInvalidInput, "validate",
+		return nil, "", api.NewError(api.CodeInvalidInput, "validate",
 			"either 'content' or 'files' must be provided").WithHint("Single HTML uses 'content'; multiple files use 'files' array.")
 	}
 	if hasContent && hasFiles {
-		return nil, api.NewError(api.CodeInvalidInput, "validate",
+		return nil, "", api.NewError(api.CodeInvalidInput, "validate",
 			"provide 'content' or 'files', not both")
 	}
 
-	// 单 HTML 模式：包成单个 file
+	// 单文件模式：包成单个 file
 	if hasContent {
+		mainEntry := filenameHint
+		if mainEntry == "" {
+			mainEntry = defaultMainEntry
+		}
+		if !isPageEntrypoint(mainEntry) {
+			return nil, "", api.NewError(api.CodeInvalidInput, "validate",
+				fmt.Sprintf("filename %q must end with .html, .htm, .md, or .markdown", mainEntry))
+		}
 		if int64(len(req.Content)) > d.cfg.MaxSingleFileBytes {
-			return nil, api.NewError(api.CodeContentTooLarge, "validate",
+			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
 				fmt.Sprintf("content exceeds max single-file size (%d bytes)", d.cfg.MaxSingleFileBytes))
 		}
 		// 校验 mainEntry 合法
 		if apiErr := validateFilePath(mainEntry); apiErr != nil {
-			return nil, apiErr
+			return nil, "", apiErr
 		}
 		bytes := []byte(req.Content)
 		sha := sha256sum(bytes)
@@ -322,12 +330,12 @@ func (d *Deployer) resolveContent(req api.DeployRequest, mainEntry string) ([]re
 			Bytes:    bytes,
 			IsBinary: false,
 			Sha256:   sha,
-		}}, nil
+		}}, mainEntry, nil
 	}
 
 	// 多文件模式
 	if len(req.Files) > d.cfg.MaxFilesPerSite {
-		return nil, api.NewError(api.CodeContentTooLarge, "validate",
+		return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
 			fmt.Sprintf("too many files (%d); max %d per site", len(req.Files), d.cfg.MaxFilesPerSite))
 	}
 
@@ -339,11 +347,11 @@ func (d *Deployer) resolveContent(req api.DeployRequest, mainEntry string) ([]re
 	for _, f := range req.Files {
 		// path 校验
 		if apiErr := validateFilePath(f.Path); apiErr != nil {
-			return nil, apiErr
+			return nil, "", apiErr
 		}
 		// 大小写敏感去重
 		if seen[f.Path] {
-			return nil, api.NewError(api.CodeInvalidInput, "validate",
+			return nil, "", api.NewError(api.CodeInvalidInput, "validate",
 				fmt.Sprintf("duplicate file path: %s", f.Path))
 		}
 		seen[f.Path] = true
@@ -351,18 +359,18 @@ func (d *Deployer) resolveContent(req api.DeployRequest, mainEntry string) ([]re
 		// 解码内容
 		bytes, isBinary, apiErr := resolveFileContent(f)
 		if apiErr != nil {
-			return nil, apiErr
+			return nil, "", apiErr
 		}
 
 		// 单文件大小校验
 		if int64(len(bytes)) > d.cfg.MaxSingleFileBytes {
-			return nil, api.NewError(api.CodeContentTooLarge, "validate",
+			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
 				fmt.Sprintf("file %s exceeds max single-file size (%d bytes)", f.Path, d.cfg.MaxSingleFileBytes))
 		}
 
 		totalSize += int64(len(bytes))
 		if totalSize > d.cfg.MaxSiteTotalBytes {
-			return nil, api.NewError(api.CodeContentTooLarge, "validate",
+			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
 				fmt.Sprintf("total size exceeds site limit (%d bytes)", d.cfg.MaxSiteTotalBytes))
 		}
 
@@ -374,10 +382,31 @@ func (d *Deployer) resolveContent(req api.DeployRequest, mainEntry string) ([]re
 		})
 	}
 
-	return out, nil
+	if len(out) == 1 && isZipPath(out[0].Path) {
+		return d.expandZipContent(out[0])
+	}
+	mainEntry, apiErr := chooseMainEntry(out, filenameHint)
+	if apiErr != nil {
+		return nil, "", apiErr
+	}
+	return out, mainEntry, nil
 }
 
-func validateEntrypointHTML(files []resolvedFile, mainEntry string) *api.APIError {
+func validateEntrypoint(files []resolvedFile, mainEntry string) *api.APIError {
+	if isMarkdownPath(mainEntry) {
+		for _, f := range files {
+			if f.Path != mainEntry || f.IsBinary {
+				continue
+			}
+			if len(strings.TrimSpace(string(f.Bytes))) < 3 {
+				return api.NewError(api.CodeInvalidInput, "validate",
+					"main Markdown entry is too short").WithHint("Upload a Markdown document with at least one heading or paragraph.")
+			}
+			return nil
+		}
+		return api.NewError(api.CodeInvalidInput, "validate",
+			fmt.Sprintf("main entry %q was not found in uploaded files", mainEntry))
+	}
 	for _, f := range files {
 		if f.Path != mainEntry || f.IsBinary {
 			continue
@@ -403,6 +432,249 @@ func validateEntrypointHTML(files []resolvedFile, mainEntry string) *api.APIErro
 	}
 	return api.NewError(api.CodeInvalidInput, "validate",
 		fmt.Sprintf("main entry %q was not found in uploaded files", mainEntry))
+}
+
+func isHTMLPath(path string) bool {
+	return htmlFilenameRe.MatchString(path)
+}
+
+func isMarkdownPath(path string) bool {
+	return markdownFilenameRe.MatchString(path)
+}
+
+func isZipPath(path string) bool {
+	return zipFilenameRe.MatchString(path)
+}
+
+func isPageEntrypoint(path string) bool {
+	return isHTMLPath(path) || isMarkdownPath(path)
+}
+
+func chooseMainEntry(files []resolvedFile, filenameHint string) (string, *api.APIError) {
+	if filenameHint != "" && isPageEntrypoint(filenameHint) {
+		for _, f := range files {
+			if f.Path == filenameHint {
+				return filenameHint, nil
+			}
+		}
+	}
+	preferred := []string{"index.html", "index.htm", "README.md", "readme.md", "README.markdown", "readme.markdown"}
+	for _, want := range preferred {
+		for _, f := range files {
+			if strings.EqualFold(f.Path, want) {
+				return f.Path, nil
+			}
+		}
+	}
+	for _, f := range files {
+		if isHTMLPath(f.Path) {
+			return f.Path, nil
+		}
+	}
+	for _, f := range files {
+		if isMarkdownPath(f.Path) {
+			return f.Path, nil
+		}
+	}
+	return "", api.NewError(api.CodeInvalidInput, "validate",
+		"no HTML or Markdown entry was found").WithHint("Upload index.html, README.md, or a ZIP/directory containing one of them.")
+}
+
+func (d *Deployer) expandZipContent(file resolvedFile) ([]resolvedFile, string, *api.APIError) {
+	zr, err := zip.NewReader(bytes.NewReader(file.Bytes), int64(len(file.Bytes)))
+	if err != nil {
+		return nil, "", api.NewError(api.CodeInvalidInput, "validate",
+			fmt.Sprintf("ZIP file %q cannot be opened: %v", file.Path, err))
+	}
+	raw := make([]resolvedFile, 0, len(zr.File))
+	for _, zf := range zr.File {
+		if zf.FileInfo().IsDir() {
+			continue
+		}
+		if unsafeZipEntryName(zf.Name) {
+			return nil, "", api.NewError(api.CodeInvalidFilePath, "validate",
+				fmt.Sprintf("ZIP entry %q is not a safe relative path", zf.Name)).
+				WithHint("ZIP entries must not contain '..', absolute paths, drive letters, or UNC paths.")
+		}
+		path := normalizeZipEntryPath(zf.Name)
+		if shouldSkipArchivePath(path) {
+			continue
+		}
+		if apiErr := validateFilePath(path); apiErr != nil {
+			return nil, "", apiErr.WithHint("ZIP entries must be relative paths without '..', drive letters, or unsafe characters.")
+		}
+		if zf.UncompressedSize64 > uint64(d.cfg.MaxSingleFileBytes) {
+			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
+				fmt.Sprintf("file %s exceeds max single-file size (%d bytes)", path, d.cfg.MaxSingleFileBytes))
+		}
+		rc, err := zf.Open()
+		if err != nil {
+			return nil, "", api.NewError(api.CodeInvalidInput, "validate",
+				fmt.Sprintf("ZIP entry %q cannot be read: %v", path, err))
+		}
+		data, err := readLimitedZipEntry(rc, d.cfg.MaxSingleFileBytes)
+		_ = rc.Close()
+		if err != nil {
+			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
+				fmt.Sprintf("ZIP entry %s exceeds max single-file size (%d bytes)", path, d.cfg.MaxSingleFileBytes))
+		}
+		raw = append(raw, resolvedFile{
+			Path:     path,
+			Bytes:    data,
+			IsBinary: !looksTextPath(path),
+			Sha256:   sha256sum(data),
+		})
+	}
+	if len(raw) == 0 {
+		return nil, "", api.NewError(api.CodeInvalidInput, "validate",
+			"ZIP did not contain deployable files")
+	}
+	root, apiErr := chooseArchiveRoot(raw)
+	if apiErr != nil {
+		return nil, "", apiErr
+	}
+	trimmed := make([]resolvedFile, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	var totalSize int64
+	for _, f := range raw {
+		rel := f.Path
+		if root != "" {
+			if rel != root && !strings.HasPrefix(rel, root+"/") {
+				continue
+			}
+			rel = strings.TrimPrefix(rel, root+"/")
+		}
+		if rel == "" || shouldSkipArchivePath(rel) {
+			continue
+		}
+		if apiErr := validateFilePath(rel); apiErr != nil {
+			return nil, "", apiErr
+		}
+		if seen[rel] {
+			return nil, "", api.NewError(api.CodeInvalidInput, "validate",
+				fmt.Sprintf("duplicate file path after ZIP root detection: %s", rel))
+		}
+		seen[rel] = true
+		totalSize += int64(len(f.Bytes))
+		if totalSize > d.cfg.MaxSiteTotalBytes {
+			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
+				fmt.Sprintf("total size exceeds site limit (%d bytes)", d.cfg.MaxSiteTotalBytes))
+		}
+		f.Path = rel
+		f.Sha256 = sha256sum(f.Bytes)
+		trimmed = append(trimmed, f)
+	}
+	if len(trimmed) > d.cfg.MaxFilesPerSite {
+		return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
+			fmt.Sprintf("too many files in ZIP (%d); max %d per site", len(trimmed), d.cfg.MaxFilesPerSite))
+	}
+	mainEntry, apiErr := chooseMainEntry(trimmed, "")
+	if apiErr != nil {
+		return nil, "", apiErr
+	}
+	return trimmed, mainEntry, nil
+}
+
+func normalizeZipEntryPath(path string) string {
+	path = strings.ReplaceAll(path, "\\", "/")
+	path = strings.TrimPrefix(path, "/")
+	path = filepath.Clean(path)
+	path = strings.ReplaceAll(path, "\\", "/")
+	if path == "." {
+		return ""
+	}
+	return path
+}
+
+func unsafeZipEntryName(path string) bool {
+	path = strings.ReplaceAll(path, "\\", "/")
+	if path == "" || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return true
+	}
+	if len(path) >= 2 && path[1] == ':' {
+		return true
+	}
+	for _, seg := range strings.Split(path, "/") {
+		if seg == ".." || seg == "." || seg == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldSkipArchivePath(path string) bool {
+	if path == "" || strings.HasSuffix(path, "/") {
+		return true
+	}
+	base := filepath.Base(path)
+	return strings.HasPrefix(path, "__MACOSX/") || base == ".DS_Store" || base == "Thumbs.db"
+}
+
+func readLimitedZipEntry(r io.Reader, max int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("too large")
+	}
+	return data, nil
+}
+
+func chooseArchiveRoot(files []resolvedFile) (string, *api.APIError) {
+	candidates := make([]string, 0)
+	for _, preferred := range []string{"index.html", "index.htm", "README.md", "readme.md", "README.markdown", "readme.markdown"} {
+		for _, f := range files {
+			if strings.EqualFold(filepath.Base(f.Path), preferred) {
+				candidates = append(candidates, filepath.ToSlash(filepath.Dir(f.Path)))
+			}
+		}
+		if len(candidates) > 0 {
+			return shortestRoot(candidates), nil
+		}
+	}
+	for _, f := range files {
+		if isHTMLPath(f.Path) || isMarkdownPath(f.Path) {
+			candidates = append(candidates, filepath.ToSlash(filepath.Dir(f.Path)))
+		}
+	}
+	if len(candidates) == 0 {
+		return "", api.NewError(api.CodeInvalidInput, "validate",
+			"ZIP did not contain an HTML or Markdown entry").WithHint("Put index.html or README.md in the site folder.")
+	}
+	return shortestRoot(candidates), nil
+}
+
+func shortestRoot(roots []string) string {
+	best := ""
+	first := true
+	for _, root := range roots {
+		if root == "." {
+			root = ""
+		}
+		if first || segmentCount(root) < segmentCount(best) || (segmentCount(root) == segmentCount(best) && len(root) < len(best)) {
+			best = root
+			first = false
+		}
+	}
+	return best
+}
+
+func segmentCount(path string) int {
+	if path == "" {
+		return 0
+	}
+	return len(strings.Split(path, "/"))
+}
+
+func looksTextPath(path string) bool {
+	lower := strings.ToLower(path)
+	for _, ext := range []string{".html", ".htm", ".css", ".js", ".mjs", ".json", ".txt", ".md", ".markdown", ".svg", ".xml", ".csv", ".webmanifest", ".map"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // decideCode 决定短码。
@@ -649,6 +921,18 @@ func normalizeVisibility(raw string) (string, bool, *api.APIError) {
 	}
 }
 
+func normalizeCategory(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) > 64 {
+		return string(runes[:64])
+	}
+	return value
+}
+
 func sha256sum(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
@@ -830,6 +1114,37 @@ func (d *Deployer) SetEmbedPolicy(ctx context.Context, policy, allowOrigins stri
 	return nil
 }
 
+func (d *Deployer) GetMarketCategories(ctx context.Context) ([]api.MarketCategory, error) {
+	raw, err := d.store.GetSetting(ctx, "market_categories")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return api.DefaultMarketCategories(), nil
+	}
+	var categories []api.MarketCategory
+	if err := json.Unmarshal([]byte(raw), &categories); err != nil {
+		return api.DefaultMarketCategories(), nil
+	}
+	categories, apiErr := api.NormalizeMarketCategories(categories)
+	if apiErr != nil {
+		return api.DefaultMarketCategories(), nil
+	}
+	return categories, nil
+}
+
+func (d *Deployer) SetMarketCategories(ctx context.Context, categories []api.MarketCategory) error {
+	categories, apiErr := api.NormalizeMarketCategories(categories)
+	if apiErr != nil {
+		return fmt.Errorf("%s", apiErr.Detail)
+	}
+	data, err := json.Marshal(categories)
+	if err != nil {
+		return err
+	}
+	return d.store.SetSetting(ctx, "market_categories", string(data))
+}
+
 func sanitizeSiteTitle(title string) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -929,8 +1244,8 @@ func (d *Deployer) ListAnonymousSessions(ctx context.Context, limit int) ([]stor
 
 // ===== Marketplace（公开创作市场） =====
 
-func (d *Deployer) ListMarketplaceDeploys(ctx context.Context, q, status, sort string, page, pageSize int) ([]store.MarketplaceDeploy, int, error) {
-	return d.store.ListMarketplaceDeploys(ctx, q, status, sort, page, pageSize)
+func (d *Deployer) ListMarketplaceDeploys(ctx context.Context, q, status, sort, category, kind, ownerTokenID, favoriteOwnerID string, page, pageSize int) ([]store.MarketplaceDeploy, int, error) {
+	return d.store.ListMarketplaceDeploys(ctx, q, status, sort, category, kind, ownerTokenID, favoriteOwnerID, page, pageSize)
 }
 
 func (d *Deployer) GetMarketplaceDeploy(ctx context.Context, code string) (store.MarketplaceDeploy, error) {
@@ -947,6 +1262,10 @@ func (d *Deployer) IncrementViewCount(ctx context.Context, code string) error {
 
 func (d *Deployer) AddLike(ctx context.Context, code, fingerprint string) (int64, error) {
 	return d.store.AddLike(ctx, code, fingerprint)
+}
+
+func (d *Deployer) SetFavorite(ctx context.Context, code, ownerID string, favorited bool) (int64, bool, error) {
+	return d.store.SetFavorite(ctx, code, ownerID, favorited)
 }
 
 func (d *Deployer) SiteExists(ctx context.Context, code string) (bool, error) {
@@ -967,6 +1286,10 @@ func (d *Deployer) SetSiteVisibility(ctx context.Context, code, visibility strin
 		return errors.New(apiErr.Detail)
 	}
 	return d.store.SetSiteVisibility(ctx, code, value)
+}
+
+func (d *Deployer) SetSiteCategory(ctx context.Context, code, category string) error {
+	return d.store.SetSiteCategory(ctx, code, normalizeCategory(category))
 }
 
 func (d *Deployer) SetSiteAccessPassword(ctx context.Context, code, password string) error {

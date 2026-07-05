@@ -15,6 +15,7 @@ type Site struct {
 	CurrentVersion         *int64
 	PrimaryVersionStrategy string // 'likes' | 'latest'
 	Visibility             string // 'public' | 'unlisted'
+	Category               string // marketplace category slug, e.g. landing/dashboard/docs/tool/game
 	ViewCount              int64
 	LikeCount              int64
 	Status                 string // 'active' | 'inactive'
@@ -41,8 +42,11 @@ type MarketplaceDeploy struct {
 	FileSize               int64 // 当前版本总大小
 	PrimaryVersionStrategy string
 	Visibility             string
+	Category               string
 	ViewCount              int64
 	LikeCount              int64
+	FavoriteCount          int64
+	Favorited              bool
 	VersionCount           int
 	Status                 string
 	AccessProtected        bool
@@ -194,6 +198,8 @@ type SiteWithMeta struct {
 	LikeCount       int64
 	Status          string
 	Visibility      string
+	Category        string
+	MainEntry       string
 	AccessProtected bool
 	IsPinned        bool
 	PinnedAt        *time.Time
@@ -325,7 +331,7 @@ type Store interface {
 	// ListMarketplaceDeploys 分页 + 搜索 + 排序 + 状态过滤，返回 marketplace 卡片数据。
 	// sort: "newest" | "oldest" | "views_desc" | "views_asc" | "likes_desc" | "likes_asc"
 	// status: "" | "active" | "inactive"
-	ListMarketplaceDeploys(ctx context.Context, q, status, sort string, page, pageSize int) ([]MarketplaceDeploy, int, error)
+	ListMarketplaceDeploys(ctx context.Context, q, status, sort, category, kind, ownerTokenID, favoriteOwnerID string, page, pageSize int) ([]MarketplaceDeploy, int, error)
 
 	// GetMarketplaceDeploy 按 code 取单条 marketplace 卡片数据（含当前版本元信息）。
 	GetMarketplaceDeploy(ctx context.Context, code string) (MarketplaceDeploy, error)
@@ -340,11 +346,16 @@ type Store interface {
 	// 返回加完后 like_count 总数。
 	AddLike(ctx context.Context, code, userFingerprint string) (int64, error)
 
+	SetFavorite(ctx context.Context, code, ownerID string, favorited bool) (int64, bool, error)
+
 	// UpdateSiteStatus 设置 site.status（active/inactive）。
 	UpdateSiteStatus(ctx context.Context, code, status string) error
 
 	// SetSiteVisibility 设置 site.visibility（public/unlisted）。
 	SetSiteVisibility(ctx context.Context, code, visibility string) error
+
+	// SetSiteCategory 设置创作市场应用分类。
+	SetSiteCategory(ctx context.Context, code, category string) error
 
 	// SetSitePinned 设置或取消创作市场置顶。
 	SetSitePinned(ctx context.Context, code string, pinned bool) error

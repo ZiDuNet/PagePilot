@@ -10,6 +10,7 @@ export interface RuntimeConfig {
     appPathBase?: string;
   };
   mode?: string;
+  version?: string;
   cooldownSeconds?: number;
   anonymousPolicy?: {
     deployLimit?: number;
@@ -18,6 +19,20 @@ export interface RuntimeConfig {
     maxSingleFileBytes?: number;
     maxSiteTotalBytes?: number;
     maxFilesPerSite?: number;
+  };
+  email?: {
+    verificationEnabled?: boolean;
+    smtpConfigured?: boolean;
+  };
+  storage?: {
+    backend?: string;
+    hostedDir?: string;
+    ossProvider?: string;
+    ossEndpoint?: string;
+    ossBucket?: string;
+    ossPrefix?: string;
+    ossPublicBaseURL?: string;
+    ossConfigured?: boolean;
   };
 }
 
@@ -40,11 +55,14 @@ export interface MarketplaceDeploy {
   filePath?: string;
   status?: string;
   visibility?: string;
+  category?: string;
   accessProtected?: boolean;
   owned?: boolean;
   isPinned?: boolean;
   viewCount?: number;
   likeCount?: number;
+  favoriteCount?: number;
+  favorited?: boolean;
   versionCount?: number;
   fileSize?: number;
   createdAt?: string;
@@ -60,7 +78,14 @@ export interface DeployResponse {
   versionUrl?: string;
   versionNumber?: number;
   versionId?: string;
+  category?: string;
   size?: number;
+}
+
+export interface MarketCategoryInfo {
+  slug: string;
+  label: string;
+  note?: string;
 }
 
 export interface ScreenInfo {
