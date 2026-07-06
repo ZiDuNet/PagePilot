@@ -5,7 +5,7 @@
 //
 // 使用：
 //
-//	HOSTCTL_SERVER=https://host.example.com HOSTCTL_TOKEN=xxx pagep-mcp
+//	PAGEPILOT_SERVER=https://host.example.com PAGEPILOT_TOKEN=xxx pagep-mcp
 //
 // 在 Claude Code 里配置：
 //
@@ -14,8 +14,8 @@
 //	    "pagepilot": {
 //	      "command": "pagep-mcp",
 //	      "env": {
-//	        "HOSTCTL_SERVER": "https://host.example.com",
-//	        "HOSTCTL_TOKEN": "..."
+//	        "PAGEPILOT_SERVER": "https://host.example.com",
+//	        "PAGEPILOT_TOKEN": "..."
 //	      }
 //	    }
 //	  }
@@ -27,6 +27,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -78,11 +79,21 @@ type schemaProp struct {
 }
 
 func main() {
-	server := os.Getenv("HOSTCTL_SERVER")
+	serverFlag := flag.String("server", "", "PagePilot server URL")
+	tokenFlag := flag.String("token", "", "bearer token")
+	flag.Parse()
+
+	server := strings.TrimSpace(*serverFlag)
+	if server == "" {
+		server = firstEnv("PAGEPILOT_SERVER", "HOSTCTL_SERVER")
+	}
 	if server == "" {
 		server = "http://localhost:8787"
 	}
-	token := os.Getenv("HOSTCTL_TOKEN")
+	token := strings.TrimSpace(*tokenFlag)
+	if token == "" {
+		token = firstEnv("PAGEPILOT_TOKEN", "HOSTCTL_TOKEN")
+	}
 	c := client.New(server, token)
 
 	reader := bufio.NewReader(os.Stdin)
@@ -115,6 +126,15 @@ func main() {
 		resp.ID = req.ID
 		_ = enc.Encode(resp)
 	}
+}
+
+func firstEnv(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func bytesTrimRightSpace(b []byte) []byte {
@@ -177,11 +197,11 @@ func toolList() []toolDef {
 		},
 		{
 			Name:        "claim_anonymous_session",
-			Description: "Claim deployments created by an anonymous session for the current HOSTCTL_TOKEN owner.",
+			Description: "将匿名 session 创建的发布认领到当前 PAGEPILOT_TOKEN 所属用户。",
 			InputSchema: jsonSchema{
 				Type: "object",
 				Properties: map[string]*schemaProp{
-					"session_id": {Type: "string", Description: "Anonymous session id, usually from X-Hostctl-Session or ~/.hostctl/session.json"},
+					"session_id": {Type: "string", Description: "匿名 session id，通常来自 pagep 本地会话或匿名发布响应。"},
 				},
 				Required: []string{"session_id"},
 			},
@@ -329,7 +349,7 @@ func toolList() []toolDef {
 		},
 		{
 			Name:        "list_screens",
-			Description: "注册用户工具：列出当前 HOSTCTL_TOKEN 绑定的硬件屏幕。投屏前先用它让用户选择目标屏幕。",
+			Description: "注册用户工具：列出当前 PAGEPILOT_TOKEN 绑定的硬件屏幕。投屏前先用它让用户选择目标屏幕。",
 			InputSchema: jsonSchema{Type: "object"},
 		},
 		{

@@ -16,7 +16,7 @@ PagePilot 不需要配置入口域名。浏览器访问时，首页、后台、`
 
 如果同一套服务通过多个入口访问，PagePilot 会按用户实际打开的入口生成链接。外层反向代理建议透传 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。
 
-Skill、MCP 和 CLI 不读取所谓“主站域名配置”。它们使用 `--server`、`HOSTCTL_SERVER` 或客户端保存的服务器地址作为 API 控制面入口，并把这个入口交给后端用于路径模式 URL 生成。发布成功后的 URL 仍以后端响应为准。
+Skill、MCP 和 CLI 不读取所谓“主站域名配置”。它们使用 `--server`、`PAGEPILOT_SERVER` 或客户端保存的服务器地址作为 API 控制面入口，并把这个入口交给后端用于路径模式 URL 生成。发布成功后的 URL 仍以后端响应为准。旧 `HOSTCTL_SERVER` 仍兼容读取，但新配置建议使用 `PAGEPILOT_SERVER`。
 
 然后启动：
 
@@ -60,7 +60,9 @@ HOSTCTL_ADMIN_PASSWORD: "123456"
 
 升级容器前请保留这些目录。删除这些目录会删除数据库和已发布站点。
 
-本轮运行时重构新增了 `site_search_fts`、`audit_logs`、`render_cache` 和 `version_bundles` 等表，并会在服务启动时自动补齐老数据库结构、回填市场搜索索引。只要继续挂载上表中的 `./data/docker/hostctl` 和 `./data/docker/hosted`，执行 `docker compose up -d --build` 不会丢失旧版本数据；不要为了“重新构建”删除 `data/docker`。
+本轮运行时重构新增了 `site_search_fts`、`audit_logs`、`render_cache` 和 `version_bundles` 等表，并会在服务启动时自动补齐老数据库结构、回填市场搜索索引。只要继续挂载上表中的 `./data/docker/hostctl` 和 `./data/docker/hosted`，迁移设计不会主动清空旧版本数据；不要为了“重新构建”删除 `data/docker`。
+
+发布前仍需要拿真实旧版本 SQLite 数据库和 hosted 文件目录跑一次 Docker 升级验证，确认站点、版本、用户、Token、访问密码、分类、屏幕绑定、文件资源、FTS 回填和新增表迁移都正常。当前完整待办见 [../docs/CURRENT_STATUS_AND_TODO.md](../docs/CURRENT_STATUS_AND_TODO.md)。
 
 ## 注册、邮箱验证与 OSS
 
@@ -203,6 +205,6 @@ docker compose up -d
 | 首页可访问但 `/deploy` 或 `/screens/` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
 | `/skill/pagep.zip` 404 | 确认镜像包含 `internal/web/skill/hostctl-deploy.zip`，并已重新构建；正常情况下没有后台上传包也会返回内置默认包。旧 `/skill/hostctl-deploy.zip` 也保留兼容。 |
 | 二维码或分享链接域名错误 | 请先确认浏览器当前打开的域名正确；再检查反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，不要把内网地址透传给后端。 |
-| Skill/MCP 发布后返回内网链接 | 检查 `--server` 或 `HOSTCTL_SERVER` 是否使用了内网地址。路径模式下要返回公网链接，就让 Skill/MCP 用公网入口调用 PagePilot。 |
+| Skill/MCP 发布后返回内网链接 | 检查 `--server` 或 `PAGEPILOT_SERVER` 是否使用了内网地址。路径模式下要返回公网链接，就让 Skill/MCP 用公网入口调用 PagePilot。旧 `HOSTCTL_SERVER` 仅兼容读取。 |
 | 登录默认管理员失败 | 如果数据库已有用户，默认管理员不会再次创建；请用已有管理员或备份恢复。 |
 | 发布后静态文件丢失 | 检查 `./data/docker/hosted` 是否正确挂载且未被清空。 |

@@ -4,7 +4,7 @@
 
 **目标：** 把 PagePilot 的 HTML/Markdown/ZIP 发布链路重构为可维护、可审计、可搜索、CLI/MCP/Skill 对齐的应用运行时。
 
-**架构：** 后端新增 `internal/bundle`、`internal/render`、`internal/hosted`、`internal/audit` 四个边界清晰的模块，原有 `internal/deploy`、`internal/api`、`internal/store` 只保留编排职责。前端用户端和后台继续使用现有 React/Vite 工程，在市场复用、文件树、审计日志和运行设置页上补齐能力。
+**架构目标：** 后端逐步拆出 `internal/bundle`、`internal/render`、`internal/hosted`、`internal/audit` 等边界清晰的模块，原有 `internal/deploy`、`internal/api`、`internal/store` 只保留编排职责。当前已经落地 `internal/bundle` 和 `internal/render`；`internal/hosted`、`internal/audit` 尚未拆出，后台审计、文件树、Bundle 展示和模板复用仍待产品化。
 
 **技术栈：** Go 1.22、SQLite/FTS5、React 18、Vite、PagePilot CLI、MCP stdio server、PagePilot Skill。
 
@@ -24,7 +24,10 @@
 
 - 独立 `internal/hosted`、`internal/audit` 模块尚未拆出，相关能力仍在现有 API/Store 层中。
 - 后台审计日志 API/UI、站点文件树和更完整的 Bundle/安全模式展示仍待实现。
-- Markdown 目前是安全语义渲染，不是完整的 highlight.js、KaTeX、Mermaid 浏览器渲染链路。
+- Markdown 目前是安全语义渲染，不是 jpage 那种服务端 Markdown / highlight.js / KaTeX 渲染加内置 Mermaid 前端运行时的完整链路。
+- 前台模板复用体验还不是完整 jpage 式闭环。
+- 还没有完成运行时视觉 QA，也没有用真实旧数据库跑 Docker 升级验证。
+- 汇总清单见 `docs/CURRENT_STATUS_AND_TODO.md`。
 
 ## 文件结构
 
@@ -35,22 +38,22 @@
 - 创建 `internal/render/markdown.go`：Markdown 渲染、HTML sanitizer、代码块/公式/图表占位和资源注入。
 - 创建 `internal/render/cache.go`：按版本 hash 计算渲染缓存 key。
 - 创建 `internal/render/markdown_test.go`：覆盖图片、链接、代码块、Mermaid、KaTeX、XSS。
-- 创建 `internal/hosted/csp.go`：生成 admin/user/hosted-html/hosted-markdown/preview profile。
-- 创建 `internal/hosted/html.go`：HTML 兼容脚本、base 注入、托管响应辅助。
-- 创建 `internal/hosted/csp_test.go`：覆盖 sandbox、frame-ancestors、Markdown nonce 和预览 profile。
-- 创建 `internal/audit/audit.go`：审计事件类型和记录辅助。
+- 计划创建 `internal/hosted/csp.go`：生成 admin/user/hosted-html/hosted-markdown/preview profile。当前尚未独立拆出。
+- 计划创建 `internal/hosted/html.go`：HTML 兼容脚本、base 注入、托管响应辅助。当前尚未独立拆出。
+- 计划创建 `internal/hosted/csp_test.go`：覆盖 sandbox、frame-ancestors、Markdown nonce 和预览 profile。当前尚未独立拆出。
+- 计划创建 `internal/audit/audit.go`：审计事件类型和记录辅助。当前尚未独立拆出。
 - 修改 `internal/store/schema.sql`：增加 `site_search_fts`、`audit_logs`、`render_cache`、`version_bundles`。
 - 修改 `internal/store/store.go`：增加 FTS、审计、渲染缓存、bundle 元数据接口。
 - 修改 `internal/store/sqlite.go`：增加迁移、FTS 同步、审计写入、缓存读写、文件树查询。
-- 修改 `internal/api/types.go`、`internal/api/admin_types.go`：增加 bundle、搜索、审计、multipart 返回字段类型。
-- 修改 `internal/api/server.go`：接入新渲染/CSP/审计模块，新增 multipart 上传接口和审计日志 API。
+- 修改 `internal/api/types.go`、`internal/api/admin_types.go`：增加 bundle、搜索、审计、multipart 返回字段类型。当前 multipart 已落地，审计和完整 Bundle 展示字段仍待 API 产品化。
+- 修改 `internal/api/server.go`：接入新渲染/CSP/审计模块，新增 multipart 上传接口和审计日志 API。当前 multipart 与渲染缓存已落地，审计日志 API 未落地。
 - 修改 `internal/api/openapi.go`：补齐新接口和 schema。
 - 修改 `cmd/hostctl/main.go`：目录/ZIP 优先走 multipart，保留 JSON/base64 fallback。
-- 修改 `cmd/hostctl-mcp/main.go`：工具描述与参数同步，补模板复用、文件树、审计可见能力。
+- 修改 `cmd/hostctl-mcp/main.go`：工具描述与参数同步，补模板复用、文件树、审计可见能力。当前发布和屏幕工具已对齐 multipart，文件树、审计可见能力仍待补齐。
 - 修改 `skill/hostctl-deploy/SKILL.md`：重写 Agent 操作规约。
 - 修改 `skill/hostctl-deploy/scripts/hostctl_deploy.py`：优先 multipart，保留 JSON 兼容。
-- 修改 `frontend/user/src/App.tsx`、`frontend/user/src/types.ts`、`frontend/user/src/styles.css`：市场搜索、复用抽屉、详情页展示 bundle/渲染信息。
-- 修改 `frontend/admin/src/App.tsx`、`frontend/admin/src/styles.css`：站点文件树、安全模式、审计日志、运行设置和 Skill/MCP 文案。
+- 修改 `frontend/user/src/App.tsx`、`frontend/user/src/types.ts`、`frontend/user/src/styles.css`：市场搜索、复用抽屉、详情页展示 bundle/渲染信息。当前已有基础复用抽屉，完整文件树/Bundle/安全模式/复用参数展示仍待补齐。
+- 修改 `frontend/admin/src/App.tsx`、`frontend/admin/src/styles.css`：站点文件树、安全模式、审计日志、运行设置和 Skill/MCP 文案。当前运行设置和 Skill/MCP 文案已更新，站点文件树、安全模式、审计日志 UI 仍待补齐。
 - 修改 `README.md`、`deploy/DOCKER.md`、`deploy/APP_URL_MODE.md`、`docs/PAGEPILOT_REMEDIATION_PLAN.md`、`docs/CODEX_HANDOFF.md`：同步新能力和部署注意事项。
 - 重新生成 `internal/web/skill/hostctl-deploy.zip`。
 
@@ -460,9 +463,9 @@ CLI 对文件/目录/ZIP 优先 multipart；遇到旧服务 404/405 时 fallback
 - [x] **步骤 5：重写 Skill 规约并打包**
 
 ```bash
-python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py
-python test_skill.py
-python - <<'PY'
+python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py skill/hostctl-deploy/scripts/pagep.py
+python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
+@'
 from pathlib import Path
 import zipfile
 root = Path('skill/hostctl-deploy')
@@ -473,16 +476,16 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
             rel = path.relative_to(root)
             if '__pycache__' in rel.parts or path.suffix in {'.pyc', '.pyo'}:
                 continue
-            z.write(path, rel.as_posix())
-PY
+            z.write(path, Path('pagep') / rel)
+'@ | python -
 ```
 
 - [x] **步骤 6：运行验证**
 
 ```bash
 go test -count=1 ./cmd/... ./internal/...
-python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py
-python test_skill.py
+python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py skill/hostctl-deploy/scripts/pagep.py
+python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
 ```
 
 - [x] **步骤 7：提交**
@@ -552,16 +555,18 @@ git commit -m "feat: 完善创作市场复用和审计后台"
 
 - [x] **步骤 1：更新文档**
 
-文档必须覆盖：高级 Markdown、ZIP Bundle、multipart 发布、FTS 搜索、审计日志、CSP profile、Skill/MCP/CLI 行为、Docker 数据不丢失升级说明。
+文档必须覆盖：高级 Markdown、ZIP Bundle、multipart 发布、FTS 搜索、审计日志、CSP profile、Skill/MCP/CLI 行为、Docker 数据不丢失升级说明。当前文档已补充底层已落地和产品化待办的边界，汇总见 `docs/CURRENT_STATUS_AND_TODO.md`。
 
-- [x] **步骤 2：完整验证**
+- [ ] **步骤 2：完整验证**
+
+当前已完成自动化验证，但还没有完成“完整验证”。运行时视觉 QA 和真实旧数据库 Docker 升级验证仍待执行。
 
 ```bash
 go test -count=1 ./cmd/... ./internal/... ./apps/...
 npm run build --prefix frontend/user
 npm run build --prefix frontend/admin
-python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py
-python test_skill.py
+python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py skill/hostctl-deploy/scripts/pagep.py
+python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
 ```
 
 - [x] **步骤 3：检查 diff 和无关文件**
@@ -571,7 +576,9 @@ git status --short
 git diff --stat
 ```
 
-- [x] **步骤 4：提交和推送**
+- [ ] **步骤 4：提交和推送**
+
+该步骤需要在完整验证、文档状态和待办清单都确认后再标记完成。
 
 ```bash
 git add README.md deploy docs

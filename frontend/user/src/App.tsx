@@ -507,7 +507,7 @@ function HomePage({
     {
       key: "publish",
       label: "PagePilot 发布",
-      content: "pagep deploy ./dist \\\\\\n  --title \\\"新品活动页\\\" \\\\\\n  --category landing \\\\\\n  --password optional",
+      content: "pagep deploy ./dist \\\\\\n  --title \\\"新品活动页\\\" \\\\\\n  --description \\\"新品活动落地页\\\" \\\\\\n  --category landing \\\\\\n  --access-password optional",
       meta: "自动识别入口文件，记录版本、分类、访问策略"
     },
     {
@@ -1857,17 +1857,17 @@ function SkillGuide({ baseURL }: { baseURL: string }) {
         <DocBlock
           title="绑定用户"
           lines={[
-            "pagep token create --label agent --ttl-seconds 2592000",
-            "pagep claim-session --token YOUR_TOKEN",
+            "python scripts/pagep.py token create --label agent --ttl-seconds 2592000",
+            "python scripts/pagep.py claim-session --token YOUR_TOKEN",
             "claim-session 会把当前匿名 session 发布过的站点绑定到这个用户。"
           ]}
         />
         <DocBlock
           title="屏幕投放"
           lines={[
-            "pagep screens list --token YOUR_TOKEN",
-            "pagep screens publish SCREEN_ID --code my-landing --token YOUR_TOKEN",
-            "pagep screens command SCREEN_ID refresh --token YOUR_TOKEN"
+            "python scripts/pagep.py screen list --token YOUR_TOKEN",
+            "python scripts/pagep.py screen publish --screen SCREEN_ID --app my-landing --token YOUR_TOKEN",
+            "python scripts/pagep.py screen refresh SCREEN_ID --token YOUR_TOKEN"
           ]}
         />
       </div>
@@ -2007,7 +2007,7 @@ function ScreensPage() {
             </div>
           </div>
           <div className="screen-command-card">
-            <span>pagep screens publish</span>
+            <span>pagep screen publish</span>
             <strong>{screens.length || 0} 屏幕 · {onlineCount} 在线</strong>
           </div>
         </div>

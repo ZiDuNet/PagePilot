@@ -38,10 +38,26 @@ func configPath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".hostctl", "config.json")
+	pagepPath := filepath.Join(home, ".pagep", "config.json")
+	legacyPath := filepath.Join(home, ".hostctl", "config.json")
+	if _, err := os.Stat(legacyPath); err == nil {
+		if _, pagepErr := os.Stat(pagepPath); os.IsNotExist(pagepErr) {
+			return legacyPath
+		}
+	}
+	return pagepPath
 }
 
-// loadConfig 从 ~/.hostctl/config.json 读取默认 server / token。
+func firstEnv(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// loadConfig 从 ~/.pagep/config.json 读取默认 server / token。
 func loadConfig() map[string]string {
 	cfg := map[string]string{}
 	p := configPath()
@@ -79,13 +95,16 @@ func buildClient() *client.Client {
 		flagServer = cfg["server"]
 	}
 	if flagServer == "" {
+		flagServer = firstEnv("PAGEPILOT_SERVER", "HOSTCTL_SERVER")
+	}
+	if flagServer == "" {
 		flagServer = "http://localhost:8787"
 	}
 	if flagToken == "" {
 		flagToken = cfg["token"]
 	}
 	if flagToken == "" {
-		flagToken = os.Getenv("HOSTCTL_TOKEN")
+		flagToken = firstEnv("PAGEPILOT_TOKEN", "HOSTCTL_TOKEN")
 	}
 	return client.New(flagServer, flagToken)
 }
@@ -111,8 +130,8 @@ func main() {
 			// cobra 默认会把 -h 处理掉；这里什么都不做
 		},
 	}
-	root.PersistentFlags().StringVar(&flagServer, "server", "", "PagePilot server URL (default: from ~/.hostctl/config.json or $HOSTCTL_SERVER)")
-	root.PersistentFlags().StringVar(&flagToken, "token", "", "bearer token (default: from ~/.hostctl/config.json or $HOSTCTL_TOKEN)")
+	root.PersistentFlags().StringVar(&flagServer, "server", "", "PagePilot server URL (default: from ~/.pagep/config.json or $PAGEPILOT_SERVER)")
+	root.PersistentFlags().StringVar(&flagToken, "token", "", "bearer token (default: from ~/.pagep/config.json or $PAGEPILOT_TOKEN)")
 	root.PersistentFlags().BoolVar(&flagJSON, "json", false, "output structured JSON (Agent mode)")
 	root.PersistentFlags().BoolVar(&flagNoColor, "no-color", false, "disable ANSI color output")
 
@@ -1091,7 +1110,7 @@ func cmdClaimSession() *cobra.Command {
 func cmdConfig() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "config",
-		Short: "Manage ~/.hostctl/config.json",
+		Short: "Manage ~/.pagep/config.json",
 	}
 
 	setC := &cobra.Command{

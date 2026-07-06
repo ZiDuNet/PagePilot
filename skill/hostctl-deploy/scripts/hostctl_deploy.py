@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stdlib-only hostctl API wrapper for agents.
+"""PagePilot pagep Skill CLI wrapper.
 
 Commands cover deploy/version operations, PagePilot creation market browsing, admin session,
 token management, site administration, and production readiness checks.
@@ -21,12 +21,33 @@ import urllib.request
 import uuid
 import zipfile
 
-UA = "hostctl-deploy-skill/1.1"
-DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "http://localhost:8787")
-SESSION_FILE = pathlib.Path(os.environ.get("HOSTCTL_SESSION_FILE", pathlib.Path.home() / ".hostctl" / "session.json"))
-CONFIG_FILE = pathlib.Path(os.environ.get("HOSTCTL_CONFIG_FILE", pathlib.Path.home() / ".hostctl" / "config.json"))
-PROJECTS_FILE = pathlib.Path(os.environ.get("HOSTCTL_PROJECTS_FILE", pathlib.Path.home() / ".hostctl" / "projects.json"))
-AGENT_FILE = pathlib.Path(os.environ.get("HOSTCTL_AGENT_FILE", pathlib.Path.home() / ".hostctl" / "agent.json"))
+UA = "pagep-skill/1.2"
+
+
+def env_first(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def state_file(new_env: str, old_env: str, filename: str) -> pathlib.Path:
+    configured = env_first(new_env, old_env)
+    if configured:
+        return pathlib.Path(configured)
+    new_path = pathlib.Path.home() / ".pagep" / filename
+    old_path = pathlib.Path.home() / ".hostctl" / filename
+    if old_path.exists() and not new_path.exists():
+        return old_path
+    return new_path
+
+
+DEFAULT_SERVER = env_first("PAGEPILOT_SERVER", "HOSTCTL_SERVER") or "http://localhost:8787"
+SESSION_FILE = state_file("PAGEPILOT_SESSION_FILE", "HOSTCTL_SESSION_FILE", "session.json")
+CONFIG_FILE = state_file("PAGEPILOT_CONFIG_FILE", "HOSTCTL_CONFIG_FILE", "config.json")
+PROJECTS_FILE = state_file("PAGEPILOT_PROJECTS_FILE", "HOSTCTL_PROJECTS_FILE", "projects.json")
+AGENT_FILE = state_file("PAGEPILOT_AGENT_FILE", "HOSTCTL_AGENT_FILE", "agent.json")
 
 ALLOWED_BINARY_EXT = {
     "png", "jpg", "jpeg", "gif", "webp", "svg", "ico",
@@ -48,8 +69,8 @@ def default_agent_label() -> str:
 
 
 def load_agent_identity(label_hint: str = "") -> dict:
-    env_agent_id = os.environ.get("HOSTCTL_AGENT_ID", "").strip()
-    env_label = os.environ.get("HOSTCTL_AGENT_LABEL", "").strip()
+    env_agent_id = env_first("PAGEPILOT_AGENT_ID", "HOSTCTL_AGENT_ID")
+    env_label = env_first("PAGEPILOT_AGENT_LABEL", "HOSTCTL_AGENT_LABEL")
     try:
         data = json.loads(AGENT_FILE.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
@@ -75,8 +96,9 @@ def load_agent_identity(label_hint: str = "") -> dict:
 def auth_token(args) -> str:
     if args.token:
         return args.token
-    if os.environ.get("HOSTCTL_TOKEN"):
-        return os.environ["HOSTCTL_TOKEN"]
+    token = env_first("PAGEPILOT_TOKEN", "HOSTCTL_TOKEN")
+    if token:
+        return token
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         if data.get("server") == server_url(args):
@@ -132,7 +154,7 @@ def remembered_code(base: str, source_arg: str) -> str:
 
 
 def load_session_id(base: str) -> str:
-    env = os.environ.get("HOSTCTL_SESSION", "").strip()
+    env = env_first("PAGEPILOT_SESSION", "HOSTCTL_SESSION")
     if env:
         return env
     try:
@@ -198,7 +220,7 @@ def print_result(status: int, data: dict) -> int:
     print(json.dumps({"httpStatus": status, **data}, ensure_ascii=False, indent=2))
     if data.get("stage") == "anonymous_quota":
         print("Anonymous free quota is used up. Register or sign in, create/use a user token, then run:", file=sys.stderr)
-        print("  hostctl_deploy.py claim-session", file=sys.stderr)
+        print("  pagep claim-session", file=sys.stderr)
     if status == 429 and data.get("retryAfterSeconds"):
         print(f"Retry after {data['retryAfterSeconds']} seconds.", file=sys.stderr)
     if data.get("preserveHint"):
@@ -294,7 +316,7 @@ def safe_multipart_filename(name: str) -> str:
 def registered_token(args, action: str = "screen command") -> str:
     token = auth_token(args)
     if not token:
-        die(f"{action} requires a registered user token. Set HOSTCTL_TOKEN, pass --token, or save one in {CONFIG_FILE}.")
+        die(f"{action} requires a registered user token. Set PAGEPILOT_TOKEN, pass --token, or save one in {CONFIG_FILE}.")
     return token
 
 
@@ -518,7 +540,7 @@ def cmd_doctor(args) -> int:
         _, _, ok = check("admin_session", "/api/admin/session", required=True, use_token=True)
         if not token:
             report["success"] = False
-            report["hint"] = "Set HOSTCTL_TOKEN or pass --token with an admin token."
+            report["hint"] = "Set PAGEPILOT_TOKEN or pass --token with an admin token."
         elif not ok:
             report["hint"] = "The token is missing, invalid, revoked, or not an admin token."
     else:
@@ -999,9 +1021,9 @@ def cmd_screen_screenshot(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Deploy and manage static sites on a hostctl server")
-    parser.add_argument("--server", help="hostctl server URL (default: $HOSTCTL_SERVER or http://localhost:8787)")
-    parser.add_argument("--token", help="bearer token (default: $HOSTCTL_TOKEN)")
+    parser = argparse.ArgumentParser(description="Deploy and manage PagePilot static apps")
+    parser.add_argument("--server", help="PagePilot server URL (default: $PAGEPILOT_SERVER or http://localhost:8787)")
+    parser.add_argument("--token", help="bearer token (default: $PAGEPILOT_TOKEN)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("doctor", help="Check health, config, OpenAPI, and admin auth readiness")
@@ -1012,7 +1034,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_session)
 
     p = sub.add_parser("claim-session", help="Claim anonymous-session deployments for the current token/user")
-    p.add_argument("--session-id", default="", help="Anonymous session id. Defaults to ~/.hostctl/session.json")
+    p.add_argument("--session-id", default="", help="Anonymous session id. Defaults to ~/.pagep/session.json")
     p.set_defaults(func=cmd_claim_session)
 
     def add_common_deploy_flags(p, *, with_code: bool, with_create_version: bool):

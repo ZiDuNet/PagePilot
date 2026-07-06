@@ -15,7 +15,7 @@ docker compose up -d --build
 
 主站不需要配置域名。浏览器页面会按当前打开域名生成首页、后台、Skill/MCP、二维码和路径模式应用链接；反向代理只需要透传 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。
 
-Skill、MCP 和 CLI 通过 `--server`、`HOSTCTL_SERVER` 或客户端保存的服务器地址连接 PagePilot。这个地址只表示本次 API 控制面入口；路径模式下发布成功返回的应用链接会按该入口生成，泛域名模式下应用链接按后台配置的应用域名生成。
+Skill、MCP 和 CLI 通过 `--server`、`PAGEPILOT_SERVER` 或客户端保存的服务器地址连接 PagePilot。这个地址只表示本次 API 控制面入口；路径模式下发布成功返回的应用链接会按该入口生成，泛域名模式下应用链接按后台配置的应用域名生成。旧 `HOSTCTL_SERVER` 仅兼容读取。
 
 首次启动会在空数据库中自动创建默认管理员：
 
@@ -160,7 +160,7 @@ curl -fsS https://host.example.com/skill/pagep.zip >/dev/null
 登录后台后，也可以在 Agent 技能里执行：
 
 ```bash
-python skill/hostctl-deploy/scripts/hostctl_deploy.py \
+python scripts/pagep.py \
   --server https://host.example.com \
   doctor
 ```

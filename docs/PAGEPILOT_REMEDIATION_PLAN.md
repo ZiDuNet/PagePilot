@@ -231,6 +231,8 @@ OSS_PUBLIC_BASE_URL=
 
 让 Markdown 文档页成为一等应用，同时支持 Reveal.js Bundle 作为可选发布形态。
 
+详细当前状态和跨阶段待办见 [CURRENT_STATUS_AND_TODO.md](CURRENT_STATUS_AND_TODO.md)。
+
 ### 2026-07-06 已落地状态
 
 - 已新增 `internal/bundle`，ZIP 会识别真实站点根目录、入口文件、Markdown 包、嵌套目录和批量包误传，并拒绝路径穿越。
@@ -240,9 +242,12 @@ OSS_PUBLIC_BASE_URL=
 
 ### 仍需补齐
 
-- Markdown 当前是安全语义渲染，不是真正的完整 `marked + highlight.js + KaTeX + Mermaid` 浏览器渲染链路。
+- Markdown 当前是安全语义渲染，不是 jpage 那种服务端 Markdown / highlight.js / KaTeX 渲染加内置 Mermaid 前端运行时的完整链路。
 - 审计日志已有存储接口，但后台审计列表 API 和 UI 仍需产品化补齐。
 - 文件树、Bundle 类型、安全模式和模板复用信息仍需在市场详情和后台站点详情中进一步展示。
+- 前台“模板复用”还只是基础抽屉，没有达到 jpage 那种下载源文件、文件树、Agent 提示词、CLI/MCP 参数统一生成的完整体验。
+- 尚未做一次覆盖首页、创作市场、详情、手动部署、Skill & MCP、Screens、登录注册、加密访问和后台各 tab 的运行时视觉 QA。
+- 尚未用旧版本真实 SQLite 数据库和 hosted 文件目录跑 Docker 升级验证；当前只能说明迁移设计为增量、不主动清空挂载数据。
 
 ### 改动
 
@@ -329,5 +334,8 @@ OSS_PUBLIC_BASE_URL=
 | 邮箱注册 | env 开启后可完整验证 |
 | OSS | env 切换后发布资源可正常读写 |
 | Markdown | 高级渲染、图片、主题正常 |
+| 模板复用 | 下载源文件、文件树、Agent 提示词、CLI/MCP 参数都可从详情页一致生成 |
 | Reveal Bundle | 作为普通 ZIP/多文件站点可发布 |
 | Skill | 默认不公开/不加密但询问，不猜 code 更新 |
+| Docker 升级 | 使用旧数据库和旧 hosted 目录升级后数据不丢失 |
+| 视觉 QA | 主要页面桌面和移动视口无明显遮挡、截断、横向滚动和空状态缺失 |

@@ -1,7 +1,7 @@
 interface:
-  display_name: "PagePilot Deploy"
-  short_description: "Publish static sites to PagePilot with versioned URLs."
+  display_name: "PagePilot 发布"
+  short_description: "将 HTML、Markdown、ZIP 或多文件静态站点发布到 PagePilot，并管理版本、市场和屏幕投放。"
   brand_color: "#0284C7"
-  default_prompt: "Use $hostctl-deploy to publish this static site to PagePilot."
+  default_prompt: "使用 $pagep 将这个静态站点发布到 PagePilot。"
 policy:
   allow_implicit_invocation: true

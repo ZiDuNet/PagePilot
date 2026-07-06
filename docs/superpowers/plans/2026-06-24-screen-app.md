@@ -70,16 +70,16 @@ POST /api/device/command/ack
 ## Skill 命令
 
 ```bash
-python skill/hostctl-deploy/scripts/hostctl_deploy.py --server https://pagepilot.example.com screen list
-python skill/hostctl-deploy/scripts/hostctl_deploy.py screen bind 123456 --name "大厅屏"
-python skill/hostctl-deploy/scripts/hostctl_deploy.py screen publish --screen screen_xxx --app my-landing
-python skill/hostctl-deploy/scripts/hostctl_deploy.py screen publish --screen screen_xxx --source ./site --title "大屏展示" --description "Fullscreen display for the lobby."
-python skill/hostctl-deploy/scripts/hostctl_deploy.py screen screenshot screen_xxx --output ./screen-shot.jpg
-python skill/hostctl-deploy/scripts/hostctl_deploy.py screen refresh screen_xxx
-python skill/hostctl-deploy/scripts/hostctl_deploy.py screen sleep screen_xxx
-python skill/hostctl-deploy/scripts/hostctl_deploy.py screen wake screen_xxx
-python skill/hostctl-deploy/scripts/hostctl_deploy.py screen shutdown screen_xxx
-python skill/hostctl-deploy/scripts/hostctl_deploy.py screen unbind screen_xxx
+python scripts/pagep.py --server https://pagepilot.example.com screen list
+python scripts/pagep.py screen bind 123456 --name "大厅屏"
+python scripts/pagep.py screen publish --screen screen_xxx --app my-landing
+python scripts/pagep.py screen publish --screen screen_xxx --source ./site --title "大屏展示" --description "Fullscreen display for the lobby."
+python scripts/pagep.py screen screenshot screen_xxx --output ./screen-shot.jpg
+python scripts/pagep.py screen refresh screen_xxx
+python scripts/pagep.py screen sleep screen_xxx
+python scripts/pagep.py screen wake screen_xxx
+python scripts/pagep.py screen shutdown screen_xxx
+python scripts/pagep.py screen unbind screen_xxx
 ```
 
 `--server` 表示本次 Skill/MCP/CLI 连接 PagePilot 控制面的入口。路径模式下，发布或投屏返回的 App URL 会按该入口生成；泛域名模式下，App URL 由后台配置的应用域名后缀、协议和端口生成。
@@ -95,5 +95,5 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py screen unbind screen_xxx
 
 - `go test ./internal/api -run Screen -count=1`
 - `go test ./internal/store -run Screen -count=1`
-- `python skill/hostctl-deploy/scripts/hostctl_deploy.py screen --help`
+- `python scripts/pagep.py screen --help`
 - Android 端在真机或模拟器上验证配对、WebSocket 状态、投屏、刷新、截图、休眠、唤醒和隐藏设置。

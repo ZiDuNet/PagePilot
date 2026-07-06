@@ -114,7 +114,7 @@ func TestSkillDownloadReturnsManagedZipWithoutRuntimeInjection(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
 	want := makeTestSkillZip(t, map[string]string{
-		"hostctl-deploy/scripts/hostctl_deploy.py": `DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "http://localhost:8787")`,
+		"pagep/scripts/pagep.py": `DEFAULT_SERVER = os.environ.get("PAGEPILOT_SERVER", "http://localhost:8787")`,
 	})
 	writeManagedSkillZip(t, srv, want)
 
@@ -137,7 +137,7 @@ func TestSkillDownloadReturnsManagedZipWithoutRuntimeInjection(t *testing.T) {
 	}
 	var script string
 	for _, f := range zr.File {
-		if f.Name != "hostctl-deploy/scripts/hostctl_deploy.py" {
+		if f.Name != "pagep/scripts/pagep.py" {
 			continue
 		}
 		rc, err := f.Open()
@@ -178,13 +178,13 @@ func TestSkillDownloadFallsBackToBuiltInZip(t *testing.T) {
 	}
 	foundSkill := false
 	for _, f := range zr.File {
-		if f.Name == "hostctl-deploy/SKILL.md" {
+		if f.Name == "pagep/SKILL.md" {
 			foundSkill = true
 			break
 		}
 	}
 	if !foundSkill {
-		t.Fatalf("built-in zip does not contain hostctl-deploy/SKILL.md")
+		t.Fatalf("built-in zip does not contain pagep/SKILL.md")
 	}
 	info := srv.skillPackageInfo()
 	if !info.Exists || info.Source != "built-in" || info.Size <= 0 {
@@ -204,11 +204,11 @@ func TestAdminUploadSkillZipPersistsManagedPackage(t *testing.T) {
 		t.Fatalf("generate token: %v", err)
 	}
 	want := makeTestSkillZip(t, map[string]string{
-		"hostctl-deploy/SKILL.md": "managed package",
+		"pagep/SKILL.md": "managed package",
 	})
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	fw, err := mw.CreateFormFile("file", "hostctl-deploy.zip")
+	fw, err := mw.CreateFormFile("file", "pagep.zip")
 	if err != nil {
 		t.Fatalf("create multipart file: %v", err)
 	}

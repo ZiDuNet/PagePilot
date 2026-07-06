@@ -27,7 +27,7 @@ https://{code}.pagepilot.example.com/
 Skill/CLI 入口：
 
 ```bash
-python skill/hostctl-deploy/scripts/hostctl_deploy.py \
+python scripts/pagep.py \
   config set-app-url \
   --mode domain \
   --domain-suffix pagepilot.example.com \
@@ -37,7 +37,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py \
 如果你的外部 HTTPS 端口不是标准 `443`，例如使用 `1143` 对外提供 HTTPS：
 
 ```bash
-python skill/hostctl-deploy/scripts/hostctl_deploy.py \
+python scripts/pagep.py \
   config set-app-url \
   --mode domain \
   --domain-suffix pagepilot.example.com \
@@ -75,7 +75,7 @@ PagePilot 没有入口域名配置项。首页、后台提示、Skill/MCP 下载
 - `domain`：返回后台配置的泛域名应用地址，例如 `https://demo.apps.example.com/`。
 - `dual`：路径和泛域名都可访问，但主返回值仍是 `/agent/{code}/`，便于兼容历史链接。
 
-浏览器页面会把当前 `origin` 发给后端；Skill、MCP 和 CLI 使用 `--server`、`HOSTCTL_SERVER` 或保存的服务器地址作为当前入口。它们不应该自行拼接最终应用 URL，而应该展示服务端返回的 URL。
+浏览器页面会把当前 `origin` 发给后端；Skill、MCP 和 CLI 使用 `--server`、`PAGEPILOT_SERVER` 或保存的服务器地址作为当前入口。它们不应该自行拼接最终应用 URL，而应该展示服务端返回的 URL。旧 `HOSTCTL_SERVER` 仅作为兼容变量保留。
 
 ## Docker 与外部 Nginx
 
@@ -134,7 +134,7 @@ server {
 - `server_name` 同时包含 PagePilot 入口域名和对应的应用泛域名。
 - `proxy_set_header Host $host` 必须保留，PagePilot 需要用 Host 判断当前访问的是哪个应用。
 - `X-Forwarded-Host` 和 `X-Forwarded-Proto` 用于“按当前访问域名生成”模式。
-- 如果 Skill/MCP 使用内网地址调用 API，路径模式返回的 URL 也可能是内网地址；生产环境应把 `--server` / `HOSTCTL_SERVER` 设置为用户可访问的公网入口。
+- 如果 Skill/MCP 使用内网地址调用 API，路径模式返回的 URL 也可能是内网地址；生产环境应把 `--server` / `PAGEPILOT_SERVER` 设置为用户可访问的公网入口。
 - Docker 容器仍然只监听 `8787`，不需要为每个泛域名单独配置。
 - 如果只使用路径模式，不需要泛解析，也不需要泛域名证书。
 

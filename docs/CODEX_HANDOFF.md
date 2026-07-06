@@ -3,7 +3,7 @@
 This document is a handoff note for continuing PagePilot development on another machine or in another Codex session.
 
 Last updated: 2026-07-06
-Last pushed commit at the time of writing: `0666e0f`
+Last pushed commit at the time of writing: `7238b5b`
 
 Additional local branch in progress: `codex/pagepilot-runtime-refactor`.
 
@@ -94,26 +94,31 @@ The work is not complete yet. The repository has made large progress, but comple
 Verification run on this branch:
 
 ```powershell
-go test -count=1 ./...
-python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py
+go test ./cmd/hostctl-mcp ./cmd/hostctl ./internal/api ./internal/client
+python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py skill/hostctl-deploy/scripts/pagep.py
 python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
 ```
 
 Known remaining work on this refactor:
 
-- Admin audit-log API/UI and richer Bundle/file-tree display are not complete yet.
-- Markdown still needs a true maintained renderer pipeline if full KaTeX/Mermaid/highlight.js rendering is required.
-  - pagep/pagep-mcp usage
+- Admin audit-log API/UI is not productized yet. The `audit_logs` table and store methods exist, but there is no `/api/admin/audit-logs` route or admin page.
+- Creation-market detail and admin site detail do not yet fully show file tree, Bundle type, security mode, entry diagnostics, and reuse parameters.
+- Markdown still needs a true maintained renderer pipeline if jpage-style advanced rendering is required. Current behavior is safe semantic blocks plus cache. The jpage reference renders Markdown/highlight.js/KaTeX on the server, while Mermaid is rendered in the browser through a platform-owned runtime plus CSP nonce, not server-side SVG rendering.
+- The front-end template reuse experience is only a first pass; it is not yet the full jpage-style template reuse flow.
+- A complete runtime visual QA pass has not been done.
+- Docker upgrade has not yet been verified against a real old production database and hosted-file directory.
+- The canonical status checklist is now `docs/CURRENT_STATUS_AND_TODO.md`.
 
 ## Verification Already Run
 
-These passed before commit `ad49ce6`:
+These passed before commit `7238b5b`:
 
 ```powershell
 go test -count=1 ./cmd/... ./internal/... ./apps/...
 npm run build --prefix frontend/user
 npm run build --prefix frontend/admin
-python -m py_compile skill\hostctl-deploy\scripts\hostctl_deploy.py
+python -m py_compile skill\hostctl-deploy\scripts\hostctl_deploy.py skill\hostctl-deploy\scripts\pagep.py
+python skill\hostctl-deploy\scripts\hostctl_deploy_test.py
 ```
 
 Notes:
@@ -122,6 +127,8 @@ Notes:
 - Do not use plain `go test ./...` while the local competitor checkout is inside the workspace.
 
 ## Critical Remaining Work
+
+The consolidated checklist is maintained in `docs/CURRENT_STATUS_AND_TODO.md`. Keep that file in sync whenever a remaining item is completed.
 
 ### 1. Runtime Smoke Test
 
@@ -209,6 +216,8 @@ Still incomplete:
 - theme switch UI
 - robust Markdown parser behavior for all CommonMark edge cases
 
+This should not be documented as complete until the renderer uses a maintained local pipeline and the CSP/XSS boundary is reviewed again.
+
 Decision needed:
 
 - keep minimal server renderer and document it as safe preview, or
@@ -278,7 +287,8 @@ git pull origin main
 go test -count=1 ./cmd/... ./internal/... ./apps/...
 npm run build --prefix frontend/user
 npm run build --prefix frontend/admin
-python -m py_compile skill\hostctl-deploy\scripts\hostctl_deploy.py
+python -m py_compile skill\hostctl-deploy\scripts\hostctl_deploy.py skill\hostctl-deploy\scripts\pagep.py
+python skill\hostctl-deploy\scripts\hostctl_deploy_test.py
 go run ./cmd/hostctl-server --dev
 ```
 
@@ -297,7 +307,7 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
         rel = path.relative_to(root)
         if '__pycache__' in rel.parts or path.suffix in {'.pyc', '.pyo'}:
             continue
-        z.write(path, Path('hostctl-deploy') / rel)
+        z.write(path, Path('pagep') / rel)
 '@ | python -
 ```
 
