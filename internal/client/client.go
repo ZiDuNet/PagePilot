@@ -142,6 +142,7 @@ func (c *Client) Deploy(ctx context.Context, req api.DeployRequest) (*api.Deploy
 
 type MultipartDeployRequest struct {
 	SourcePath       string
+	UploadName       string
 	Filename         string
 	Description      string
 	Title            string
@@ -166,6 +167,7 @@ func (c *Client) DeployMultipart(ctx context.Context, req MultipartDeployRequest
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/deploy", pr)
 	if err != nil {
 		_ = pr.Close()
+		_ = <-errCh
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
@@ -200,10 +202,11 @@ func (c *Client) DeployMultipart(ctx context.Context, req MultipartDeployRequest
 }
 
 func writeMultipartDeploy(writer *multipart.Writer, pw *io.PipeWriter, req MultipartDeployRequest) error {
-	defer func() {
-		_ = writer.Close()
-		_ = pw.Close()
-	}()
+	fail := func(format string, args ...any) error {
+		err := fmt.Errorf(format, args...)
+		_ = pw.CloseWithError(err)
+		return err
+	}
 	fields := map[string]string{
 		"description":    req.Description,
 		"title":          req.Title,
@@ -231,14 +234,21 @@ func writeMultipartDeploy(writer *multipart.Writer, pw *io.PipeWriter, req Multi
 			continue
 		}
 		if err := writer.WriteField(key, value); err != nil {
-			return fmt.Errorf("write multipart field %s: %w", key, err)
+			return fail("write multipart field %s: %w", key, err)
 		}
 	}
-	if err := addMultipartFile(writer, req.SourcePath, req.Filename); err != nil {
+	uploadName := req.UploadName
+	if uploadName == "" {
+		uploadName = req.Filename
+	}
+	if err := addMultipartFile(writer, req.SourcePath, uploadName); err != nil {
 		_ = pw.CloseWithError(err)
 		return err
 	}
-	return nil
+	if err := writer.Close(); err != nil {
+		return fail("close multipart writer: %w", err)
+	}
+	return pw.Close()
 }
 
 func addMultipartFile(writer *multipart.Writer, sourcePath, filename string) error {

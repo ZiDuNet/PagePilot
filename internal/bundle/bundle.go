@@ -25,9 +25,10 @@ type Limits struct {
 }
 
 type Input struct {
-	Name   string
-	Data   []byte
-	Limits Limits
+	Name      string
+	Data      []byte
+	EntryHint string
+	Limits    Limits
 }
 
 type File struct {
@@ -98,7 +99,8 @@ func AnalyzeZip(input Input) (Result, error) {
 		return Result{}, fmt.Errorf("ZIP did not contain deployable files")
 	}
 
-	root, err := chooseRoot(raw)
+	entryHint := normalizeEntryHint(input.EntryHint)
+	root, err := chooseRoot(raw, entryHint)
 	if err != nil {
 		return Result{}, err
 	}
@@ -106,7 +108,7 @@ func AnalyzeZip(input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	mainEntry, err := ChooseMainEntry(files, "")
+	mainEntry, err := ChooseMainEntry(files, entryHintAfterRoot(entryHint, root))
 	if err != nil {
 		return Result{}, err
 	}
@@ -176,7 +178,15 @@ func trimRoot(files []File, root string, limits Limits) ([]File, error) {
 	return trimmed, nil
 }
 
-func chooseRoot(files []File) (string, error) {
+func chooseRoot(files []File, entryHint string) (string, error) {
+	if entryHint != "" {
+		for _, f := range files {
+			if strings.EqualFold(f.Path, entryHint) && IsPageEntry(f.Path) {
+				return normalizeRoot(slashDir(f.Path)), nil
+			}
+		}
+	}
+
 	var candidates []string
 	for _, preferred := range []string{"index.html", "index.htm", "README.md", "readme.md", "README.markdown", "readme.markdown"} {
 		candidates = candidates[:0]
@@ -211,6 +221,36 @@ func chooseRoot(files []File) (string, error) {
 		return root, nil
 	}
 	return "", fmt.Errorf("ZIP contains multiple possible page entries; package one website root or pass an explicit entry")
+}
+
+func normalizeEntryHint(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = normalizeZipEntryPath(path)
+	if validatePath(path) != nil || !IsPageEntry(path) {
+		return ""
+	}
+	return path
+}
+
+func entryHintAfterRoot(entryHint, root string) string {
+	if entryHint == "" {
+		return ""
+	}
+	root = normalizeRoot(root)
+	if root == "" {
+		return entryHint
+	}
+	prefix := root + "/"
+	if strings.EqualFold(entryHint, root) {
+		return ""
+	}
+	if len(entryHint) > len(prefix) && strings.EqualFold(entryHint[:len(prefix)], prefix) {
+		return entryHint[len(prefix):]
+	}
+	return entryHint
 }
 
 func commonSingleRoot(roots []string) (string, bool) {

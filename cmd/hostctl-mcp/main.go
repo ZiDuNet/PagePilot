@@ -525,6 +525,7 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 	}
 	req := client.MultipartDeployRequest{
 		SourcePath:       sourceFile.Path,
+		UploadName:       sourceFile.Name,
 		Filename:         filename,
 		Description:      desc,
 		Title:            title,

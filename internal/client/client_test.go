@@ -81,17 +81,21 @@ func TestDeployMultipartSendsFileAndCurrentOriginHeader(t *testing.T) {
 	var gotOrigin string
 	var gotContentType string
 	var gotFile string
+	var gotUploadName string
+	var gotFilenameField string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotOrigin = r.Header.Get(currentOriginHeader)
 		gotContentType = r.Header.Get("Content-Type")
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("parse multipart: %v", err)
 		}
-		file, _, err := r.FormFile("file")
+		file, header, err := r.FormFile("file")
 		if err != nil {
 			t.Fatalf("form file: %v", err)
 		}
 		defer file.Close()
+		gotUploadName = header.Filename
+		gotFilenameField = r.FormValue("filename")
 		data, err := io.ReadAll(file)
 		if err != nil {
 			t.Fatalf("read file: %v", err)
@@ -112,6 +116,7 @@ func TestDeployMultipartSendsFileAndCurrentOriginHeader(t *testing.T) {
 	c := New(server.URL+"/", "")
 	_, err := c.DeployMultipart(context.Background(), MultipartDeployRequest{
 		SourcePath:  source,
+		UploadName:  "site.zip",
 		Filename:    "index.html",
 		Description: "demo",
 		Title:       "Multipart",
@@ -129,6 +134,12 @@ func TestDeployMultipartSendsFileAndCurrentOriginHeader(t *testing.T) {
 	}
 	if !strings.Contains(gotFile, "Multipart") {
 		t.Fatalf("uploaded file = %q", gotFile)
+	}
+	if gotUploadName != "site.zip" {
+		t.Fatalf("upload filename = %q, want site.zip", gotUploadName)
+	}
+	if gotFilenameField != "index.html" {
+		t.Fatalf("filename field = %q, want index.html", gotFilenameField)
 	}
 }
 

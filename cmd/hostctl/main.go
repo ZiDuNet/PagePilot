@@ -447,6 +447,7 @@ func cmdDeploy() *cobra.Command {
 			defer source.Cleanup()
 			req := client.MultipartDeployRequest{
 				SourcePath:     source.Path,
+				UploadName:     source.Name,
 				Description:    description,
 				Title:          title,
 				Filename:       mainEntry,
@@ -454,9 +455,6 @@ func cmdDeploy() *cobra.Command {
 				AccessPassword: accessPass,
 				Category:       category,
 				Visibility:     "",
-			}
-			if source.Name != "" && strings.HasSuffix(strings.ToLower(source.Name), ".zip") && filename == "" {
-				req.Filename = source.Name
 			}
 			if customCode != "" {
 				req.EnableCustomCode = true
@@ -512,6 +510,7 @@ func cmdAppend() *cobra.Command {
 			defer source.Cleanup()
 			req := client.MultipartDeployRequest{
 				SourcePath:       source.Path,
+				UploadName:       source.Name,
 				Description:      description,
 				Title:            title,
 				Filename:         mainEntry,
@@ -519,9 +518,6 @@ func cmdAppend() *cobra.Command {
 				CustomCode:       args[0],
 				CreateVersion:    true,
 				Source:           "cli",
-			}
-			if source.Name != "" && strings.HasSuffix(strings.ToLower(source.Name), ".zip") {
-				req.Filename = source.Name
 			}
 			ctx, cancel := withSignalCancel()
 			defer cancel()

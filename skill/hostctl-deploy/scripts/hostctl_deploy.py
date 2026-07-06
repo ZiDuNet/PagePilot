@@ -13,11 +13,13 @@ import os
 import pathlib
 import platform
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 
 UA = "hostctl-deploy-skill/1.1"
 DEFAULT_SERVER = os.environ.get("HOSTCTL_SERVER", "http://localhost:8787")
@@ -211,6 +213,84 @@ def request_write(args, path: str, method: str, payload: dict | None = None) -> 
     return request_json(base, token, path, method, payload, sid)
 
 
+def request_multipart(
+    base: str,
+    token: str,
+    path: str,
+    fields: dict,
+    source_path: pathlib.Path,
+    upload_name: str,
+    session_id: str = "",
+    agent: dict | None = None,
+) -> tuple[int, dict]:
+    boundary = "----PagePilotSkill" + uuid.uuid4().hex
+    body = bytearray()
+    upload_name = safe_multipart_filename(upload_name or source_path.name)
+
+    def add_field(name: str, value) -> None:
+        if value is None:
+            return
+        text = str(value)
+        if text.strip() == "":
+            return
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+        body.extend(text.encode("utf-8"))
+        body.extend(b"\r\n")
+
+    for key, value in fields.items():
+        add_field(key, value)
+
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(
+        (
+            'Content-Disposition: form-data; name="file"; '
+            f'filename="{upload_name}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8")
+    )
+    body.extend(source_path.read_bytes())
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+    headers = {
+        "User-Agent": UA,
+        "Accept": "application/json",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "X-Hostctl-Current-Origin": base,
+    }
+    agent = agent or load_agent_identity()
+    if agent.get("agentId"):
+        headers["X-Hostctl-Agent-Id"] = str(agent["agentId"])
+    if agent.get("agentLabel"):
+        headers["X-Hostctl-Agent-Label"] = str(agent["agentLabel"])
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    elif session_id:
+        headers["X-Hostctl-Session"] = session_id
+
+    req = urllib.request.Request(base + path, data=bytes(body), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp_body = resp.read().decode("utf-8")
+            return resp.status, json.loads(resp_body) if resp_body else {}
+    except urllib.error.HTTPError as e:
+        resp_body = e.read().decode("utf-8", "replace")
+        try:
+            parsed = json.loads(resp_body)
+        except Exception:
+            parsed = {"success": False, "error": resp_body}
+        return e.code, parsed
+    except urllib.error.URLError as e:
+        return 0, {"success": False, "errorCode": "NETWORK_ERROR", "detail": str(e)}
+
+
+def safe_multipart_filename(name: str) -> str:
+    cleaned = pathlib.Path(str(name).replace("\\", "/")).name
+    cleaned = cleaned.replace("\r", "_").replace("\n", "_").replace('"', "_")
+    return cleaned or "site.zip"
+
+
 def registered_token(args, action: str = "screen command") -> str:
     token = auth_token(args)
     if not token:
@@ -280,6 +360,93 @@ def read_source(source_arg: str) -> tuple[list[dict], str]:
         elif (lower_rel.endswith((".html", ".htm", ".md", ".markdown"))) and not page_entry:
             page_entry = rel
     return files_payload, main_entry or readme_entry or page_entry or "index.html"
+
+
+def choose_main_entry(paths: list[str]) -> str:
+    lowered = {p.lower(): p for p in paths}
+    for preferred in ("index.html", "index.htm", "readme.md", "readme.markdown"):
+        if preferred in lowered:
+            return lowered[preferred]
+    for p in paths:
+        if p.lower().endswith((".html", ".htm", ".md", ".markdown")):
+            return p
+    return "index.html"
+
+
+def zip_entry_names(zip_path: pathlib.Path) -> list[str]:
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            return sorted(name for name in zf.namelist() if not name.endswith("/"))
+    except zipfile.BadZipFile:
+        return []
+
+
+def source_entry_hint(source_arg: str) -> str:
+    root = pathlib.Path(source_arg)
+    if not root.exists():
+        die(f"Source not found: {source_arg}")
+    if root.is_file():
+        if root.suffix.lower() == ".zip":
+            return choose_main_entry(zip_entry_names(root))
+        return root.name
+    paths = sorted(rel_path(root, p) for p in root.rglob("*") if p.is_file())
+    if len(paths) > MAX_FILES_PER_SITE:
+        die(f"Too many files ({len(paths)}); limit is {MAX_FILES_PER_SITE}.")
+    return choose_main_entry(paths)
+
+
+def prepare_multipart_source(source_arg: str) -> tuple[pathlib.Path, str, callable]:
+    root = pathlib.Path(source_arg)
+    if not root.exists():
+        die(f"Source not found: {source_arg}")
+    if root.is_file():
+        if root.stat().st_size > MAX_SITE_TOTAL_BYTES:
+            die(f"Source too large ({root.stat().st_size} bytes); limit is {MAX_SITE_TOTAL_BYTES}.")
+        return root, root.name, lambda: None
+
+    fd, temp_name = tempfile.mkstemp(prefix="pagepilot-", suffix=".zip")
+    os.close(fd)
+    temp_path = pathlib.Path(temp_name)
+
+    def cleanup() -> None:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    total_size = 0
+    walked = sorted(p for p in root.rglob("*") if p.is_file())
+    if len(walked) > MAX_FILES_PER_SITE:
+        cleanup()
+        die(f"Too many files ({len(walked)}); limit is {MAX_FILES_PER_SITE}.")
+    try:
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for p in walked:
+                rel = rel_path(root, p)
+                size = p.stat().st_size
+                if size > MAX_SINGLE_FILE_BYTES:
+                    cleanup()
+                    die(f"File too large: {rel} ({size} bytes); limit is {MAX_SINGLE_FILE_BYTES}.")
+                total_size += size
+                if total_size > MAX_SITE_TOTAL_BYTES:
+                    cleanup()
+                    die(f"Site total exceeds {MAX_SITE_TOTAL_BYTES} bytes; aborting at {rel}.")
+                zf.write(p, rel)
+    except Exception:
+        cleanup()
+        raise
+    return temp_path, pathlib.Path(source_arg).name + ".zip", cleanup
+
+
+def deploy_multipart(args, fields: dict, source_arg: str) -> tuple[int, dict]:
+    base = server_url(args)
+    token = auth_token(args)
+    sid = "" if token else ensure_session(base)
+    source_path, upload_name, cleanup = prepare_multipart_source(source_arg)
+    try:
+        return request_multipart(base, token, "/api/deploy", fields, source_path, upload_name, sid)
+    finally:
+        cleanup()
 
 
 def ensure_description(args) -> None:
@@ -387,8 +554,8 @@ def cmd_deploy(args) -> int:
     base = server_url(args)
     token = auth_token(args)
     code = args.code or remembered_code(base, args.source)
-    files, main_entry = read_source(args.source)
-    payload = {"description": args.description, "filename": args.filename or main_entry, "files": files}
+    main_entry = source_entry_hint(args.source)
+    payload = {"description": args.description, "filename": args.filename or main_entry}
     add_deploy_options(payload, args)
     if code:
         payload["enableCustomCode"] = True
@@ -398,7 +565,7 @@ def cmd_deploy(args) -> int:
             print(f"Using remembered project code {code}; appending a new version.", file=sys.stderr)
     elif getattr(args, "update", False):
         die("This looks like an update but no project code is known. Ask the user for the original code or URL, then pass --code.")
-    status, data = request_write(args, "/api/deploy", "POST", payload)
+    status, data = deploy_multipart(args, payload, args.source)
     if 200 <= status < 300 and data.get("code"):
         remember_project(base, args.source, data["code"])
         apply_access_password_after_deploy(args, base, token, str(data["code"]))
@@ -410,17 +577,16 @@ def cmd_append(args) -> int:
     ensure_title(args)
     base = server_url(args)
     token = auth_token(args)
-    files, main_entry = read_source(args.source)
+    main_entry = source_entry_hint(args.source)
     payload = {
         "description": args.description,
         "filename": args.filename or main_entry,
-        "files": files,
         "enableCustomCode": True,
         "customCode": args.code,
         "createVersion": True,
     }
     add_deploy_options(payload, args)
-    status, data = request_write(args, "/api/deploy", "POST", payload)
+    status, data = deploy_multipart(args, payload, args.source)
     if 200 <= status < 300 and data.get("code"):
         remember_project(base, args.source, data["code"])
         apply_access_password_after_deploy(args, base, token, str(data["code"]))
@@ -750,10 +916,10 @@ def cmd_screen_publish(args) -> int:
         if not args.description:
             die("--description is required when publishing a local path to a screen.")
         ensure_title(args)
-        files, main_entry = read_source(args.source)
-        payload = {"description": args.description, "filename": args.filename or main_entry, "files": files}
+        main_entry = source_entry_hint(args.source)
+        payload = {"description": args.description, "filename": args.filename or main_entry}
         add_deploy_options(payload, args)
-        deploy_status, deploy_data = request_json(base, token, "/api/deploy", "POST", payload)
+        deploy_status, deploy_data = deploy_multipart(args, payload, args.source)
         if not (200 <= deploy_status < 300 and deploy_data.get("code")):
             return print_result(deploy_status, deploy_data)
         code = str(deploy_data["code"])

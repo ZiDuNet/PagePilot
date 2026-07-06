@@ -77,6 +77,34 @@ func TestAnalyzeZipBundleKeepsMarkdownAssets(t *testing.T) {
 	}
 }
 
+func TestAnalyzeZipBundleUsesExplicitEntryHint(t *testing.T) {
+	zipBytes := makeBundleTestZip(t, map[string]string{
+		"site/index.html": "<!doctype html><html><body><div>default</div></body></html>",
+		"site/print.html": "<!doctype html><html><body><div>print</div></body></html>",
+		"site/app.css":    "body{}",
+	})
+
+	result, err := AnalyzeZip(Input{
+		Name:      "site.zip",
+		Data:      zipBytes,
+		EntryHint: "site/print.html",
+		Limits: Limits{
+			MaxSingleFileBytes: 1 << 20,
+			MaxSiteTotalBytes:  2 << 20,
+			MaxFiles:           50,
+		},
+	})
+	if err != nil {
+		t.Fatalf("AnalyzeZip returned error: %v", err)
+	}
+	if result.MainEntry != "print.html" {
+		t.Fatalf("MainEntry = %q, want print.html", result.MainEntry)
+	}
+	if result.Root != "site" {
+		t.Fatalf("Root = %q, want site", result.Root)
+	}
+}
+
 func TestAnalyzeZipBundleRejectsTraversal(t *testing.T) {
 	zipBytes := makeBundleTestZip(t, map[string]string{
 		"../index.html": "<html><body><div>bad</div></body></html>",

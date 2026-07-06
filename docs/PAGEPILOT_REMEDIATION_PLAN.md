@@ -231,6 +231,19 @@ OSS_PUBLIC_BASE_URL=
 
 让 Markdown 文档页成为一等应用，同时支持 Reveal.js Bundle 作为可选发布形态。
 
+### 2026-07-06 已落地状态
+
+- 已新增 `internal/bundle`，ZIP 会识别真实站点根目录、入口文件、Markdown 包、嵌套目录和批量包误传，并拒绝路径穿越。
+- 已新增 `internal/render`，Markdown 托管页支持相对图片、表格、任务列表、代码块、Mermaid/数学公式语义块和渲染缓存。
+- 已新增 SQLite FTS5 市场搜索、中文 `LIKE` 回退、渲染缓存、Bundle 元数据表和审计日志表；老数据库启动时自动补齐并回填索引。
+- `POST /api/deploy` 已支持 multipart；Go CLI、MCP 和 Python Skill 发布文件/目录/ZIP 时优先走 multipart，旧 JSON/base64 仍保留兼容。
+
+### 仍需补齐
+
+- Markdown 当前是安全语义渲染，不是真正的完整 `marked + highlight.js + KaTeX + Mermaid` 浏览器渲染链路。
+- 审计日志已有存储接口，但后台审计列表 API 和 UI 仍需产品化补齐。
+- 文件树、Bundle 类型、安全模式和模板复用信息仍需在市场详情和后台站点详情中进一步展示。
+
 ### 改动
 
 - Markdown 渲染支持代码高亮、KaTeX、Mermaid、明暗主题。

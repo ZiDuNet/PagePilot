@@ -60,6 +60,8 @@ HOSTCTL_ADMIN_PASSWORD: "123456"
 
 升级容器前请保留这些目录。删除这些目录会删除数据库和已发布站点。
 
+本轮运行时重构新增了 `site_search_fts`、`audit_logs`、`render_cache` 和 `version_bundles` 等表，并会在服务启动时自动补齐老数据库结构、回填市场搜索索引。只要继续挂载上表中的 `./data/docker/hostctl` 和 `./data/docker/hosted`，执行 `docker compose up -d --build` 不会丢失旧版本数据；不要为了“重新构建”删除 `data/docker`。
+
 ## 注册、邮箱验证与 OSS
 
 常用环境变量可以直接写入 `docker-compose.yml` 或 systemd unit：
@@ -135,6 +137,14 @@ docker compose down
 ```
 
 ## 升级
+
+```bash
+git pull
+docker compose up -d --build
+docker compose logs -f hostctl
+```
+
+如果需要强制拉取基础镜像再构建，可以使用：
 
 ```bash
 git pull

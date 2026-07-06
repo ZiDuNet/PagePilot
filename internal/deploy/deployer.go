@@ -388,7 +388,7 @@ func (d *Deployer) resolveContent(req api.DeployRequest, filenameHint string) ([
 	}
 
 	if len(out) == 1 && isZipPath(out[0].Path) {
-		return d.expandZipContent(out[0])
+		return d.expandZipContent(out[0], filenameHint)
 	}
 	mainEntry, apiErr := chooseMainEntry(out, filenameHint)
 	if apiErr != nil {
@@ -485,10 +485,11 @@ func chooseMainEntry(files []resolvedFile, filenameHint string) (string, *api.AP
 		"no HTML or Markdown entry was found").WithHint("Upload index.html, README.md, or a ZIP/directory containing one of them.")
 }
 
-func (d *Deployer) expandZipContent(file resolvedFile) ([]resolvedFile, string, *api.APIError) {
+func (d *Deployer) expandZipContent(file resolvedFile, filenameHint string) ([]resolvedFile, string, *api.APIError) {
 	result, err := bundle.AnalyzeZip(bundle.Input{
-		Name: file.Path,
-		Data: file.Bytes,
+		Name:      file.Path,
+		Data:      file.Bytes,
+		EntryHint: filenameHint,
 		Limits: bundle.Limits{
 			MaxSingleFileBytes: d.cfg.MaxSingleFileBytes,
 			MaxSiteTotalBytes:  d.cfg.MaxSiteTotalBytes,

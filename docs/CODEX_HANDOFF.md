@@ -5,6 +5,8 @@ This document is a handoff note for continuing PagePilot development on another 
 Last updated: 2026-07-06
 Last pushed commit at the time of writing: `ad49ce6`
 
+Additional local branch in progress: `codex/pagepilot-runtime-refactor`.
+
 ## Current Goal
 
 Continue the remediation described in `docs/PAGEPILOT_REMEDIATION_PLAN.md` until PagePilot reaches a release-ready state.
@@ -69,6 +71,39 @@ The work is not complete yet. The repository has made large progress, but comple
   - OSS envs
   - email verification envs
   - Skill download paths
+
+## Runtime Refactor Progress On `codex/pagepilot-runtime-refactor`
+
+- Added `internal/bundle` and wired ZIP/Bundles into deploy:
+  - strips a single wrapper/root directory
+  - detects HTML/Markdown entry files
+  - rejects path traversal and ambiguous batch ZIPs
+  - stores Bundle metadata for later UI/API use
+- Added SQLite tables and store interfaces for:
+  - `site_search_fts`
+  - `audit_logs`
+  - `render_cache`
+  - `version_bundles`
+- Marketplace search now uses FTS5 with Chinese `LIKE` fallback and startup backfill for existing sites.
+- Moved Markdown rendering into `internal/render` and added render-cache integration for hosted Markdown.
+- `POST /api/deploy` accepts multipart uploads in addition to JSON.
+- Go CLI and MCP deploy local files/directories/ZIPs via multipart, with upload filename separated from entry filename.
+- Python Skill deploy/append/screen publish now use multipart for local files/directories/ZIPs. Directory sources are zipped locally and sent as a single upload; JSON/base64 is retained for overwrite compatibility.
+- Updated README, Docker docs, remediation plan, and Skill docs around multipart, ZIP entry detection, Markdown cache, FTS, and non-destructive Docker upgrade.
+
+Verification run on this branch:
+
+```powershell
+go test -count=1 ./internal/client ./cmd/hostctl ./cmd/hostctl-mcp ./internal/api ./internal/deploy ./internal/store ./internal/render
+python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
+```
+
+Known remaining work on this refactor:
+
+- Full `go test -count=1 ./...` still needs to be run before final merge/push.
+- Rebuild and verify `internal/web/skill/hostctl-deploy.zip` after Skill changes.
+- Admin audit-log API/UI and richer Bundle/file-tree display are not complete yet.
+- Markdown still needs a true maintained renderer pipeline if full KaTeX/Mermaid/highlight.js rendering is required.
   - pagep/pagep-mcp usage
 
 ## Verification Already Run

@@ -49,6 +49,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - Use `visibility=public` for Creation Market entries and `visibility=unlisted` for link-only entries. For protected sites, set an access password after deploy.
 - Do not append to a code unless it belongs to the current user, token, or anonymous session.
 - PagePilot accepts single HTML, single Markdown, multi-file directories, and ZIP packages. Markdown can reference relative images; include those image files in the directory or ZIP.
+- The bundled Python script sends deploy/append/screen source publishes as multipart uploads. Directories are zipped locally and uploaded as one package; the server detects the deployable root and entry file. JSON/base64 is only kept for compatibility paths such as unlocked version overwrite.
 - Reveal.js presentations are supported as ordinary user-built static bundles. When the user asks for slides, roadshow decks, reports, lessons, or screen presentations, you may build a Reveal.js site using this Skill's bundled `assets/` directory:
   - copy `assets/reveal.js` and `assets/reveal-base.css` into the deploy source;
   - optionally copy `assets/plugin/highlight/`, `assets/plugin/notes/`, and one theme from `assets/themes/`;

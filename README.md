@@ -146,9 +146,17 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 单 HTML：粘贴或上传一个 HTML 文件，入口默认为 `index.html`。
 - 多文件项目：上传多个文件或目录，PagePilot 按相对路径保存 `HTML/CSS/JS/图片/字体/JSON` 等资源，并优先选择 `index.html` 作为入口；如果没有 `index.html`，会选择第一个 HTML 文件。
 
+`POST /api/deploy` 同时支持 `application/json` 和 `multipart/form-data`。CLI、MCP 和 Skill 发布本地文件、目录或 ZIP 时优先走 multipart：目录会临时打成 ZIP，ZIP 文件作为单个文件上传，服务端负责识别真实站点根目录、入口文件和文件树。旧 JSON/base64 请求仍保留兼容，但不再作为大包、多文件项目的首选链路。
+
+ZIP 入口识别规则会剥离单一外层目录，优先选择 `index.html`、`index.htm`、`README.md` 或 `README.markdown`；如果包里存在多个彼此独立的网站根，服务端会拒绝并返回友好错误，避免误把批量文件包发布成一个坏站点。ZIP 中的绝对路径、盘符、`..`、空路径段和路径穿越都会被拒绝。
+
 多文件站点应使用相对链接，例如 `./assets/app.css`、`settings.html`。默认兼容入口是 `/agent/{code}/`，所以不要在路径模式下把资源写成 `/assets/app.css` 这种根路径，除非已经启用泛域名模式。
 
 更新已有发布时必须填写已有 `code` 并选择“追加为新版本”。`code` 可以从返回链接 `/agent/{code}/`、应用详情页、后台站点列表、Skill `list_sites` 或 MCP `list_sites` 获取。追加版本不会创建新访问地址，也不会改变原站点的公开方式和访问密码。
+
+Markdown 会作为一等入口托管，支持相对图片、表格、任务列表、代码块、Mermaid/数学公式语义块和渲染缓存。当前服务端仍以安全渲染为主：Markdown 响应使用更严格的无脚本 CSP，真实 Mermaid 绘图、KaTeX 排版和完整语法高亮属于后续增强，不应把未验证的外部脚本直接塞进 Markdown 渲染链路。
+
+市场搜索已接入 SQLite FTS5，并保留中文 `LIKE` 回退；老数据库启动时会自动回填索引。新增的渲染缓存、Bundle 元数据和审计日志表都是增量迁移，正常 Docker 升级不会清空已有站点、版本或用户数据。
 
 结构化错误格式如下：
 

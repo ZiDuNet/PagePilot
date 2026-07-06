@@ -76,6 +76,31 @@ func TestResolveContentMarkdownZipWithImages(t *testing.T) {
 	}
 }
 
+func TestResolveContentZipRespectsFilenameHint(t *testing.T) {
+	d := New(config.Default(), nil)
+	d.cfg.MaxSingleFileBytes = 1 << 20
+	d.cfg.MaxSiteTotalBytes = 2 << 20
+	d.cfg.MaxFilesPerSite = 50
+
+	zipBytes := makeTestZip(t, map[string]string{
+		"site/index.html": "<!doctype html><html><body><div>default</div></body></html>",
+		"site/alt.html":   "<!doctype html><html><body><div>alt</div></body></html>",
+	})
+
+	_, mainEntry, apiErr := d.resolveContent(api.DeployRequest{
+		Files: []api.DeployFile{{
+			Path:          "site.zip",
+			ContentBase64: base64.StdEncoding.EncodeToString(zipBytes),
+		}},
+	}, "site/alt.html")
+	if apiErr != nil {
+		t.Fatalf("resolveContent returned error: %v", apiErr.Detail)
+	}
+	if mainEntry != "alt.html" {
+		t.Fatalf("mainEntry = %q, want alt.html", mainEntry)
+	}
+}
+
 func TestResolveContentRejectsZipTraversal(t *testing.T) {
 	d := New(config.Default(), nil)
 	d.cfg.MaxSingleFileBytes = 1 << 20
