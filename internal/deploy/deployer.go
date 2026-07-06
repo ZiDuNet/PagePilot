@@ -2,8 +2,6 @@
 package deploy
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,6 +19,7 @@ import (
 
 	"github.com/yourorg/hostctl/internal/api"
 	"github.com/yourorg/hostctl/internal/auth"
+	"github.com/yourorg/hostctl/internal/bundle"
 	"github.com/yourorg/hostctl/internal/config"
 	"github.com/yourorg/hostctl/internal/nanoid"
 	"github.com/yourorg/hostctl/internal/store"
@@ -488,200 +486,48 @@ func chooseMainEntry(files []resolvedFile, filenameHint string) (string, *api.AP
 }
 
 func (d *Deployer) expandZipContent(file resolvedFile) ([]resolvedFile, string, *api.APIError) {
-	zr, err := zip.NewReader(bytes.NewReader(file.Bytes), int64(len(file.Bytes)))
+	result, err := bundle.AnalyzeZip(bundle.Input{
+		Name: file.Path,
+		Data: file.Bytes,
+		Limits: bundle.Limits{
+			MaxSingleFileBytes: d.cfg.MaxSingleFileBytes,
+			MaxSiteTotalBytes:  d.cfg.MaxSiteTotalBytes,
+			MaxFiles:           d.cfg.MaxFilesPerSite,
+		},
+	})
 	if err != nil {
-		return nil, "", api.NewError(api.CodeInvalidInput, "validate",
-			fmt.Sprintf("ZIP file %q cannot be opened: %v", file.Path, err))
+		return nil, "", zipBundleAPIError(err)
 	}
-	raw := make([]resolvedFile, 0, len(zr.File))
-	for _, zf := range zr.File {
-		if zf.FileInfo().IsDir() {
-			continue
-		}
-		if unsafeZipEntryName(zf.Name) {
-			return nil, "", api.NewError(api.CodeInvalidFilePath, "validate",
-				fmt.Sprintf("ZIP entry %q is not a safe relative path", zf.Name)).
-				WithHint("ZIP entries must not contain '..', absolute paths, drive letters, or UNC paths.")
-		}
-		path := normalizeZipEntryPath(zf.Name)
-		if shouldSkipArchivePath(path) {
-			continue
-		}
-		if apiErr := validateFilePath(path); apiErr != nil {
-			return nil, "", apiErr.WithHint("ZIP entries must be relative paths without '..', drive letters, or unsafe characters.")
-		}
-		if zf.UncompressedSize64 > uint64(d.cfg.MaxSingleFileBytes) {
-			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
-				fmt.Sprintf("file %s exceeds max single-file size (%d bytes)", path, d.cfg.MaxSingleFileBytes))
-		}
-		rc, err := zf.Open()
-		if err != nil {
-			return nil, "", api.NewError(api.CodeInvalidInput, "validate",
-				fmt.Sprintf("ZIP entry %q cannot be read: %v", path, err))
-		}
-		data, err := readLimitedZipEntry(rc, d.cfg.MaxSingleFileBytes)
-		_ = rc.Close()
-		if err != nil {
-			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
-				fmt.Sprintf("ZIP entry %s exceeds max single-file size (%d bytes)", path, d.cfg.MaxSingleFileBytes))
-		}
-		raw = append(raw, resolvedFile{
-			Path:     path,
-			Bytes:    data,
-			IsBinary: !looksTextPath(path),
-			Sha256:   sha256sum(data),
+	files := make([]resolvedFile, 0, len(result.Files))
+	for _, f := range result.Files {
+		files = append(files, resolvedFile{
+			Path:     f.Path,
+			Bytes:    f.Bytes,
+			IsBinary: f.IsBinary,
+			Sha256:   f.SHA256,
 		})
 	}
-	if len(raw) == 0 {
-		return nil, "", api.NewError(api.CodeInvalidInput, "validate",
-			"ZIP did not contain deployable files")
-	}
-	root, apiErr := chooseArchiveRoot(raw)
-	if apiErr != nil {
-		return nil, "", apiErr
-	}
-	trimmed := make([]resolvedFile, 0, len(raw))
-	seen := make(map[string]bool, len(raw))
-	var totalSize int64
-	for _, f := range raw {
-		rel := f.Path
-		if root != "" {
-			if rel != root && !strings.HasPrefix(rel, root+"/") {
-				continue
-			}
-			rel = strings.TrimPrefix(rel, root+"/")
-		}
-		if rel == "" || shouldSkipArchivePath(rel) {
-			continue
-		}
-		if apiErr := validateFilePath(rel); apiErr != nil {
-			return nil, "", apiErr
-		}
-		if seen[rel] {
-			return nil, "", api.NewError(api.CodeInvalidInput, "validate",
-				fmt.Sprintf("duplicate file path after ZIP root detection: %s", rel))
-		}
-		seen[rel] = true
-		totalSize += int64(len(f.Bytes))
-		if totalSize > d.cfg.MaxSiteTotalBytes {
-			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
-				fmt.Sprintf("total size exceeds site limit (%d bytes)", d.cfg.MaxSiteTotalBytes))
-		}
-		f.Path = rel
-		f.Sha256 = sha256sum(f.Bytes)
-		trimmed = append(trimmed, f)
-	}
-	if len(trimmed) > d.cfg.MaxFilesPerSite {
-		return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
-			fmt.Sprintf("too many files in ZIP (%d); max %d per site", len(trimmed), d.cfg.MaxFilesPerSite))
-	}
-	mainEntry, apiErr := chooseMainEntry(trimmed, "")
-	if apiErr != nil {
-		return nil, "", apiErr
-	}
-	return trimmed, mainEntry, nil
+	return files, result.MainEntry, nil
 }
 
-func normalizeZipEntryPath(path string) string {
-	path = strings.ReplaceAll(path, "\\", "/")
-	path = strings.TrimPrefix(path, "/")
-	path = filepath.Clean(path)
-	path = strings.ReplaceAll(path, "\\", "/")
-	if path == "." {
-		return ""
+func zipBundleAPIError(err error) *api.APIError {
+	detail := err.Error()
+	lower := strings.ToLower(detail)
+	switch {
+	case strings.Contains(lower, "safe relative path"):
+		return api.NewError(api.CodeInvalidFilePath, "validate", detail).
+			WithHint("ZIP entries must not contain '..', absolute paths, drive letters, UNC paths, or empty path segments.")
+	case strings.Contains(lower, "exceeds") || strings.Contains(lower, "too many files"):
+		return api.NewError(api.CodeContentTooLarge, "validate", detail)
+	case strings.Contains(lower, "multiple possible"):
+		return api.NewError(api.CodeInvalidInput, "validate", detail).
+			WithHint("Package one deployable website root per ZIP, or publish each website separately.")
+	case strings.Contains(lower, "html or markdown entry"):
+		return api.NewError(api.CodeInvalidInput, "validate", detail).
+			WithHint("Put index.html or README.md in the site folder.")
+	default:
+		return api.NewError(api.CodeInvalidInput, "validate", detail)
 	}
-	return path
-}
-
-func unsafeZipEntryName(path string) bool {
-	path = strings.ReplaceAll(path, "\\", "/")
-	if path == "" || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
-		return true
-	}
-	if len(path) >= 2 && path[1] == ':' {
-		return true
-	}
-	for _, seg := range strings.Split(path, "/") {
-		if seg == ".." || seg == "." || seg == "" {
-			return true
-		}
-	}
-	return false
-}
-
-func shouldSkipArchivePath(path string) bool {
-	if path == "" || strings.HasSuffix(path, "/") {
-		return true
-	}
-	base := filepath.Base(path)
-	return strings.HasPrefix(path, "__MACOSX/") || base == ".DS_Store" || base == "Thumbs.db"
-}
-
-func readLimitedZipEntry(r io.Reader, max int64) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, max+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > max {
-		return nil, fmt.Errorf("too large")
-	}
-	return data, nil
-}
-
-func chooseArchiveRoot(files []resolvedFile) (string, *api.APIError) {
-	candidates := make([]string, 0)
-	for _, preferred := range []string{"index.html", "index.htm", "README.md", "readme.md", "README.markdown", "readme.markdown"} {
-		for _, f := range files {
-			if strings.EqualFold(filepath.Base(f.Path), preferred) {
-				candidates = append(candidates, filepath.ToSlash(filepath.Dir(f.Path)))
-			}
-		}
-		if len(candidates) > 0 {
-			return shortestRoot(candidates), nil
-		}
-	}
-	for _, f := range files {
-		if isHTMLPath(f.Path) || isMarkdownPath(f.Path) {
-			candidates = append(candidates, filepath.ToSlash(filepath.Dir(f.Path)))
-		}
-	}
-	if len(candidates) == 0 {
-		return "", api.NewError(api.CodeInvalidInput, "validate",
-			"ZIP did not contain an HTML or Markdown entry").WithHint("Put index.html or README.md in the site folder.")
-	}
-	return shortestRoot(candidates), nil
-}
-
-func shortestRoot(roots []string) string {
-	best := ""
-	first := true
-	for _, root := range roots {
-		if root == "." {
-			root = ""
-		}
-		if first || segmentCount(root) < segmentCount(best) || (segmentCount(root) == segmentCount(best) && len(root) < len(best)) {
-			best = root
-			first = false
-		}
-	}
-	return best
-}
-
-func segmentCount(path string) int {
-	if path == "" {
-		return 0
-	}
-	return len(strings.Split(path, "/"))
-}
-
-func looksTextPath(path string) bool {
-	lower := strings.ToLower(path)
-	for _, ext := range []string{".html", ".htm", ".css", ".js", ".mjs", ".json", ".txt", ".md", ".markdown", ".svg", ".xml", ".csv", ".webmanifest", ".map"} {
-		if strings.HasSuffix(lower, ext) {
-			return true
-		}
-	}
-	return false
 }
 
 // decideCode 决定短码。

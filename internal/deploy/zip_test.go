@@ -100,6 +100,34 @@ func TestResolveContentRejectsZipTraversal(t *testing.T) {
 	}
 }
 
+func TestResolveContentRejectsBatchZipWithMultipleWebsiteRoots(t *testing.T) {
+	d := New(config.Default(), nil)
+	d.cfg.MaxSingleFileBytes = 1 << 20
+	d.cfg.MaxSiteTotalBytes = 2 << 20
+	d.cfg.MaxFilesPerSite = 50
+
+	zipBytes := makeTestZip(t, map[string]string{
+		"one/index.html": "<!doctype html><html><body><div>one</div></body></html>",
+		"two/index.html": "<!doctype html><html><body><div>two</div></body></html>",
+	})
+
+	_, _, apiErr := d.resolveContent(api.DeployRequest{
+		Files: []api.DeployFile{{
+			Path:          "batch.zip",
+			ContentBase64: base64.StdEncoding.EncodeToString(zipBytes),
+		}},
+	}, "")
+	if apiErr == nil {
+		t.Fatal("expected batch ZIP to be rejected")
+	}
+	if !strings.Contains(strings.ToLower(apiErr.Detail), "multiple") {
+		t.Fatalf("unexpected error detail: %s", apiErr.Detail)
+	}
+	if !strings.Contains(strings.ToLower(apiErr.Hint), "one deployable website") {
+		t.Fatalf("unexpected error hint: %s", apiErr.Hint)
+	}
+}
+
 func makeTestZip(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
