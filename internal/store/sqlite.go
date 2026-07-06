@@ -94,6 +94,10 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("backfill public_id: %w", err)
 	}
+	if err := backfillSearchIndex(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("backfill search index: %w", err)
+	}
 
 	return &SQLiteStore{db: db}, nil
 }
@@ -248,6 +252,30 @@ func migrateFavoritesTable(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func backfillSearchIndex(db *sql.DB) error {
+	if _, err := db.Exec(`DELETE FROM site_search_fts`); err != nil {
+		if contains(err.Error(), "no such table") {
+			return nil
+		}
+		return err
+	}
+	_, err := db.Exec(`
+		INSERT INTO site_search_fts (code, title, description, category, tags)
+		SELECT
+			s.code,
+			COALESCE(cv.title, ''),
+			COALESCE(cv.description, ''),
+			COALESCE(s.category, ''),
+			COALESCE(s.tags, '')
+		FROM sites s
+		LEFT JOIN versions cv ON cv.site_code = s.code
+			AND cv.version_number = COALESCE(s.current_version, (
+				SELECT MAX(version_number) FROM versions WHERE site_code = s.code
+			))
+	`)
+	return err
 }
 
 // backfillSitesPublicID 给 public_id 为 NULL 的 site 生成 UUID（裸 32 字符无连字符，方便 URL）。
@@ -451,7 +479,7 @@ func (s *SQLiteStore) CreateVersion(ctx context.Context, v Version) error {
 	if err != nil {
 		return fmt.Errorf("insert version: %w", err)
 	}
-	return nil
+	return s.syncSearchIndex(ctx, v.SiteCode)
 }
 
 // MaxVersionNumber 返回某 site 当前最大版本号；新 site 返回 0。
@@ -518,7 +546,7 @@ func (s *SQLiteStore) UpdateVersionStatus(ctx context.Context, code string, vers
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return s.syncSearchIndex(ctx, code)
 }
 
 // DeleteVersion 删除版本记录 + 关联文件元数据（事务包裹）。
@@ -547,7 +575,10 @@ func (s *SQLiteStore) DeleteVersion(ctx context.Context, code string, version in
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete: %w", err)
 	}
-	return nil
+	if err := s.DeleteRenderCacheForVersion(ctx, code, version); err != nil {
+		return err
+	}
+	return s.syncSearchIndex(ctx, code)
 }
 
 // ListFiles 列出某版本的文件元数据。
@@ -584,7 +615,7 @@ func (s *SQLiteStore) SetCurrentVersion(ctx context.Context, code string, versio
 	if err != nil {
 		return fmt.Errorf("set current version: %w", err)
 	}
-	return nil
+	return s.syncSearchIndex(ctx, code)
 }
 
 // CreateFiles 批量写文件元数据。事务包裹。
@@ -707,7 +738,10 @@ func (s *SQLiteStore) UpdateVersionContent(ctx context.Context, code string, ver
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit update version content: %w", err)
 	}
-	return nil
+	if err := s.DeleteRenderCacheForVersion(ctx, code, version); err != nil {
+		return err
+	}
+	return s.syncSearchIndex(ctx, code)
 }
 
 // CreateToken 写一条 token 记录。
@@ -1007,6 +1041,18 @@ func (s *SQLiteStore) DeleteSite(ctx context.Context, code string) error {
 		return fmt.Errorf("delete versions: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM render_cache WHERE site_code = ?`, code); err != nil {
+		return fmt.Errorf("delete render cache: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM version_bundles WHERE site_code = ?`, code); err != nil {
+		return fmt.Errorf("delete version bundles: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM site_search_fts WHERE code = ?`, code); err != nil {
+		return fmt.Errorf("delete search index: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM likes WHERE site_code = ?`, code); err != nil {
 		// 老库可能没有 likes 表，忽略
 		if !strings.Contains(err.Error(), "no such table") {
@@ -1186,9 +1232,9 @@ func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sor
 	var args []any
 	where = append(where, `COALESCE(s.visibility, 'unlisted') = 'public'`)
 	if q != "" {
-		where = append(where, `(s.code LIKE ? OR cv.title LIKE ? OR cv.description LIKE ? OR cv.main_entry LIKE ? OR COALESCE(s.tags, '') LIKE ?)`)
+		where = append(where, `(s.code IN (SELECT code FROM site_search_fts WHERE site_search_fts MATCH ?) OR s.code LIKE ? OR cv.title LIKE ? OR cv.description LIKE ? OR cv.main_entry LIKE ? OR COALESCE(s.tags, '') LIKE ?)`)
 		like := "%" + q + "%"
-		args = append(args, like, like, like, like, like)
+		args = append(args, ftsQuery(q), like, like, like, like, like)
 	}
 	if status == "active" || status == "inactive" {
 		where = append(where, `s.status = ?`)
@@ -1402,7 +1448,7 @@ func (s *SQLiteStore) UpdateSiteStatus(ctx context.Context, code, status string)
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return s.syncSearchIndex(ctx, code)
 }
 
 // SetSiteVisibility 设置站点是否进入创作市场。
@@ -1417,7 +1463,7 @@ func (s *SQLiteStore) SetSiteVisibility(ctx context.Context, code, visibility st
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return s.syncSearchIndex(ctx, code)
 }
 
 func (s *SQLiteStore) SetSiteCategory(ctx context.Context, code, category string) error {
@@ -1431,7 +1477,7 @@ func (s *SQLiteStore) SetSiteCategory(ctx context.Context, code, category string
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return s.syncSearchIndex(ctx, code)
 }
 
 func (s *SQLiteStore) SetSiteTags(ctx context.Context, code, tags string) error {
@@ -1445,7 +1491,7 @@ func (s *SQLiteStore) SetSiteTags(ctx context.Context, code, tags string) error 
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return s.syncSearchIndex(ctx, code)
 }
 
 // SetSitePinned 设置或取消创作市场置顶。
@@ -1465,7 +1511,7 @@ func (s *SQLiteStore) SetSitePinned(ctx context.Context, code string, pinned boo
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return s.syncSearchIndex(ctx, code)
 }
 
 // TouchSiteUpdated 把 updated_at 更新为当前时间。
@@ -1500,4 +1546,251 @@ func parseSQLiteTime(value string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse("2006-01-02 15:04:05", value)
+}
+
+func ftsQuery(q string) string {
+	fields := strings.Fields(strings.TrimSpace(q))
+	if len(fields) == 0 {
+		return quoteFTSTerm(q)
+	}
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, quoteFTSTerm(field))
+	}
+	return strings.Join(out, " AND ")
+}
+
+func quoteFTSTerm(term string) string {
+	term = strings.ReplaceAll(strings.TrimSpace(term), `"`, `""`)
+	if term == "" {
+		return `""`
+	}
+	return `"` + term + `"`
+}
+
+func (s *SQLiteStore) syncSearchIndex(ctx context.Context, code string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM site_search_fts WHERE code = ?`, code); err != nil {
+		if contains(err.Error(), "no such table") {
+			return nil
+		}
+		return fmt.Errorf("delete search index: %w", err)
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO site_search_fts (code, title, description, category, tags)
+		SELECT
+			s.code,
+			COALESCE(cv.title, ''),
+			COALESCE(cv.description, ''),
+			COALESCE(s.category, ''),
+			COALESCE(s.tags, '')
+		FROM sites s
+		LEFT JOIN versions cv ON cv.site_code = s.code
+			AND cv.version_number = COALESCE(s.current_version, (
+				SELECT MAX(version_number) FROM versions WHERE site_code = s.code
+			))
+		WHERE s.code = ?
+	`, code)
+	if err != nil {
+		return fmt.Errorf("insert search index: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) UpsertVersionBundle(ctx context.Context, bundle VersionBundle) error {
+	if bundle.CreatedAt.IsZero() {
+		bundle.CreatedAt = time.Now().UTC()
+	}
+	if bundle.TreeJSON == "" {
+		bundle.TreeJSON = "[]"
+	}
+	if bundle.SecurityMode == "" {
+		bundle.SecurityMode = "standard"
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO version_bundles
+			(site_code, version_number, kind, root, main_entry, tree_json, security_mode, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(site_code, version_number) DO UPDATE SET
+			kind = excluded.kind,
+			root = excluded.root,
+			main_entry = excluded.main_entry,
+			tree_json = excluded.tree_json,
+			security_mode = excluded.security_mode,
+			created_at = excluded.created_at
+	`, bundle.SiteCode, bundle.VersionNumber, bundle.Kind, bundle.Root, bundle.MainEntry,
+		bundle.TreeJSON, bundle.SecurityMode, bundle.CreatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("upsert version bundle: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GetVersionBundle(ctx context.Context, code string, version int64) (VersionBundle, error) {
+	var bundle VersionBundle
+	err := s.db.QueryRowContext(ctx, `
+		SELECT site_code, version_number, kind, root, main_entry, tree_json, security_mode, created_at
+		FROM version_bundles
+		WHERE site_code = ? AND version_number = ?
+	`, code, version).Scan(&bundle.SiteCode, &bundle.VersionNumber, &bundle.Kind, &bundle.Root,
+		&bundle.MainEntry, &bundle.TreeJSON, &bundle.SecurityMode, &bundle.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return VersionBundle{}, ErrNotFound
+	}
+	if err != nil {
+		return VersionBundle{}, fmt.Errorf("get version bundle: %w", err)
+	}
+	bundle.CreatedAt = bundle.CreatedAt.Local()
+	return bundle, nil
+}
+
+func (s *SQLiteStore) RecordAuditLog(ctx context.Context, log AuditLog) error {
+	if log.CreatedAt.IsZero() {
+		log.CreatedAt = time.Now().UTC()
+	}
+	if strings.TrimSpace(log.DetailJSON) == "" {
+		log.DetailJSON = "{}"
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO audit_logs
+			(actor_type, actor_id, action, site_code, target_type, target_id, ip, user_agent, detail_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, log.ActorType, log.ActorID, log.Action, log.SiteCode, log.TargetType, log.TargetID,
+		log.IP, log.UserAgent, log.DetailJSON, log.CreatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("record audit log: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListAuditLogs(ctx context.Context, filter AuditLogFilter) ([]AuditLog, int, error) {
+	var where []string
+	var args []any
+	if filter.ActorType != "" {
+		where = append(where, "actor_type = ?")
+		args = append(args, filter.ActorType)
+	}
+	if filter.ActorID != "" {
+		where = append(where, "actor_id = ?")
+		args = append(args, filter.ActorID)
+	}
+	if filter.Action != "" {
+		where = append(where, "action = ?")
+		args = append(args, filter.Action)
+	}
+	if filter.SiteCode != "" {
+		where = append(where, "site_code = ?")
+		args = append(args, filter.SiteCode)
+	}
+	if filter.TargetType != "" {
+		where = append(where, "target_type = ?")
+		args = append(args, filter.TargetType)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs `+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count audit logs: %w", err)
+	}
+
+	limit := filter.Limit
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	listArgs := append([]any{}, args...)
+	listArgs = append(listArgs, limit, offset)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, actor_type, actor_id, action, site_code, target_type, target_id,
+		       ip, user_agent, detail_json, created_at
+		FROM audit_logs `+whereSQL+`
+		ORDER BY created_at DESC, id DESC
+		LIMIT ? OFFSET ?
+	`, listArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list audit logs: %w", err)
+	}
+	defer rows.Close()
+
+	out := []AuditLog{}
+	for rows.Next() {
+		var log AuditLog
+		if err := rows.Scan(&log.ID, &log.ActorType, &log.ActorID, &log.Action, &log.SiteCode,
+			&log.TargetType, &log.TargetID, &log.IP, &log.UserAgent, &log.DetailJSON, &log.CreatedAt); err != nil {
+			return nil, 0, fmt.Errorf("scan audit log: %w", err)
+		}
+		log.CreatedAt = log.CreatedAt.Local()
+		out = append(out, log)
+	}
+	return out, total, rows.Err()
+}
+
+func (s *SQLiteStore) PutRenderCache(ctx context.Context, entry RenderCacheEntry) error {
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = time.Now().UTC()
+	}
+	var expiresAt any
+	if entry.ExpiresAt != nil {
+		expiresAt = entry.ExpiresAt.UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO render_cache
+			(cache_key, site_code, version_number, main_entry, content_sha256, theme, html, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(cache_key) DO UPDATE SET
+			site_code = excluded.site_code,
+			version_number = excluded.version_number,
+			main_entry = excluded.main_entry,
+			content_sha256 = excluded.content_sha256,
+			theme = excluded.theme,
+			html = excluded.html,
+			created_at = excluded.created_at,
+			expires_at = excluded.expires_at
+	`, entry.CacheKey, entry.SiteCode, entry.VersionNumber, entry.MainEntry, entry.ContentSHA256,
+		entry.Theme, entry.HTML, entry.CreatedAt.UTC(), expiresAt)
+	if err != nil {
+		return fmt.Errorf("put render cache: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GetRenderCache(ctx context.Context, cacheKey string) (RenderCacheEntry, bool, error) {
+	var entry RenderCacheEntry
+	var expiresAt sql.NullTime
+	err := s.db.QueryRowContext(ctx, `
+		SELECT cache_key, site_code, version_number, main_entry, content_sha256, theme, html, created_at, expires_at
+		FROM render_cache
+		WHERE cache_key = ?
+	`, cacheKey).Scan(&entry.CacheKey, &entry.SiteCode, &entry.VersionNumber, &entry.MainEntry,
+		&entry.ContentSHA256, &entry.Theme, &entry.HTML, &entry.CreatedAt, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RenderCacheEntry{}, false, nil
+	}
+	if err != nil {
+		return RenderCacheEntry{}, false, fmt.Errorf("get render cache: %w", err)
+	}
+	if expiresAt.Valid {
+		exp := expiresAt.Time
+		if time.Now().After(exp) {
+			_, _ = s.db.ExecContext(ctx, `DELETE FROM render_cache WHERE cache_key = ?`, cacheKey)
+			return RenderCacheEntry{}, false, nil
+		}
+		entry.ExpiresAt = &exp
+	}
+	entry.CreatedAt = entry.CreatedAt.Local()
+	return entry, true, nil
+}
+
+func (s *SQLiteStore) DeleteRenderCacheForVersion(ctx context.Context, code string, version int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM render_cache WHERE site_code = ? AND version_number = ?`, code, version)
+	if err != nil {
+		return fmt.Errorf("delete render cache for version: %w", err)
+	}
+	return nil
 }

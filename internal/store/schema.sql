@@ -98,6 +98,64 @@ CREATE TABLE IF NOT EXISTS favorites (
 CREATE INDEX IF NOT EXISTS idx_favorites_owner ON favorites(owner_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_favorites_site ON favorites(site_code);
 
+-- 市场搜索索引：FTS5 提供快速检索，业务查询仍保留 LIKE 兜底以兼容中文整句。
+CREATE VIRTUAL TABLE IF NOT EXISTS site_search_fts USING fts5(
+    code UNINDEXED,
+    title,
+    description,
+    category,
+    tags,
+    tokenize='unicode61'
+);
+
+-- 操作审计日志：记录发布、下架、加密、投屏等关键操作。
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_type   TEXT NOT NULL,
+    actor_id     TEXT NOT NULL DEFAULT '',
+    action       TEXT NOT NULL,
+    site_code    TEXT NOT NULL DEFAULT '',
+    target_type  TEXT NOT NULL DEFAULT '',
+    target_id    TEXT NOT NULL DEFAULT '',
+    ip           TEXT NOT NULL DEFAULT '',
+    user_agent   TEXT NOT NULL DEFAULT '',
+    detail_json  TEXT NOT NULL DEFAULT '{}',
+    created_at   DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_site ON audit_logs(site_code, created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action, created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_type, actor_id, created_at);
+
+-- Markdown/安全渲染缓存：同一版本内容未变化时避免重复渲染。
+CREATE TABLE IF NOT EXISTS render_cache (
+    cache_key       TEXT PRIMARY KEY,
+    site_code       TEXT NOT NULL,
+    version_number  INTEGER NOT NULL,
+    main_entry      TEXT NOT NULL,
+    content_sha256  TEXT NOT NULL,
+    theme           TEXT NOT NULL DEFAULT '',
+    html            TEXT NOT NULL,
+    created_at      DATETIME NOT NULL,
+    expires_at      DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_render_cache_version ON render_cache(site_code, version_number);
+
+-- 版本包元信息：记录 ZIP/Markdown/HTML 的入口、根目录、文件树和安全模式。
+CREATE TABLE IF NOT EXISTS version_bundles (
+    site_code       TEXT NOT NULL,
+    version_number  INTEGER NOT NULL,
+    kind            TEXT NOT NULL,
+    root            TEXT NOT NULL DEFAULT '',
+    main_entry      TEXT NOT NULL,
+    tree_json       TEXT NOT NULL DEFAULT '[]',
+    security_mode   TEXT NOT NULL DEFAULT 'standard',
+    created_at      DATETIME NOT NULL,
+    PRIMARY KEY (site_code, version_number)
+);
+
 CREATE TABLE IF NOT EXISTS anonymous_sessions (
     id            TEXT PRIMARY KEY,
     agent_id      TEXT,

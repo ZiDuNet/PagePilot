@@ -92,6 +92,57 @@ type FileMeta struct {
 	IsBinary      bool
 }
 
+// VersionBundle 保存一次发布包的入口识别结果和安全策略。
+type VersionBundle struct {
+	SiteCode      string
+	VersionNumber int64
+	Kind          string
+	Root          string
+	MainEntry     string
+	TreeJSON      string
+	SecurityMode  string
+	CreatedAt     time.Time
+}
+
+// AuditLog 记录发布、后台管理、投屏等关键动作。
+type AuditLog struct {
+	ID         int64
+	ActorType  string
+	ActorID    string
+	Action     string
+	SiteCode   string
+	TargetType string
+	TargetID   string
+	IP         string
+	UserAgent  string
+	DetailJSON string
+	CreatedAt  time.Time
+}
+
+// AuditLogFilter 是后台审计列表的过滤条件。
+type AuditLogFilter struct {
+	ActorType  string
+	ActorID    string
+	Action     string
+	SiteCode   string
+	TargetType string
+	Limit      int
+	Offset     int
+}
+
+// RenderCacheEntry 保存 Markdown/安全渲染后的 HTML 缓存。
+type RenderCacheEntry struct {
+	CacheKey      string
+	SiteCode      string
+	VersionNumber int64
+	MainEntry     string
+	ContentSHA256 string
+	Theme         string
+	HTML          string
+	CreatedAt     time.Time
+	ExpiresAt     *time.Time
+}
+
 // Token 是 tokens 表的记录。
 type Token struct {
 	ID          string
@@ -267,6 +318,14 @@ type Store interface {
 
 	// UpdateVersionContent 更新版本内容元数据 + 替换文件清单。
 	UpdateVersionContent(ctx context.Context, code string, version int64, meta Version, files []FileMeta) error
+
+	UpsertVersionBundle(ctx context.Context, bundle VersionBundle) error
+	GetVersionBundle(ctx context.Context, code string, version int64) (VersionBundle, error)
+	RecordAuditLog(ctx context.Context, log AuditLog) error
+	ListAuditLogs(ctx context.Context, filter AuditLogFilter) ([]AuditLog, int, error)
+	PutRenderCache(ctx context.Context, entry RenderCacheEntry) error
+	GetRenderCache(ctx context.Context, cacheKey string) (RenderCacheEntry, bool, error)
+	DeleteRenderCacheForVersion(ctx context.Context, code string, version int64) error
 
 	// ===== Token 管理（Day 5） =====
 
