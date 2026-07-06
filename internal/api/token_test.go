@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -213,6 +214,52 @@ func TestAnonymousDeployWithoutExistingSessionIsTracked(t *testing.T) {
 	}
 }
 
+func TestDeployAcceptsMultipartFileUpload(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	stub := newTrackingAnonymousDeployStub()
+	srv.deployer = stub
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fields := map[string]string{
+		"description": "multipart deploy",
+		"title":       "Multipart Demo",
+		"filename":    "index.html",
+		"visibility":  "unlisted",
+	}
+	for key, value := range fields {
+		if err := mw.WriteField(key, value); err != nil {
+			t.Fatalf("write field %s: %v", key, err)
+		}
+	}
+	part, err := mw.CreateFormFile("file", "index.html")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write([]byte("<!doctype html><title>Multipart Demo</title><h1>ok</h1>")); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("deploy status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+	}
+	if stub.lastReq.Filename != "index.html" || len(stub.lastReq.Files) != 1 {
+		t.Fatalf("multipart request = %+v, want one uploaded index.html", stub.lastReq)
+	}
+	if stub.lastReq.Files[0].Path != "index.html" || !strings.Contains(stub.lastReq.Files[0].Content, "Multipart Demo") {
+		t.Fatalf("uploaded file = %+v", stub.lastReq.Files[0])
+	}
+}
+
 type marketplaceDeploysStub struct {
 	DeployerPort
 	deploys []store.MarketplaceDeploy
@@ -287,6 +334,7 @@ type trackingAnonymousDeployStub struct {
 	sessions         map[string]store.AnonymousSession
 	createdSessionID string
 	deployOwner      string
+	lastReq          DeployRequest
 }
 
 func newTrackingAnonymousDeployStub() *trackingAnonymousDeployStub {
@@ -375,11 +423,12 @@ func (s *trackingAnonymousDeployStub) ListAnonymousSessions(
 
 func (s *trackingAnonymousDeployStub) Deploy(
 	_ context.Context,
-	_ DeployRequest,
+	req DeployRequest,
 	ownerTokenID string,
 	_ string,
 ) (*DeployResponse, *APIError) {
 	s.deployOwner = ownerTokenID
+	s.lastReq = req
 	return &DeployResponse{
 		Success:                true,
 		Code:                   "anon-track-test",

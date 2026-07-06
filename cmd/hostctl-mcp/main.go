@@ -23,9 +23,9 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -505,58 +505,60 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 		return "", fmt.Errorf("no files found at %s", source)
 	}
 
-	// 转成 DeployFile
-	df := make([]deployFileT, 0, len(files))
-	for _, f := range files {
-		if f.IsText {
-			df = append(df, deployFileT{Path: f.Path, Content: string(f.Data)})
-		} else {
-			df = append(df, deployFileT{Path: f.Path, ContentBase64: base64.StdEncoding.EncodeToString(f.Data)})
-		}
-	}
+	df := deployFilesFromChunks(files)
 	if title == "" {
 		title = deriveSiteTitleFromChunks(df)
-	}
-
-	// 构造请求 JSON
-	reqBody := map[string]any{
-		"description": desc,
-		"files":       df,
-	}
-	if title != "" {
-		reqBody["title"] = title
 	}
 	if visibility != "" {
 		if visibility != "public" && visibility != "unlisted" {
 			return "", fmt.Errorf("visibility must be public or unlisted")
 		}
-		reqBody["visibility"] = visibility
 	}
-	if accessPassword != "" {
-		reqBody["accessPassword"] = accessPassword
+	sourceFile, err := prepareMultipartSource(source)
+	if err != nil {
+		return "", err
+	}
+	defer sourceFile.Cleanup()
+	filename := sourceFile.Name
+	if !strings.HasSuffix(strings.ToLower(filename), ".zip") && len(files) > 0 {
+		filename = files[0].Path
+	}
+	req := client.MultipartDeployRequest{
+		SourcePath:       sourceFile.Path,
+		Filename:         filename,
+		Description:      desc,
+		Title:            title,
+		CustomCode:       customCode,
+		CreateVersion:    createVersion,
+		Visibility:       visibility,
+		AccessPassword:   accessPassword,
+		Source:           "mcp",
+		EnableCustomCode: customCode != "",
 	}
 	if strings.TrimSpace(category) != "" && !createVersion {
-		reqBody["category"] = strings.TrimSpace(category)
+		req.Category = strings.TrimSpace(category)
 	}
-	if customCode != "" {
-		reqBody["enableCustomCode"] = true
-		reqBody["customCode"] = customCode
-		if createVersion {
-			reqBody["createVersion"] = true
-		}
-	}
-	reqJSON, _ := json.Marshal(reqBody)
-
-	resp, err := c.RawDeploy(ctx, reqJSON)
+	resp, err := c.DeployMultipart(ctx, req)
 	if err != nil {
 		return "", err
 	}
 	pretty, _ := json.MarshalIndent(resp, "", "  ")
-	url, _ := resp["url"].(string)
-	if url != "" {
-		return fmt.Sprintf("部署成功！访问 URL: %s\n\n%s", url, string(pretty)), nil
+	if resp.URL != "" {
+		return fmt.Sprintf("部署成功！访问 URL: %s\n\n%s", resp.URL, string(pretty)), nil
 	}
 	return string(pretty), nil
+}
+
+func deployFilesFromChunks(files []fileChunk) []deployFileT {
+	out := make([]deployFileT, 0, len(files))
+	for _, f := range files {
+		if f.IsText {
+			out = append(out, deployFileT{Path: f.Path, Content: string(f.Data)})
+		} else {
+			out = append(out, deployFileT{Path: f.Path})
+		}
+	}
+	return out
 }
 
 func deriveSiteTitleFromChunks(files []deployFileT) string {
@@ -804,6 +806,73 @@ type fileChunk struct {
 	Path   string
 	Data   []byte
 	IsText bool
+}
+
+type multipartSource struct {
+	Path    string
+	Name    string
+	Cleanup func()
+}
+
+func prepareMultipartSource(source string) (multipartSource, error) {
+	info, err := os.Stat(source)
+	if err != nil {
+		return multipartSource{}, fmt.Errorf("stat source: %w", err)
+	}
+	if !info.IsDir() {
+		return multipartSource{Path: source, Name: filepath.Base(source), Cleanup: func() {}}, nil
+	}
+	tmp, err := os.CreateTemp("", "pagepilot-mcp-*.zip")
+	if err != nil {
+		return multipartSource{}, fmt.Errorf("create temp zip: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	zipWriter := zip.NewWriter(tmp)
+	err = filepath.Walk(source, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(rel)
+		header.Method = zip.Deflate
+		part, err := zipWriter.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		_, err = io.Copy(part, file)
+		return err
+	})
+	closeErr := zipWriter.Close()
+	fileCloseErr := tmp.Close()
+	if err != nil {
+		cleanup()
+		return multipartSource{}, fmt.Errorf("zip directory: %w", err)
+	}
+	if closeErr != nil {
+		cleanup()
+		return multipartSource{}, fmt.Errorf("close zip: %w", closeErr)
+	}
+	if fileCloseErr != nil {
+		cleanup()
+		return multipartSource{}, fmt.Errorf("close temp zip: %w", fileCloseErr)
+	}
+	return multipartSource{Path: tmpPath, Name: filepath.Base(source) + ".zip", Cleanup: cleanup}, nil
 }
 
 // readSourceDir 把 source 解析成 fileChunk 列表。

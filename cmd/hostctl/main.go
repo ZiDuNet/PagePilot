@@ -2,6 +2,7 @@
 package main
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -310,6 +311,74 @@ func extractHTMLTitle(files []api.DeployFile, mainEntry string) string {
 	return ""
 }
 
+type multipartSource struct {
+	Path    string
+	Name    string
+	Cleanup func()
+}
+
+func prepareMultipartSource(source string) (multipartSource, error) {
+	info, err := os.Stat(source)
+	if err != nil {
+		return multipartSource{}, fmt.Errorf("stat source: %w", err)
+	}
+	if !info.IsDir() {
+		return multipartSource{Path: source, Name: filepath.Base(source), Cleanup: func() {}}, nil
+	}
+	tmp, err := os.CreateTemp("", "pagepilot-*.zip")
+	if err != nil {
+		return multipartSource{}, fmt.Errorf("create temp zip: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	zipWriter := zip.NewWriter(tmp)
+	err = filepath.Walk(source, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = rel
+		header.Method = zip.Deflate
+		part, err := zipWriter.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		_, err = io.Copy(part, file)
+		return err
+	})
+	closeErr := zipWriter.Close()
+	fileCloseErr := tmp.Close()
+	if err != nil {
+		cleanup()
+		return multipartSource{}, fmt.Errorf("zip directory: %w", err)
+	}
+	if closeErr != nil {
+		cleanup()
+		return multipartSource{}, fmt.Errorf("close zip: %w", closeErr)
+	}
+	if fileCloseErr != nil {
+		cleanup()
+		return multipartSource{}, fmt.Errorf("close temp zip: %w", fileCloseErr)
+	}
+	return multipartSource{Path: tmpPath, Name: filepath.Base(source) + ".zip", Cleanup: cleanup}, nil
+}
+
 func htmlUnescape(s string) string {
 	s = strings.ReplaceAll(s, "&lt;", "<")
 	s = strings.ReplaceAll(s, "&gt;", ">")
@@ -371,14 +440,23 @@ func cmdDeploy() *cobra.Command {
 			if title == "" {
 				title = deriveSiteTitle(files, mainEntry)
 			}
-			req := api.DeployRequest{
+			source, err := prepareMultipartSource(args[0])
+			if err != nil {
+				return err
+			}
+			defer source.Cleanup()
+			req := client.MultipartDeployRequest{
+				SourcePath:     source.Path,
 				Description:    description,
 				Title:          title,
 				Filename:       mainEntry,
-				Files:          files,
 				Source:         "cli",
 				AccessPassword: accessPass,
 				Category:       category,
+				Visibility:     "",
+			}
+			if source.Name != "" && strings.HasSuffix(strings.ToLower(source.Name), ".zip") && filename == "" {
+				req.Filename = source.Name
 			}
 			if customCode != "" {
 				req.EnableCustomCode = true
@@ -386,7 +464,7 @@ func cmdDeploy() *cobra.Command {
 			}
 			ctx, cancel := withSignalCancel()
 			defer cancel()
-			resp, err := buildClient().Deploy(ctx, req)
+			resp, err := buildClient().DeployMultipart(ctx, req)
 			if err != nil {
 				printErr(err)
 				return errSilent
@@ -427,19 +505,27 @@ func cmdAppend() *cobra.Command {
 			if title == "" {
 				title = deriveSiteTitle(files, mainEntry)
 			}
-			req := api.DeployRequest{
+			source, err := prepareMultipartSource(args[1])
+			if err != nil {
+				return err
+			}
+			defer source.Cleanup()
+			req := client.MultipartDeployRequest{
+				SourcePath:       source.Path,
 				Description:      description,
 				Title:            title,
 				Filename:         mainEntry,
-				Files:            files,
 				EnableCustomCode: true,
 				CustomCode:       args[0],
 				CreateVersion:    true,
 				Source:           "cli",
 			}
+			if source.Name != "" && strings.HasSuffix(strings.ToLower(source.Name), ".zip") {
+				req.Filename = source.Name
+			}
 			ctx, cancel := withSignalCancel()
 			defer cancel()
-			resp, err := buildClient().Deploy(ctx, req)
+			resp, err := buildClient().DeployMultipart(ctx, req)
 			if err != nil {
 				printErr(err)
 				return errSilent

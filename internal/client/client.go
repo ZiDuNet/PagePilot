@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/yourorg/hostctl/internal/api"
@@ -135,6 +138,130 @@ func (c *Client) Deploy(ctx context.Context, req api.DeployRequest) (*api.Deploy
 		return nil, err
 	}
 	return &resp, nil
+}
+
+type MultipartDeployRequest struct {
+	SourcePath       string
+	Filename         string
+	Description      string
+	Title            string
+	CustomCode       string
+	CreateVersion    bool
+	Visibility       string
+	Category         string
+	Tags             []string
+	AccessPassword   string
+	Source           string
+	EnableCustomCode bool
+}
+
+func (c *Client) DeployMultipart(ctx context.Context, req MultipartDeployRequest) (*api.DeployResponse, error) {
+	pr, pw := io.Pipe()
+	writer := multipart.NewWriter(pw)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- writeMultipartDeploy(writer, pw, req)
+	}()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/deploy", pr)
+	if err != nil {
+		_ = pr.Close()
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
+	if c.baseURL != "" {
+		httpReq.Header.Set(currentOriginHeader, c.baseURL)
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		_ = pr.Close()
+		if writeErr := <-errCh; writeErr != nil {
+			return nil, writeErr
+		}
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if writeErr := <-errCh; writeErr != nil {
+		return nil, writeErr
+	}
+	if resp.StatusCode >= 400 {
+		var apiErr api.APIError
+		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
+		return nil, &APIError{Status: resp.StatusCode, Body: &apiErr}
+	}
+	var out api.DeployResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
+func writeMultipartDeploy(writer *multipart.Writer, pw *io.PipeWriter, req MultipartDeployRequest) error {
+	defer func() {
+		_ = writer.Close()
+		_ = pw.Close()
+	}()
+	fields := map[string]string{
+		"description":    req.Description,
+		"title":          req.Title,
+		"filename":       req.Filename,
+		"visibility":     req.Visibility,
+		"category":       req.Category,
+		"accessPassword": req.AccessPassword,
+		"source":         req.Source,
+	}
+	if req.CustomCode != "" {
+		fields["customCode"] = req.CustomCode
+		fields["enableCustomCode"] = "true"
+	}
+	if req.EnableCustomCode {
+		fields["enableCustomCode"] = "true"
+	}
+	if req.CreateVersion {
+		fields["createVersion"] = "true"
+	}
+	if len(req.Tags) > 0 {
+		fields["tags"] = strings.Join(req.Tags, ",")
+	}
+	for key, value := range fields {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if err := writer.WriteField(key, value); err != nil {
+			return fmt.Errorf("write multipart field %s: %w", key, err)
+		}
+	}
+	if err := addMultipartFile(writer, req.SourcePath, req.Filename); err != nil {
+		_ = pw.CloseWithError(err)
+		return err
+	}
+	return nil
+}
+
+func addMultipartFile(writer *multipart.Writer, sourcePath, filename string) error {
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return fmt.Errorf("source path is required")
+	}
+	if filename == "" {
+		filename = filepath.Base(sourcePath)
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return fmt.Errorf("create multipart file: %w", err)
+	}
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", sourcePath, err)
+	}
+	defer file.Close()
+	if _, err := io.Copy(part, file); err != nil {
+		return fmt.Errorf("copy %s: %w", sourcePath, err)
+	}
+	return nil
 }
 
 // RawDeploy 是 Deploy 的等价物，但接受原始 JSON 字节，

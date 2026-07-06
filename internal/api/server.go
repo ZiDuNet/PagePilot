@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"log"
 	"math/big"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -546,23 +547,28 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 强制 application/json，禁用 multipart。
 	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
-	if !strings.HasPrefix(ct, "application/json") {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "content_type",
-			"Content-Type must be application/json; multipart/form-data is not supported"), reqID))
-		return
-	}
-
-	// 限制 body 大小（防 DoS）
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxRequestBodyBytes())
 
 	var req DeployRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json",
-			fmt.Sprintf("invalid JSON body: %v", err)), reqID))
+	if strings.HasPrefix(ct, "application/json") {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json",
+				fmt.Sprintf("invalid JSON body: %v", err)), reqID))
+			return
+		}
+	} else if strings.HasPrefix(ct, "multipart/form-data") {
+		parsed, apiErr := s.decodeDeployMultipart(r)
+		if apiErr != nil {
+			writeError(w, apiErrWithReqID(apiErr, reqID))
+			return
+		}
+		req = parsed
+	} else {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "content_type",
+			"Content-Type must be application/json or multipart/form-data"), reqID))
 		return
 	}
 
@@ -643,6 +649,129 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) decodeDeployMultipart(r *http.Request) (DeployRequest, *APIError) {
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		return DeployRequest{}, NewError(CodeInvalidInput, "parse_multipart",
+			fmt.Sprintf("invalid multipart body: %v", err))
+	}
+	req := DeployRequest{
+		Filename:       firstMultipartValue(r.MultipartForm, "filename"),
+		Description:    firstMultipartValue(r.MultipartForm, "description"),
+		Title:          firstMultipartValue(r.MultipartForm, "title"),
+		Source:         firstMultipartValue(r.MultipartForm, "source"),
+		Visibility:     firstMultipartValue(r.MultipartForm, "visibility"),
+		Category:       firstMultipartValue(r.MultipartForm, "category"),
+		AccessPassword: firstMultipartValue(r.MultipartForm, "accessPassword"),
+	}
+	if req.AccessPassword == "" {
+		req.AccessPassword = firstMultipartValue(r.MultipartForm, "access_password")
+	}
+	req.CustomCode = firstMultipartValue(r.MultipartForm, "customCode")
+	if req.CustomCode == "" {
+		req.CustomCode = firstMultipartValue(r.MultipartForm, "custom_code")
+	}
+	req.EnableCustomCode = parseBoolForm(firstMultipartValue(r.MultipartForm, "enableCustomCode")) || req.CustomCode != ""
+	req.CreateVersion = parseBoolForm(firstMultipartValue(r.MultipartForm, "createVersion"))
+	if !req.CreateVersion {
+		req.CreateVersion = parseBoolForm(firstMultipartValue(r.MultipartForm, "create_version"))
+	}
+	if tags := firstMultipartValue(r.MultipartForm, "tags"); strings.TrimSpace(tags) != "" {
+		for _, tag := range strings.Split(tags, ",") {
+			if tag = strings.TrimSpace(tag); tag != "" {
+				req.Tags = append(req.Tags, tag)
+			}
+		}
+	}
+
+	files, apiErr := deployFilesFromMultipart(r.MultipartForm)
+	if apiErr != nil {
+		return DeployRequest{}, apiErr
+	}
+	req.Files = files
+	if req.Filename == "" && len(files) == 1 {
+		req.Filename = files[0].Path
+	}
+	return req, nil
+}
+
+func firstMultipartValue(form *multipart.Form, key string) string {
+	if form == nil {
+		return ""
+	}
+	values := form.Value[key]
+	if len(values) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(values[0])
+}
+
+func parseBoolForm(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func deployFilesFromMultipart(form *multipart.Form) ([]DeployFile, *APIError) {
+	if form == nil {
+		return nil, NewError(CodeInvalidInput, "multipart_file", "multipart file is required")
+	}
+	headers := append([]*multipart.FileHeader{}, form.File["file"]...)
+	headers = append(headers, form.File["files"]...)
+	if len(headers) == 0 {
+		return nil, NewError(CodeInvalidInput, "multipart_file", "multipart file is required")
+	}
+	out := make([]DeployFile, 0, len(headers))
+	for _, header := range headers {
+		file, err := header.Open()
+		if err != nil {
+			return nil, NewError(CodeInvalidInput, "multipart_file",
+				fmt.Sprintf("open multipart file %s: %v", header.Filename, err))
+		}
+		data, err := io.ReadAll(file)
+		_ = file.Close()
+		if err != nil {
+			return nil, NewError(CodeInvalidInput, "multipart_file",
+				fmt.Sprintf("read multipart file %s: %v", header.Filename, err))
+		}
+		path := filepath.ToSlash(strings.TrimSpace(header.Filename))
+		if path == "" {
+			path = "index.html"
+		}
+		item := DeployFile{Path: path}
+		if looksMultipartBinary(data) {
+			item.ContentBase64 = base64.StdEncoding.EncodeToString(data)
+		} else {
+			item.Content = string(data)
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func looksMultipartBinary(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	checkLen := len(data)
+	if checkLen > 512 {
+		checkLen = 512
+	}
+	nonPrintable := 0
+	for i := 0; i < checkLen; i++ {
+		c := data[i]
+		if c == 0 {
+			return true
+		}
+		if c < 0x09 || (c > 0x0d && c < 0x20) {
+			nonPrintable++
+		}
+	}
+	return nonPrintable*8 > checkLen
 }
 
 // handleHealth 健康检查。
