@@ -11,7 +11,7 @@ func TestUserStaticPagesWithDotsAreServedBeforeShortCodeRouting(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
 
-	for _, path := range []string{"/deploy.html", "/agents/", "/screens/"} {
+	for _, path := range []string{"/deploy", "/agents/", "/screens/"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
 

@@ -7,9 +7,9 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
-			"title":       "hostctl API",
+			"title":       "PagePilot API",
 			"version":     s.version,
-			"description": "Agent-friendly static site hosting API with deploys, versions, marketplace, and admin operations.",
+			"description": "Agent-friendly application publishing API with deploys, versions, marketplace, screens, and admin operations.",
 		},
 		"servers": []map[string]any{{"url": base}},
 		"security": []map[string]any{
@@ -62,6 +62,41 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Configuration updated", "content": jsonSchemaRef("ConfigUpdateResponse")},
 						"401": errorResponse(),
+						"403": errorResponse(),
+					},
+				},
+			},
+			"/api/auth/captcha": map[string]any{
+				"get": map[string]any{
+					"summary":  "Create a numeric image captcha",
+					"security": []any{},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Captcha created", "content": jsonSchemaRef("CaptchaResponse")},
+					},
+				},
+			},
+			"/api/auth/email-code": map[string]any{
+				"post": map[string]any{
+					"summary":     "Send registration email verification code",
+					"description": "Only available when registration and email verification are enabled. Requires a fresh captcha answer.",
+					"security":    []any{},
+					"requestBody": jsonBodyRef("EmailVerificationRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Verification code sent", "content": jsonSchemaRef("EmailVerificationResponse")},
+						"400": errorResponse(),
+						"403": errorResponse(),
+					},
+				},
+			},
+			"/api/auth/register": map[string]any{
+				"post": map[string]any{
+					"summary":     "Register a user account",
+					"description": "Requires captcha. When email verification is enabled, email and emailCode are also required.",
+					"security":    []any{},
+					"requestBody": jsonBodyRef("RegisterRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "User registered", "content": jsonSchemaRef("RegisterResponse")},
+						"400": errorResponse(),
 						"403": errorResponse(),
 					},
 				},
@@ -380,6 +415,34 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"responses":   map[string]any{"200": map[string]any{"description": "Anonymous session list", "content": jsonSchemaRef("AnonymousSessionListResponse")}},
 				},
 			},
+			"/api/admin/users": map[string]any{
+				"get": map[string]any{
+					"summary":     "List registered users",
+					"description": "Admin token required. Returns account, email verification, role, status, and deploy quota fields.",
+					"responses":   map[string]any{"200": map[string]any{"description": "User list", "content": jsonSchemaRef("UserListResponse")}, "403": errorResponse()},
+				},
+				"post": map[string]any{
+					"summary":     "Create a registered user",
+					"description": "Admin token required. Optional email can be marked verified when created by an admin.",
+					"requestBody": jsonBodyRef("UserCreateRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "User created", "content": jsonSchemaRef("UserCreateResponse")}, "400": errorResponse(), "403": errorResponse()},
+				},
+			},
+			"/api/admin/users/{id}": map[string]any{
+				"patch": map[string]any{
+					"summary":     "Update a registered user",
+					"description": "Admin token required. Updates username, email, email verification state, role, status, and deploy quota.",
+					"parameters":  []map[string]any{pathParam("id", "string")},
+					"requestBody": jsonBodyRef("UserUpdateRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "User updated", "content": jsonSchemaRef("UserUpdateResponse")}, "400": errorResponse(), "403": errorResponse(), "404": errorResponse()},
+				},
+				"delete": map[string]any{
+					"summary":     "Delete a registered user",
+					"description": "Admin token required. The last active admin and the current admin account cannot be deleted.",
+					"parameters":  []map[string]any{pathParam("id", "string")},
+					"responses":   map[string]any{"200": map[string]any{"description": "User deleted", "content": jsonSchemaRef("UserDeleteResponse")}, "400": errorResponse(), "403": errorResponse(), "404": errorResponse()},
+				},
+			},
 			"/api/admin/sites/{code}": map[string]any{
 				"delete": map[string]any{
 					"summary":     "Delete a whole site and its files",
@@ -465,6 +528,21 @@ func openAPISchemas() map[string]any {
 		"APIError": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "errorCode": str, "stage": str, "detail": str, "hint": str,
 			"retryAfterSeconds": intSchema, "requestId": str,
+		}},
+		"CaptchaResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "id": str, "prompt": str, "image": str,
+		}},
+		"EmailVerificationRequest": map[string]any{"type": "object", "required": []string{"email", "captchaId", "captcha"}, "properties": map[string]any{
+			"email": str, "captchaId": str, "captcha": str,
+		}},
+		"EmailVerificationResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "email": str, "expiresIn": intSchema,
+		}},
+		"RegisterRequest": map[string]any{"type": "object", "required": []string{"username", "password", "captchaId", "captcha"}, "properties": map[string]any{
+			"username": str, "email": str, "password": str, "captchaId": str, "captcha": str, "emailCode": str,
+		}},
+		"RegisterResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "userId": str, "username": str, "email": str, "emailVerified": boolSchema,
 		}},
 		"DeployFile": map[string]any{"type": "object", "required": []string{"path"}, "properties": map[string]any{
 			"path": str, "content": str, "contentBase64": str,
@@ -555,9 +633,33 @@ func openAPISchemas() map[string]any {
 			"limits": map[string]any{"$ref": "#/components/schemas/Limits"}, "anonymousPolicy": map[string]any{"$ref": "#/components/schemas/AnonymousPolicy"},
 		}},
 		"AdminSessionResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "mode": str, "tokenId": str, "label": str, "userId": str, "username": str, "isAdmin": boolSchema}},
-		"SiteListResponse":     map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "sites": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
-		"SitePinRequest":       map[string]any{"type": "object", "required": []string{"pinned"}, "properties": map[string]any{"pinned": boolSchema}},
-		"SitePinResponse":      map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "code": str, "isPinned": boolSchema, "pinnedAt": timeSchema}},
+		"UserListItem": map[string]any{"type": "object", "properties": map[string]any{
+			"id": str, "username": str, "email": str, "emailVerified": boolSchema,
+			"isAdmin": boolSchema, "isActive": boolSchema,
+			"deployLimit": intSchema, "deployCount": intSchema, "remaining": intSchema,
+			"createdAt": timeSchema, "lastLoginAt": timeSchema,
+		}},
+		"UserListResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "users": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/UserListItem"}},
+		}},
+		"UserCreateRequest": map[string]any{"type": "object", "required": []string{"username", "password"}, "properties": map[string]any{
+			"username": str, "email": str, "emailVerified": boolSchema, "password": str,
+			"isAdmin": boolSchema, "deployLimit": intSchema,
+		}},
+		"UserCreateResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "user": map[string]any{"$ref": "#/components/schemas/UserListItem"},
+		}},
+		"UserUpdateRequest": map[string]any{"type": "object", "properties": map[string]any{
+			"username": str, "email": str, "emailVerified": boolSchema,
+			"isAdmin": boolSchema, "isActive": boolSchema, "deployLimit": intSchema,
+		}},
+		"UserUpdateResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "user": map[string]any{"$ref": "#/components/schemas/UserListItem"},
+		}},
+		"UserDeleteResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "id": str}},
+		"SiteListResponse":   map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "sites": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
+		"SitePinRequest":     map[string]any{"type": "object", "required": []string{"pinned"}, "properties": map[string]any{"pinned": boolSchema}},
+		"SitePinResponse":    map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "code": str, "isPinned": boolSchema, "pinnedAt": timeSchema}},
 		"ScreenItem": map[string]any{"type": "object", "properties": map[string]any{
 			"id": str, "ownerUserId": str, "ownerUsername": str, "name": str, "deviceName": str, "status": str,
 			"currentSiteCode": str, "currentVersion": intSchema, "lastSeenAt": timeSchema, "appVersion": str,

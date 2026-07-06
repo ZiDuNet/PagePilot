@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yourorg/hostctl/internal/store"
 )
@@ -17,7 +19,8 @@ func TestAppServeServesCurrentAndHistoricalVersion(t *testing.T) {
 	defer cleanup()
 
 	stub := &appServeDeployerStub{
-		site: store.Site{Code: "demo"},
+		site:     store.Site{Code: "demo"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "demo"),
 	}
 	srv.deployer = stub
 
@@ -62,7 +65,8 @@ func TestAppServeAllowsSandboxedSameAppFetch(t *testing.T) {
 	defer cleanup()
 
 	srv.deployer = &appServeDeployerStub{
-		site: store.Site{Code: "demo"},
+		site:     store.Site{Code: "demo"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "demo"),
 	}
 	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
 	if err := os.MkdirAll(currentDir, 0o755); err != nil {
@@ -95,7 +99,8 @@ func TestAppServeEmbedPolicyAddsFrameAncestors(t *testing.T) {
 	srv.cfg.EmbedPolicy = "allowlist"
 	srv.cfg.EmbedAllowOrigins = "https://portal.example.com"
 	srv.deployer = &appServeDeployerStub{
-		site: store.Site{Code: "demo"},
+		site:     store.Site{Code: "demo"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "demo"),
 	}
 	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
 	if err := os.MkdirAll(currentDir, 0o755); err != nil {
@@ -123,7 +128,8 @@ func TestAppServeEmbedPolicyDenyAddsFrameAncestorsNone(t *testing.T) {
 	defer cleanup()
 	srv.cfg.EmbedPolicy = "deny"
 	srv.deployer = &appServeDeployerStub{
-		site: store.Site{Code: "demo"},
+		site:     store.Site{Code: "demo"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "demo"),
 	}
 	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
 	if err := os.MkdirAll(currentDir, 0o755); err != nil {
@@ -148,7 +154,8 @@ func TestAppServeRedirectsLegacyVersionQuery(t *testing.T) {
 	defer cleanup()
 
 	srv.deployer = &appServeDeployerStub{
-		site: store.Site{Code: "demo"},
+		site:     store.Site{Code: "demo"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "demo"),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/agent/demo/?v=1", nil)
@@ -168,7 +175,8 @@ func TestAppServeRejectsPathTraversal(t *testing.T) {
 	defer cleanup()
 
 	srv.deployer = &appServeDeployerStub{
-		site: store.Site{Code: "demo"},
+		site:     store.Site{Code: "demo"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "demo"),
 	}
 	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
 	if err := os.MkdirAll(currentDir, 0o755); err != nil {
@@ -188,9 +196,100 @@ func TestAppServeRejectsPathTraversal(t *testing.T) {
 	}
 }
 
+func TestRenderHostedMarkdownAdvancedBlocksAreSafe(t *testing.T) {
+	body := []byte(`# Guide
+
+![logo](images/logo.png)
+[bad](javascript:alert(1))
+
+| Name | Value |
+| --- | --- |
+| HTML | <script>alert(1)</script> |
+
+- [x] publish
+- [ ] review
+
+` + "```go" + `
+fmt.Println("<safe>")
+` + "```" + `
+
+` + "```mermaid" + `
+flowchart LR
+  A-->B
+` + "```" + `
+
+` + "```katex" + `
+E = mc^2
+` + "```" + `
+`)
+
+	rendered := renderHostedMarkdown(body)
+	mustContain := []string{
+		`<img src="images/logo.png" alt="logo">`,
+		`<table>`,
+		`&lt;script&gt;alert(1)&lt;/script&gt;`,
+		`class="task-list"`,
+		`type="checkbox" disabled checked`,
+		`class="language-go"`,
+		`fmt.Println(&#34;&lt;safe&gt;&#34;)`,
+		`class="markdown-diagram"`,
+		`class="language-mermaid"`,
+		`class="markdown-math"`,
+		`class="language-math"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered markdown missing %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, `href="javascript:alert(1)"`) || strings.Contains(rendered, "<script>alert(1)</script>") {
+		t.Fatalf("rendered markdown contains unsafe active content:\n%s", rendered)
+	}
+}
+
+func TestAppServeMarkdownUsesHTMLContentTypeAndSandbox(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+
+	srv.deployer = &appServeDeployerStub{
+		site:     store.Site{Code: "docs"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "docs"),
+	}
+	currentDir := filepath.Join(srv.cfg.HostedDir, "docs", "current")
+	if err := os.MkdirAll(filepath.Join(currentDir, "images"), 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "index.html"), []byte("<!doctype html><html><body><main>fallback</main></body></html>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "README.md"), []byte("# Docs\n\n![logo](images/logo.png)"), 0o644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/docs/README.md", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", got)
+	}
+	if csp := rr.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "sandbox") {
+		t.Fatalf("CSP = %q, want sandbox", csp)
+	} else if strings.Contains(csp, "unsafe-eval") || strings.Contains(csp, "script-src") {
+		t.Fatalf("Markdown CSP = %q, should not allow scripts", csp)
+	}
+	if !strings.Contains(rr.Body.String(), `<img src="images/logo.png" alt="logo">`) {
+		t.Fatalf("markdown relative image was not rendered: %s", rr.Body.String())
+	}
+}
+
 type appServeDeployerStub struct {
 	DeployerPort
-	site store.Site
+	site     store.Site
+	siteRoot string
 }
 
 func (s *appServeDeployerStub) GetSite(context.Context, string) (store.Site, error) {
@@ -211,6 +310,26 @@ func (s *appServeDeployerStub) GetContent(
 		Version:   1,
 		MainEntry: "index.html",
 	}, nil
+}
+
+func (s *appServeDeployerStub) ReadAppFile(_ context.Context, code string, versionPtr *int64, path string) ([]byte, time.Time, *APIError) {
+	if s.site.Code != code {
+		return nil, time.Time{}, NewError(CodeNotFound, "site", "site not found")
+	}
+	root := filepath.Join(s.siteRoot, "current")
+	if versionPtr != nil {
+		root = filepath.Join(s.siteRoot, "versions", strconv.FormatInt(*versionPtr, 10))
+	}
+	full := filepath.Join(root, path)
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return nil, time.Time{}, NewError(CodeNotFound, "file", "file not found")
+	}
+	modTime := time.Time{}
+	if st, statErr := os.Stat(full); statErr == nil {
+		modTime = st.ModTime()
+	}
+	return data, modTime, nil
 }
 
 func (s *appServeDeployerStub) IncrementViewCount(context.Context, string) error {

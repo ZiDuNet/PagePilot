@@ -536,6 +536,7 @@ func seedScreenSite(t *testing.T, srv *Server, code, ownerTokenID string) {
 		Code:         code,
 		PublicID:     code + "-public",
 		OwnerTokenID: ownerTokenID,
+		Visibility:   "public",
 		CreatedAt:    now,
 		UpdatedAt:    now,
 		Source:       "api",

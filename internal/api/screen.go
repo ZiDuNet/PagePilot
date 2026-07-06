@@ -154,7 +154,7 @@ func screenPublishAllowedForUser(site store.Site, userID string) bool {
 	}
 	visibility := strings.TrimSpace(site.Visibility)
 	if visibility == "" {
-		visibility = "public"
+		visibility = "unlisted"
 	}
 	return visibility == "public" && strings.TrimSpace(site.AccessPasswordHash) == ""
 }

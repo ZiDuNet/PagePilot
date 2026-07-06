@@ -2,8 +2,10 @@
 
 BIN_DIR := bin
 SERVER_BIN := $(BIN_DIR)/hostctl-server
-CLI_BIN := $(BIN_DIR)/hostctl
-MCP_BIN := $(BIN_DIR)/hostctl-mcp
+CLI_BIN := $(BIN_DIR)/pagep
+LEGACY_CLI_BIN := $(BIN_DIR)/hostctl
+MCP_BIN := $(BIN_DIR)/pagep-mcp
+LEGACY_MCP_BIN := $(BIN_DIR)/hostctl-mcp
 
 all: build
 
@@ -34,17 +36,21 @@ $(SERVER_BIN):
 $(CLI_BIN):
 	@mkdir -p $(BIN_DIR)
 	go build -o $(CLI_BIN) ./cmd/hostctl
+	@cp $(CLI_BIN) $(LEGACY_CLI_BIN)
 
 $(MCP_BIN):
 	@mkdir -p $(BIN_DIR)
 	go build -o $(MCP_BIN) ./cmd/hostctl-mcp
+	@cp $(MCP_BIN) $(LEGACY_MCP_BIN)
 
 # Build Linux amd64 binaries for deployment.
 build-linux: frontend
 	@mkdir -p $(BIN_DIR)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(SERVER_BIN)-linux-amd64 ./cmd/hostctl-server
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(CLI_BIN)-linux-amd64 ./cmd/hostctl
+	@cp $(CLI_BIN)-linux-amd64 $(LEGACY_CLI_BIN)-linux-amd64
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(MCP_BIN)-linux-amd64 ./cmd/hostctl-mcp
+	@cp $(MCP_BIN)-linux-amd64 $(LEGACY_MCP_BIN)-linux-amd64
 
 # Run a local dev server.
 run: build

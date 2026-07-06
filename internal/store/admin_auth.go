@@ -21,9 +21,9 @@ func (s *SQLiteStore) CreateAdminUser(ctx context.Context, user AdminUser) error
 		user.DeployLimit = 20
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO admin_users (id, username, password_hash, is_admin, is_active, can_like, deploy_limit, deploy_count, created_at, last_login_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, user.ID, user.Username, user.PasswordHash, user.IsAdmin, user.IsActive, user.CanLike, user.DeployLimit, user.DeployCount, user.CreatedAt.UTC(), nilTime(user.LastLoginAt))
+		INSERT INTO admin_users (id, username, email, email_verified, password_hash, is_admin, is_active, can_like, deploy_limit, deploy_count, created_at, last_login_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, user.ID, user.Username, user.Email, user.EmailVerified, user.PasswordHash, user.IsAdmin, user.IsActive, user.CanLike, user.DeployLimit, user.DeployCount, user.CreatedAt.UTC(), nilTime(user.LastLoginAt))
 	if err != nil {
 		return fmt.Errorf("create admin user: %w", err)
 	}
@@ -33,9 +33,9 @@ func (s *SQLiteStore) CreateAdminUser(ctx context.Context, user AdminUser) error
 func (s *SQLiteStore) UpdateAdminUser(ctx context.Context, user AdminUser) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE admin_users
-		SET username = ?, is_admin = ?, is_active = ?, can_like = ?, deploy_limit = ?
+		SET username = ?, email = ?, email_verified = ?, is_admin = ?, is_active = ?, can_like = ?, deploy_limit = ?
 		WHERE id = ?
-	`, user.Username, user.IsAdmin, user.IsActive, user.CanLike, user.DeployLimit, user.ID)
+	`, user.Username, user.Email, user.EmailVerified, user.IsAdmin, user.IsActive, user.CanLike, user.DeployLimit, user.ID)
 	if err != nil {
 		return fmt.Errorf("update admin user: %w", err)
 	}
@@ -91,14 +91,14 @@ func (s *SQLiteStore) DeleteAdminUser(ctx context.Context, id string) error {
 
 func (s *SQLiteStore) GetAdminUserByUsername(ctx context.Context, username string) (AdminUser, error) {
 	return s.scanAdminUser(s.db.QueryRowContext(ctx, `
-		SELECT id, username, password_hash, is_admin, is_active, can_like, deploy_limit, deploy_count, created_at, last_login_at
+		SELECT id, username, email, email_verified, password_hash, is_admin, is_active, can_like, deploy_limit, deploy_count, created_at, last_login_at
 		FROM admin_users WHERE username = ?
 	`, username))
 }
 
 func (s *SQLiteStore) GetAdminUserByID(ctx context.Context, id string) (AdminUser, error) {
 	return s.scanAdminUser(s.db.QueryRowContext(ctx, `
-		SELECT id, username, password_hash, is_admin, is_active, can_like, deploy_limit, deploy_count, created_at, last_login_at
+		SELECT id, username, email, email_verified, password_hash, is_admin, is_active, can_like, deploy_limit, deploy_count, created_at, last_login_at
 		FROM admin_users WHERE id = ?
 	`, id))
 }
@@ -106,7 +106,7 @@ func (s *SQLiteStore) GetAdminUserByID(ctx context.Context, id string) (AdminUse
 func (s *SQLiteStore) scanAdminUser(row scanner) (AdminUser, error) {
 	var user AdminUser
 	var lastLogin sql.NullTime
-	err := row.Scan(&user.ID, &user.Username, &user.PasswordHash, &user.IsAdmin, &user.IsActive, &user.CanLike, &user.DeployLimit, &user.DeployCount, &user.CreatedAt, &lastLogin)
+	err := row.Scan(&user.ID, &user.Username, &user.Email, &user.EmailVerified, &user.PasswordHash, &user.IsAdmin, &user.IsActive, &user.CanLike, &user.DeployLimit, &user.DeployCount, &user.CreatedAt, &lastLogin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AdminUser{}, ErrNotFound
 	}
@@ -123,7 +123,7 @@ func (s *SQLiteStore) scanAdminUser(row scanner) (AdminUser, error) {
 
 func (s *SQLiteStore) ListAdminUsers(ctx context.Context) ([]AdminUser, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, username, password_hash, is_admin, is_active, can_like, deploy_limit, deploy_count, created_at, last_login_at
+		SELECT id, username, email, email_verified, password_hash, is_admin, is_active, can_like, deploy_limit, deploy_count, created_at, last_login_at
 		FROM admin_users ORDER BY created_at ASC
 	`)
 	if err != nil {

@@ -6,19 +6,20 @@ import "time"
 
 // ConfigResponse 是 GET /api/config 响应。包含可读的运行时配置。
 type ConfigResponse struct {
-	Success           bool            `json:"success"`
-	CurrentBaseURL    string          `json:"currentBaseURL"`
-	AppURL            AppURLConfig    `json:"appURL"`
-	Mode              string          `json:"mode"` // "dev" | "prod"
-	CORSAllowOrigins  string          `json:"corsAllowOrigins"`
-	EmbedPolicy       string          `json:"embedPolicy"`
-	EmbedAllowOrigins string          `json:"embedAllowOrigins,omitempty"`
-	CooldownSeconds   int             `json:"cooldownSeconds"`
-	Limits            Limits          `json:"limits"`
-	AnonymousPolicy   AnonymousPolicy `json:"anonymousPolicy"`
-	Email             EmailConfig     `json:"email"`
-	Storage           StorageConfig   `json:"storage"`
-	Version           string          `json:"version"`
+	Success             bool            `json:"success"`
+	CurrentBaseURL      string          `json:"currentBaseURL"`
+	AppURL              AppURLConfig    `json:"appURL"`
+	Mode                string          `json:"mode"` // "dev" | "prod"
+	CORSAllowOrigins    string          `json:"corsAllowOrigins"`
+	EmbedPolicy         string          `json:"embedPolicy"`
+	EmbedAllowOrigins   string          `json:"embedAllowOrigins,omitempty"`
+	CooldownSeconds     int             `json:"cooldownSeconds"`
+	Limits              Limits          `json:"limits"`
+	AnonymousPolicy     AnonymousPolicy `json:"anonymousPolicy"`
+	RegistrationAllowed bool            `json:"registrationAllowed"`
+	Email               EmailConfig     `json:"email"`
+	Storage             StorageConfig   `json:"storage"`
+	Version             string          `json:"version"`
 }
 
 type AnonymousPolicy struct {
@@ -69,17 +70,18 @@ type ConfigUpdateRequest struct {
 
 // ConfigUpdateResponse 是 PUT /api/config 响应。
 type ConfigUpdateResponse struct {
-	Success           bool            `json:"success"`
-	CurrentBaseURL    string          `json:"currentBaseURL"`
-	AppURL            AppURLConfig    `json:"appURL"`
-	CORSAllowOrigins  string          `json:"corsAllowOrigins"`
-	EmbedPolicy       string          `json:"embedPolicy"`
-	EmbedAllowOrigins string          `json:"embedAllowOrigins,omitempty"`
-	CooldownSeconds   int             `json:"cooldownSeconds"`
-	Limits            Limits          `json:"limits"`
-	AnonymousPolicy   AnonymousPolicy `json:"anonymousPolicy"`
-	Email             EmailConfig     `json:"email"`
-	Storage           StorageConfig   `json:"storage"`
+	Success             bool            `json:"success"`
+	CurrentBaseURL      string          `json:"currentBaseURL"`
+	AppURL              AppURLConfig    `json:"appURL"`
+	CORSAllowOrigins    string          `json:"corsAllowOrigins"`
+	EmbedPolicy         string          `json:"embedPolicy"`
+	EmbedAllowOrigins   string          `json:"embedAllowOrigins,omitempty"`
+	CooldownSeconds     int             `json:"cooldownSeconds"`
+	Limits              Limits          `json:"limits"`
+	AnonymousPolicy     AnonymousPolicy `json:"anonymousPolicy"`
+	RegistrationAllowed bool            `json:"registrationAllowed"`
+	Email               EmailConfig     `json:"email"`
+	Storage             StorageConfig   `json:"storage"`
 }
 
 // ===== 站点列表（GET /api/admin/sites） =====
@@ -98,6 +100,7 @@ type SiteListItem struct {
 	Status          string     `json:"status"`
 	Visibility      string     `json:"visibility"`
 	Category        string     `json:"category,omitempty"`
+	Tags            []string   `json:"tags,omitempty"`
 	Filename        string     `json:"filename,omitempty"`
 	AccessProtected bool       `json:"accessProtected"`
 	IsPinned        bool       `json:"isPinned"`
@@ -108,15 +111,17 @@ type SiteListItem struct {
 }
 
 type UserListItem struct {
-	ID          string     `json:"id"`
-	Username    string     `json:"username"`
-	IsAdmin     bool       `json:"isAdmin"`
-	IsActive    bool       `json:"isActive"`
-	DeployLimit int        `json:"deployLimit"`
-	DeployCount int        `json:"deployCount"`
-	Remaining   int        `json:"remaining"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
+	ID            string     `json:"id"`
+	Username      string     `json:"username"`
+	Email         string     `json:"email,omitempty"`
+	EmailVerified bool       `json:"emailVerified"`
+	IsAdmin       bool       `json:"isAdmin"`
+	IsActive      bool       `json:"isActive"`
+	DeployLimit   int        `json:"deployLimit"`
+	DeployCount   int        `json:"deployCount"`
+	Remaining     int        `json:"remaining"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	LastLoginAt   *time.Time `json:"lastLoginAt,omitempty"`
 }
 
 type UserListResponse struct {
@@ -125,10 +130,12 @@ type UserListResponse struct {
 }
 
 type UserCreateRequest struct {
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-	IsAdmin     bool   `json:"isAdmin"`
-	DeployLimit int    `json:"deployLimit"`
+	Username      string `json:"username"`
+	Email         string `json:"email,omitempty"`
+	EmailVerified *bool  `json:"emailVerified,omitempty"`
+	Password      string `json:"password"`
+	IsAdmin       bool   `json:"isAdmin"`
+	DeployLimit   int    `json:"deployLimit"`
 }
 
 type UserCreateResponse struct {
@@ -137,10 +144,12 @@ type UserCreateResponse struct {
 }
 
 type UserUpdateRequest struct {
-	Username    *string `json:"username,omitempty"`
-	IsAdmin     *bool   `json:"isAdmin,omitempty"`
-	IsActive    *bool   `json:"isActive,omitempty"`
-	DeployLimit *int    `json:"deployLimit,omitempty"`
+	Username      *string `json:"username,omitempty"`
+	Email         *string `json:"email,omitempty"`
+	EmailVerified *bool   `json:"emailVerified,omitempty"`
+	IsAdmin       *bool   `json:"isAdmin,omitempty"`
+	IsActive      *bool   `json:"isActive,omitempty"`
+	DeployLimit   *int    `json:"deployLimit,omitempty"`
 }
 
 type UserUpdateResponse struct {

@@ -16,6 +16,7 @@ type Site struct {
 	PrimaryVersionStrategy string // 'likes' | 'latest'
 	Visibility             string // 'public' | 'unlisted'
 	Category               string // marketplace category slug, e.g. landing/dashboard/docs/tool/game
+	Tags                   string // comma-separated marketplace tags
 	ViewCount              int64
 	LikeCount              int64
 	Status                 string // 'active' | 'inactive'
@@ -43,6 +44,7 @@ type MarketplaceDeploy struct {
 	PrimaryVersionStrategy string
 	Visibility             string
 	Category               string
+	Tags                   string
 	ViewCount              int64
 	LikeCount              int64
 	FavoriteCount          int64
@@ -125,16 +127,18 @@ type AnonymousSessionClaimResult struct {
 }
 
 type AdminUser struct {
-	ID           string
-	Username     string
-	PasswordHash string
-	IsAdmin      bool
-	IsActive     bool
-	CanLike      bool
-	DeployLimit  int
-	DeployCount  int
-	CreatedAt    time.Time
-	LastLoginAt  *time.Time
+	ID            string
+	Username      string
+	Email         string
+	EmailVerified bool
+	PasswordHash  string
+	IsAdmin       bool
+	IsActive      bool
+	CanLike       bool
+	DeployLimit   int
+	DeployCount   int
+	CreatedAt     time.Time
+	LastLoginAt   *time.Time
 }
 
 type AdminSession struct {
@@ -199,6 +203,7 @@ type SiteWithMeta struct {
 	Status          string
 	Visibility      string
 	Category        string
+	Tags            string
 	MainEntry       string
 	AccessProtected bool
 	IsPinned        bool
@@ -356,6 +361,9 @@ type Store interface {
 
 	// SetSiteCategory 设置创作市场应用分类。
 	SetSiteCategory(ctx context.Context, code, category string) error
+
+	// SetSiteTags 设置创作市场应用标签。
+	SetSiteTags(ctx context.Context, code, tags string) error
 
 	// SetSitePinned 设置或取消创作市场置顶。
 	SetSitePinned(ctx context.Context, code string, pinned bool) error

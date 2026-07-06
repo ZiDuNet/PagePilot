@@ -35,7 +35,7 @@ Docker 默认把这些目录挂载到宿主机的 `./data/docker/` 下：
 | `./data/docker/hosted` | `/var/www/hosted` | 已发布的静态站点文件 |
 | `./data/docker/logs` | `/var/log/hostctl` | 服务日志目录 |
 
-如果外层使用 Nginx、Caddy、宝塔或云厂商负载均衡，只需要把整个站点反向代理到容器端口。`/deploy.html`、`/api-docs.html`、`/agents/`、`/screens/`、`/api/*`、`/agent/*` 和应用访问地址都由 PagePilot 自己处理，不要在反向代理里维护路径白名单。
+如果外层使用 Nginx、Caddy、宝塔或云厂商负载均衡，只需要把整个站点反向代理到容器端口。`/deploy`、`/market`、`/agents/`、`/screens/`、`/api/*`、`/agent/*` 和应用访问地址都由 PagePilot 自己处理，不要在反向代理里维护路径白名单。旧 `/api-docs.html` 只保留为兼容重定向，后台文档入口是 `/admin?tab=apiDocs`。
 
 `CORS_ALLOW_ORIGINS` 默认留空，也就是默认关闭浏览器跨域访问。只有在另一个网页前端必须跨域调用 PagePilot API 时，才填写明确的 origin 白名单；不要配置成 `*`。
 
@@ -68,8 +68,8 @@ sudo chown -R hostctl:hostctl /var/www/hosted /var/lib/hostctl /var/log/hostctl
 ```bash
 make build-linux
 scp bin/hostctl-server-linux-amd64 root@vps:/usr/local/bin/hostctl-server
-scp bin/hostctl-linux-amd64 root@vps:/usr/local/bin/hostctl
-ssh root@vps 'chmod +x /usr/local/bin/hostctl-server /usr/local/bin/hostctl'
+scp bin/pagep-linux-amd64 root@vps:/usr/local/bin/pagep
+ssh root@vps 'chmod +x /usr/local/bin/hostctl-server /usr/local/bin/pagep'
 ```
 
 如果不使用 `make`，可以手动构建前端和服务端：
@@ -79,7 +79,7 @@ ssh root@vps 'chmod +x /usr/local/bin/hostctl-server /usr/local/bin/hostctl'
 (cd frontend/admin && npm install && npm run build)
 # 如果改过 skill/hostctl-deploy，请重新生成 internal/web/skill/hostctl-deploy.zip
 go build -o bin/hostctl-server ./cmd/hostctl-server
-go build -o bin/hostctl ./cmd/hostctl
+go build -o bin/pagep ./cmd/hostctl
 ```
 
 ## 3. 安装 systemd
@@ -95,6 +95,24 @@ sudo systemctl status hostctl-server
 
 该 unit 默认把 API 跑在 `127.0.0.1:8787`，SQLite 存放在 `/var/lib/hostctl/hostctl.db`，静态站点存放在 `/var/www/hosted`，并开启 `--require-auth`。
 
+## 注册、邮箱验证与 OSS
+
+常用环境变量可以直接写入 `docker-compose.yml` 或 systemd unit：
+
+```yaml
+HOSTCTL_ALLOW_REGISTRATION: "true"
+HOSTCTL_STORAGE_BACKEND: "local" # local 或 oss
+# HOSTCTL_STORAGE_BACKEND: "oss"
+# HOSTCTL_OSS_ENDPOINT: "https://oss-cn-hangzhou.aliyuncs.com"
+# HOSTCTL_OSS_BUCKET: "pagepilot-assets"
+# HOSTCTL_OSS_ACCESS_KEY_ID: "..."
+# HOSTCTL_OSS_ACCESS_KEY_SECRET: "..."
+# HOSTCTL_OSS_PREFIX: "prod/pagepilot"
+```
+
+- `HOSTCTL_ALLOW_REGISTRATION=false` 会关闭公开注册；登录页只保留登录入口，管理员仍可在后台维护用户。
+- `HOSTCTL_STORAGE_BACKEND=oss` 时，发布写入、预览读取、源码下载、覆盖版本、删除版本和删除站点都会走阿里云 OSS；SQLite 仍然保存在 `/var/lib/hostctl`。
+- 开启邮箱验证后，注册页会先通过图片验证码请求邮箱验证码，再用 6 位邮箱验证码完成注册；后台运行设置会展示 SMTP 是否配置完整。
 ## 4. 安装 Caddy
 
 编辑 `deploy/Caddyfile`，替换其中的 `host.example.com`。
@@ -132,8 +150,8 @@ Environment=HOSTCTL_ADMIN_PASSWORD=123456
 ```bash
 curl -s https://host.example.com/api/health
 curl -s https://host.example.com/openapi.json | jq '.info.title'
-curl -fsS https://host.example.com/deploy.html >/dev/null
-curl -fsS https://host.example.com/api-docs.html >/dev/null
+curl -fsS https://host.example.com/deploy >/dev/null
+curl -fsSI https://host.example.com/api-docs.html | grep -i 'location: /admin?tab=apiDocs'
 curl -fsS https://host.example.com/screens/ >/dev/null
 curl -fsS https://host.example.com/admin >/dev/null
 curl -fsS https://host.example.com/skill/pagep.zip >/dev/null
@@ -171,6 +189,6 @@ df -h /var/www/hosted /var/lib/hostctl
 
 - `GET /api/health`
 - `GET /openapi.json`
-- `GET /deploy.html`
-- `GET /api-docs.html`
+- `GET /deploy`
+- `GET /api-docs.html`：兼容重定向到 `/admin?tab=apiDocs`
 - `GET /screens/`

@@ -54,6 +54,9 @@ type DeployRequest struct {
 	// category 是创作市场分类 slug。为空表示未分类；旧客户端可不传。
 	Category string `json:"category,omitempty"`
 
+	// tags 是创作市场标签，最多 6 个；旧客户端可不传。
+	Tags []string `json:"tags,omitempty"`
+
 	// accessPassword 设置新站点访问密码。匿名会话和用户 Token 均可设置。
 	AccessPassword string `json:"accessPassword,omitempty"`
 }
@@ -84,6 +87,10 @@ type MarketCategoriesRequest struct {
 
 type SiteCategoryRequest struct {
 	Category string `json:"category"`
+}
+
+type SiteTagsRequest struct {
+	Tags []string `json:"tags"`
 }
 
 // DeployResponse 是 POST /api/deploy 成功响应。

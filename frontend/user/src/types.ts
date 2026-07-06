@@ -15,6 +15,7 @@ export interface RuntimeConfig {
   anonymousPolicy?: {
     deployLimit?: number;
   };
+  registrationAllowed?: boolean;
   limits?: {
     maxSingleFileBytes?: number;
     maxSiteTotalBytes?: number;
@@ -56,8 +57,10 @@ export interface MarketplaceDeploy {
   status?: string;
   visibility?: string;
   category?: string;
+  tags?: string[];
   accessProtected?: boolean;
   owned?: boolean;
+  canManage?: boolean;
   isPinned?: boolean;
   viewCount?: number;
   likeCount?: number;

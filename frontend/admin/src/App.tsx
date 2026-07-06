@@ -80,6 +80,7 @@ interface RuntimeConfig {
     appURLPort?: string;
   };
   anonymousPolicy?: { deployLimit?: number };
+  registrationAllowed?: boolean;
   limits?: {
     maxSingleFileBytes?: number;
     maxSiteTotalBytes?: number;
@@ -118,6 +119,7 @@ interface SiteItem {
   status?: string;
   visibility?: string;
   category?: string;
+  tags?: string[];
   filename?: string;
   accessProtected?: boolean;
   isPinned?: boolean;
@@ -200,6 +202,8 @@ interface TokenItem {
 interface UserItem {
   id: string;
   username: string;
+  email?: string;
+  emailVerified: boolean;
   isAdmin: boolean;
   isActive: boolean;
   deployLimit: number;
@@ -315,6 +319,22 @@ function formatDate(value?: string) {
 
 function textSize(text: string) {
   return new Blob([text]).size;
+}
+
+function parseAdminTagInput(value: string): string[] {
+  const seen = new Set<string>();
+  return value
+    .split(/[,，;；\n]/)
+    .map((item) => item.trim().replace(/^#+/, ""))
+    .filter(Boolean)
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 6)
+    .map((item) => Array.from(item).slice(0, 24).join(""));
 }
 
 function isTextFile(name: string) {
@@ -581,10 +601,16 @@ function LoginScreen({
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [captcha, setCaptcha] = useState<Captcha>({});
   const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [emailCode, setEmailCode] = useState("");
   const [password, setPassword] = useState("");
   const [captchaAnswer, setCaptchaAnswer] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [emailBusy, setEmailBusy] = useState(false);
+  const registrationAllowed = needsSetup || config?.registrationAllowed !== false;
+  const emailVerificationEnabled = !!config?.email?.verificationEnabled;
+  const smtpReady = !!config?.email?.smtpConfigured;
 
   const loadCaptcha = useCallback(async () => {
     const data = await api<Captcha>("/api/auth/captcha");
@@ -596,6 +622,12 @@ function LoginScreen({
     void loadCaptcha();
     api<RuntimeConfig>("/api/config").then(onConfig).catch(() => undefined);
   }, [loadCaptcha, onConfig]);
+
+  useEffect(() => {
+    if (!registrationAllowed && authMode === "register") {
+      setAuthMode("login");
+    }
+  }, [authMode, registrationAllowed]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -617,12 +649,17 @@ function LoginScreen({
         return;
       }
       if (authMode === "register") {
+        if (!registrationAllowed) throw new Error("当前服务器已关闭新用户注册，请联系管理员添加账号。");
+        if (emailVerificationEnabled && !email.trim()) throw new Error("请输入邮箱地址");
+        if (emailVerificationEnabled && !emailCode.trim()) throw new Error("请输入邮箱验证码");
         await api("/api/auth/register", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: username.trim(), password, captchaId: captcha.id, captcha: captchaAnswer.trim() })
+          body: JSON.stringify({ username: username.trim(), email: email.trim(), password, captchaId: captcha.id, captcha: captchaAnswer.trim(), emailCode: emailCode.trim() })
         });
         setAuthMode("login");
+        setEmail("");
+        setEmailCode("");
         setPassword("");
         await loadCaptcha();
         setError("注册成功，请登录");
@@ -645,6 +682,38 @@ function LoginScreen({
     }
   }
 
+  async function requestEmailCode() {
+    setError("");
+    if (!emailVerificationEnabled) return;
+    if (!smtpReady) {
+      setError("当前服务器已开启邮箱验证，但 SMTP 尚未配置，请联系管理员。");
+      return;
+    }
+    if (!email.trim()) {
+      setError("请输入邮箱地址");
+      return;
+    }
+    if (!captcha.id || !captchaAnswer.trim()) {
+      setError("请先输入图片验证码");
+      return;
+    }
+    setEmailBusy(true);
+    try {
+      await api("/api/auth/email-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), captchaId: captcha.id, captcha: captchaAnswer.trim() })
+      });
+      setError("邮箱验证码已发送，10 分钟内有效");
+      await loadCaptcha();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      void loadCaptcha();
+    } finally {
+      setEmailBusy(false);
+    }
+  }
+
   const title = needsSetup ? "创建管理员" : authMode === "register" ? "注册账号" : "用户登录";
   const success = error.includes("成功") || error.includes("已创建") || error.includes("success");
 
@@ -657,6 +726,19 @@ function LoginScreen({
         <p>{needsSetup ? "第一次启动需要创建管理员账号，之后可以在账号设置里修改密码。" : "登录后进入用户中心；管理员账号会自动显示更多管理能力。"}</p>
         <form onSubmit={submit}>
           <label className="field"><span>用户名</span><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" placeholder="pagepilot" /></label>
+          {authMode === "register" && emailVerificationEnabled && (
+            <>
+              <label className="field"><span>邮箱</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" inputMode="email" placeholder="name@example.com" /></label>
+              <label className="field">
+                <span>邮箱验证码</span>
+                <div className="inline-input">
+                  <input value={emailCode} onChange={(event) => setEmailCode(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" placeholder="6 位数字" />
+                  <button className="button" type="button" disabled={emailBusy || !smtpReady} onClick={() => void requestEmailCode()}>{emailBusy ? "发送中..." : "获取验证码"}</button>
+                </div>
+                {!smtpReady && <em className="field-hint">服务器已开启邮箱验证，但 SMTP 尚未配置。</em>}
+              </label>
+            </>
+          )}
           <label className="field"><span>密码</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="至少 8 个字符" /></label>
           <label className="field captcha-field">
             <span>{captcha.prompt || "验证码"}</span>
@@ -669,7 +751,8 @@ function LoginScreen({
           {error && <div className={success ? "alert success" : "alert error"}>{error}</div>}
           <button className="button primary full" type="submit" disabled={busy}>{busy ? "提交中..." : needsSetup ? "创建管理员" : authMode === "register" ? "注册账号" : "登录"}</button>
         </form>
-        {!needsSetup && <button className="button ghost full" type="button" onClick={() => setAuthMode(authMode === "register" ? "login" : "register")}>{authMode === "register" ? "已有账号，去登录" : "没有账号，去注册"}</button>}
+        {!needsSetup && registrationAllowed && <button className="button ghost full" type="button" onClick={() => setAuthMode(authMode === "register" ? "login" : "register")}>{authMode === "register" ? "已有账号，去登录" : "没有账号，去注册"}</button>}
+        {!needsSetup && !registrationAllowed && <div className="hint-line">当前服务器已关闭公开注册，请联系管理员创建账号。</div>}
         <div className="hint-line">当前服务：{currentOrigin()}</div>
       </section>
       <aside className="login-aside">
@@ -811,6 +894,9 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
   const [code, setCode] = useState("");
   const [append, setAppend] = useState(false);
   const [visibility, setVisibility] = useState("public");
+  const [category, setCategory] = useState("");
+  const [tagsInput, setTagsInput] = useState("");
+  const [categories, setCategories] = useState<MarketCategoryInfo[]>([]);
   const [password, setPassword] = useState("");
   const [content, setContent] = useState("");
   const [entry, setEntry] = useState("index.html");
@@ -821,6 +907,12 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
   const dirInput = useRef<HTMLInputElement | null>(null);
 
   const totalSize = mode === "single" ? textSize(content) : files.reduce((sum, file) => sum + file.size, 0);
+
+  useEffect(() => {
+    api<MarketCategoriesResponse>("/api/market/categories")
+      .then((data) => setCategories(data.categories || []))
+      .catch(() => setCategories([]));
+  }, []);
 
   async function readFiles(list: FileList | null) {
     if (!list?.length) return;
@@ -857,6 +949,8 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
       customCode: append || code.trim() ? code.trim() : undefined,
       createVersion: append,
       visibility: append ? undefined : visibility,
+      category: append ? undefined : (category || undefined),
+      tags: append ? undefined : parseAdminTagInput(tagsInput),
       accessPassword: !append && password.trim() ? password.trim() : undefined
     };
     if (mode === "single") {
@@ -910,6 +1004,19 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
         <div className="form-grid">
           <label className="field"><span>可见性</span><select value={visibility} disabled={append} onChange={(event) => setVisibility(event.target.value)}><option value="public">公开进创作市场</option><option value="unlisted">未公开，仅链接访问</option></select></label>
           <label className="field"><span>访问密码</span><input type="password" value={password} disabled={append} onChange={(event) => setPassword(event.target.value)} placeholder="可选，至少 4 位" /></label>
+        </div>
+        <div className="form-grid">
+          <label className="field">
+            <span>作品分类（可选）</span>
+            <select value={category} disabled={append} onChange={(event) => setCategory(event.target.value)}>
+              <option value="">暂不分类</option>
+              {categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            <span>作品标签</span>
+            <input value={tagsInput} disabled={append} onChange={(event) => setTagsInput(event.target.value)} placeholder="官网, 看板, 活动页" />
+          </label>
         </div>
 
         {mode === "single" ? (
@@ -985,10 +1092,13 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
   const [status, setStatus] = useState("");
   const [visibility, setVisibility] = useState("");
   const [category, setCategory] = useState("");
+  const [tagFilter, setTagFilter] = useState("");
   const [kind, setKind] = useState("");
+  const [ownerScope, setOwnerScope] = useState("");
   const [viewMode, setViewMode] = useState<SiteViewMode>("list");
   const [versions, setVersions] = useState<any[] | null>(null);
   const [versionCode, setVersionCode] = useState("");
+  const [tagEditor, setTagEditor] = useState<{ site: SiteItem; value: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -1005,19 +1115,50 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
 
   useEffect(() => { void load(); }, [load]);
 
+  const allTags = useMemo(() => {
+    const tags = new Set<string>();
+    sites.forEach((site) => (site.tags || []).forEach((tag) => {
+      const value = tag.trim();
+      if (value) tags.add(value);
+    }));
+    return Array.from(tags).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  }, [sites]);
+
   const filtered = useMemo(() => sites.filter((site) => {
     const text = query.trim().toLowerCase();
-    const hit = !text || site.code.toLowerCase().includes(text) || (site.ownerUsername || "").toLowerCase().includes(text) || (site.filename || "").toLowerCase().includes(text);
+    const tagText = (site.tags || []).join(" ").toLowerCase();
+    const hit = !text
+      || site.code.toLowerCase().includes(text)
+      || (site.ownerUsername || "").toLowerCase().includes(text)
+      || (site.ownerTokenId || "").toLowerCase().includes(text)
+      || (site.filename || "").toLowerCase().includes(text)
+      || tagText.includes(text);
     const statusHit = !status || site.status === status;
     const visibilityHit = !visibility || site.visibility === visibility;
     const categoryHit = !category || (site.category || "") === category;
+    const tagHit = !tagFilter || (site.tags || []).some((tag) => tag.toLowerCase() === tagFilter.toLowerCase());
+    const ownerHit = !ownerScope
+      || (ownerScope === "registered" && String(site.ownerTokenId || "").startsWith("user:"))
+      || (ownerScope === "anonymous" && String(site.ownerTokenId || "").startsWith("anon:"))
+      || (ownerScope === "token" && site.ownerTokenId && !String(site.ownerTokenId).startsWith("user:") && !String(site.ownerTokenId).startsWith("anon:"));
     const kindHit = !kind
       || (kind === "protected" && site.accessProtected)
       || (kind === "featured" && site.isPinned)
       || (kind === "html" && /\.(html?|htm)$/i.test(site.filename || ""))
       || (kind === "md" && /\.(md|markdown)$/i.test(site.filename || ""));
-    return hit && statusHit && visibilityHit && categoryHit && kindHit;
-  }), [category, kind, query, sites, status, visibility]);
+    return hit && statusHit && visibilityHit && categoryHit && tagHit && ownerHit && kindHit;
+  }), [category, kind, ownerScope, query, sites, status, tagFilter, visibility]);
+  const hasActiveFilters = Boolean(query || status || visibility || ownerScope || category || tagFilter || kind);
+
+  function clearFilters() {
+    setQuery("");
+    setStatus("");
+    setVisibility("");
+    setOwnerScope("");
+    setCategory("");
+    setTagFilter("");
+    setKind("");
+  }
 
   async function setPassword(site: SiteItem) {
     const next = window.prompt(site.accessProtected ? "留空并确认即可清除访问密码。" : "设置访问密码，至少 4 位。");
@@ -1062,6 +1203,18 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
     await load();
   }
 
+  async function saveTags() {
+    if (!tagEditor) return;
+    await api(`/api/admin/sites/${encodeURIComponent(tagEditor.site.code)}/tags`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags: parseAdminTagInput(tagEditor.value) })
+    });
+    showToast("应用标签已更新");
+    setTagEditor(null);
+    await load();
+  }
+
   async function deleteSite(site: SiteItem) {
     if (!window.confirm(`确认删除 ${site.code} 及其全部版本？`)) return;
     await api(`/api/admin/sites/${encodeURIComponent(site.code)}`, { method: "DELETE" });
@@ -1103,21 +1256,33 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
         <div><h2>{isAdmin ? "全站应用" : "我的应用"}</h2><p>加密、未公开、删除、置顶和版本管理都在这里。</p></div>
         <button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button>
       </div>
-      <div className="toolbar">
-        <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 code 或 owner" /></label>
-        <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">运行中</option><option value="inactive">已下架</option></select>
-        <select value={visibility} onChange={(event) => setVisibility(event.target.value)}><option value="">全部可见性</option><option value="public">公开</option><option value="unlisted">未公开</option></select>
-        <select value={category} onChange={(event) => setCategory(event.target.value)}><option value="">全部分类</option>{categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}</select>
-        <select value={kind} onChange={(event) => setKind(event.target.value)}><option value="">全部类型</option><option value="html">HTML</option><option value="md">Markdown</option><option value="protected">加密</option><option value="featured">精选</option></select>
-        <div className="segmented-control" role="group" aria-label="视图">
-          <button className={viewMode === "list" ? "active" : ""} type="button" onClick={() => setViewMode("list")}>列表</button>
-          <button className={viewMode === "render" ? "active" : ""} type="button" onClick={() => setViewMode("render")}>渲染</button>
+      <div className="toolbar site-toolbar">
+        <div className="toolbar-summary">
+          <strong>{filtered.length}</strong>
+          <span>/ {sites.length} 个应用</span>
+          {hasActiveFilters && <em>已启用筛选</em>}
+        </div>
+        <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 code、owner、标签" /></label>
+        <div className="filter-row">
+          <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">运行中</option><option value="inactive">已下架</option></select>
+          <select value={visibility} onChange={(event) => setVisibility(event.target.value)}><option value="">全部可见性</option><option value="public">公开</option><option value="unlisted">未公开</option></select>
+          <select value={ownerScope} onChange={(event) => setOwnerScope(event.target.value)}><option value="">全部归属</option><option value="registered">注册用户</option><option value="anonymous">匿名发布</option><option value="token">Token/其他</option></select>
+          <select value={category} onChange={(event) => setCategory(event.target.value)}><option value="">全部分类</option>{categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}</select>
+          <select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}><option value="">全部标签</option>{allTags.map((tag) => <option value={tag} key={tag}>#{tag}</option>)}</select>
+          <select value={kind} onChange={(event) => setKind(event.target.value)}><option value="">全部类型</option><option value="html">HTML</option><option value="md">Markdown</option><option value="protected">加密</option><option value="featured">精选</option></select>
+        </div>
+        <div className="toolbar-tail">
+          {hasActiveFilters && <button className="button compact" type="button" onClick={clearFilters}>清空筛选</button>}
+          <div className="segmented-control" role="group" aria-label="视图">
+            <button className={viewMode === "list" ? "active" : ""} type="button" onClick={() => setViewMode("list")}>列表</button>
+            <button className={viewMode === "render" ? "active" : ""} type="button" onClick={() => setViewMode("render")}>渲染</button>
+          </div>
         </div>
       </div>
       {viewMode === "list" ? (
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Code</th><th>归属</th><th>分类</th><th>状态</th><th>版本</th><th>数据</th><th>大小</th><th>修改</th><th>操作</th></tr></thead>
+          <thead><tr><th>Code</th><th>归属</th><th>分类 / 标签</th><th>状态</th><th>版本</th><th>数据</th><th>大小</th><th>修改</th><th>操作</th></tr></thead>
           <tbody>
             {filtered.map((site) => (
               <tr key={site.code}>
@@ -1132,6 +1297,10 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                   ) : (
                     categories.find((item) => item.slug === site.category)?.label || site.category || "-"
                   )}
+                  <div className="tag-row editable">
+                    {(site.tags || []).slice(0, 4).map((tag) => <span key={tag}>#{tag}</span>)}
+                    <button type="button" onClick={() => setTagEditor({ site, value: (site.tags || []).join(", ") })}>{site.tags?.length ? "编辑标签" : "添加标签"}</button>
+                  </div>
                 </td>
                 <td><div className="badge-stack">{site.isPinned && <span className="badge amber">置顶</span>}{statusBadge(site.status || "active", site.accessProtected)}<span className="badge slate">{site.visibility === "unlisted" ? "未公开" : "公开"}</span></div></td>
                 <td>v{site.currentVersion || "-"} · {site.versionCount || 0}</td>
@@ -1162,10 +1331,19 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
               <div className="site-render-body">
                 <div><strong>{site.code}</strong><span>{site.ownerUsername || site.ownerTokenId || "-"}</span></div>
                 <p>{categories.find((item) => item.slug === site.category)?.label || site.category || "未分类"} · {site.viewCount || 0} 访 · {site.likeCount || 0} 赞 · {site.favoriteCount || 0} 藏</p>
+                <div className="tag-row editable">
+                  {(site.tags || []).slice(0, 5).map((tag) => <span key={tag}>#{tag}</span>)}
+                  <button type="button" onClick={() => setTagEditor({ site, value: (site.tags || []).join(", ") })}>{site.tags?.length ? "编辑标签" : "添加标签"}</button>
+                </div>
+                <select className="compact-select" value={site.category || ""} onChange={(event) => void updateCategory(site, event.target.value)}>
+                  <option value="">未分类</option>
+                  {categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}
+                </select>
                 <div className="actions tight">
                   <a className="button compact" href={siteURL(site.code)} target="_blank" rel="noreferrer">打开</a>
                   <button className="button compact" type="button" onClick={() => void openVersions(site)}>版本</button>
                   {isAdmin && <button className="button compact" type="button" onClick={() => void togglePin(site)}>{site.isPinned ? "取消精选" : "精选"}</button>}
+                  <button className="button compact danger" type="button" onClick={() => void deleteSite(site)}><Trash2 size={14} />删除</button>
                 </div>
               </div>
             </article>
@@ -1188,6 +1366,25 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                 </div>
               </div>
             ))}
+          </div>
+        </Modal>
+      )}
+      {tagEditor && (
+        <Modal title={`编辑标签 ${tagEditor.site.code}`} onClose={() => setTagEditor(null)}>
+          <div className="form-stack">
+            <label>
+              <span>标签</span>
+              <input
+                value={tagEditor.value}
+                onChange={(event) => setTagEditor({ ...tagEditor, value: event.target.value })}
+                placeholder="官网, 看板, 活动页"
+              />
+            </label>
+            <p className="muted">最多 6 个标签，用逗号、空格或分号分隔。标签会用于创作市场搜索、后台筛选和作品卡片展示。</p>
+            <div className="actions right">
+              <button className="button" type="button" onClick={() => setTagEditor(null)}>取消</button>
+              <button className="button primary" type="button" onClick={() => void saveTags()}>保存标签</button>
+            </div>
           </div>
         </Modal>
       )}
@@ -1676,6 +1873,8 @@ function TokensPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showT
 function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [users, setUsers] = useState<UserItem[]>([]);
   const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [emailVerified, setEmailVerified] = useState(false);
   const [password, setPassword] = useState("");
   const [limit, setLimit] = useState(20);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -1692,12 +1891,22 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
   useEffect(() => { void load(); }, [load]);
 
   async function create() {
+    const normalizedEmail = email.trim();
     await api("/api/admin/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password, deployLimit: limit, isAdmin })
+      body: JSON.stringify({
+        username,
+        email: normalizedEmail,
+        emailVerified: normalizedEmail ? emailVerified : false,
+        password,
+        deployLimit: limit,
+        isAdmin
+      })
     });
     setUsername("");
+    setEmail("");
+    setEmailVerified(false);
     setPassword("");
     setIsAdmin(false);
     showToast("用户已创建");
@@ -1708,7 +1917,14 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
     await api(`/api/admin/users/${encodeURIComponent(user.id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: user.username, deployLimit: user.deployLimit, isAdmin: user.isAdmin, isActive: user.isActive })
+      body: JSON.stringify({
+        username: user.username,
+        email: user.email || "",
+        emailVerified: Boolean(user.email && user.emailVerified),
+        deployLimit: user.deployLimit,
+        isAdmin: user.isAdmin,
+        isActive: user.isActive
+      })
     });
     showToast("用户已保存");
     await load();
@@ -1724,29 +1940,49 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
   return (
     <section className="two-col">
       <div className="panel">
-        <div className="panel-head"><div><h2>添加用户</h2><p>创建普通用户或管理员账号。</p></div></div>
+        <div className="panel-head">
+          <div>
+            <h2>添加用户</h2>
+            <p>创建普通用户或管理员账号；邮箱用于注册验证、通知和后续账号找回。</p>
+          </div>
+        </div>
         <label className="field"><span>用户名</span><input value={username} onChange={(event) => setUsername(event.target.value)} /></label>
+        <label className="field"><span>邮箱</span><input type="email" value={email} onChange={(event) => {
+          setEmail(event.target.value);
+          if (!event.target.value.trim()) setEmailVerified(false);
+        }} placeholder="user@example.com" /></label>
+        <label className="check-line"><input type="checkbox" checked={emailVerified} disabled={!email.trim()} onChange={(event) => setEmailVerified(event.target.checked)} />邮箱已验证</label>
         <label className="field"><span>初始密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" /></label>
         <label className="field"><span>部署额度</span><input type="number" value={limit} onChange={(event) => setLimit(Number(event.target.value))} /></label>
         <label className="check-line"><input type="checkbox" checked={isAdmin} onChange={(event) => setIsAdmin(event.target.checked)} />管理员</label>
         <button className="button primary" type="button" onClick={() => void create()}><UserPlus size={16} />创建用户</button>
       </div>
       <div className="panel">
-        <div className="panel-head"><div><h2>用户列表</h2><p>调整额度、停用或删除用户。</p></div><button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button></div>
+        <div className="panel-head">
+          <div>
+            <h2>用户列表</h2>
+            <p>维护邮箱、验证状态、部署额度、角色和启用状态。</p>
+          </div>
+          <button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button>
+        </div>
         <div className="table-wrap compact">
           <table>
-            <thead><tr><th>用户</th><th>额度</th><th>角色</th><th>状态</th><th>操作</th></tr></thead>
+            <thead><tr><th>用户</th><th>邮箱</th><th>额度</th><th>角色</th><th>状态</th><th>操作</th></tr></thead>
             <tbody>
               {users.map((user, index) => (
                 <tr key={user.id}>
                   <td><input value={user.username} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, username: event.target.value } : item))} /><br /><small>{user.id}</small></td>
+                  <td>
+                    <input type="email" value={user.email || ""} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, email: event.target.value, emailVerified: event.target.value ? item.emailVerified : false } : item))} />
+                    <label className="check-line compact"><input type="checkbox" checked={Boolean(user.email && user.emailVerified)} disabled={!user.email} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, emailVerified: event.target.checked } : item))} />{user.emailVerified ? "已验证" : "未验证"}</label>
+                  </td>
                   <td><input type="number" value={user.deployLimit} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, deployLimit: Number(event.target.value) } : item))} /><small>已用 {user.deployCount}</small></td>
                   <td><label className="check-line compact"><input type="checkbox" checked={user.isAdmin} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, isAdmin: event.target.checked } : item))} />管理员</label></td>
                   <td><label className="check-line compact"><input type="checkbox" checked={user.isActive} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, isActive: event.target.checked } : item))} />启用</label></td>
                   <td><div className="actions tight"><button className="button compact" type="button" onClick={() => void update(user)}>保存</button><button className="button compact danger" type="button" onClick={() => void remove(user)}>删除</button></div></td>
                 </tr>
               ))}
-              {!users.length && <tr><td colSpan={5}>暂无用户。</td></tr>}
+              {!users.length && <tr><td colSpan={6}>暂无用户。</td></tr>}
             </tbody>
           </table>
         </div>
@@ -1754,7 +1990,6 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
     </section>
   );
 }
-
 function AnonymousPanel({ setError }: { setError: (msg: string) => void }) {
   const [sessions, setSessions] = useState<AnonymousSession[]>([]);
   const [limit, setLimit] = useState(0);
@@ -2310,21 +2545,6 @@ function DocBlock({ title, lines }: { title: string; lines: string[] }) {
 
 function Logo() {
   return (
-    <svg className="logo" viewBox="0 0 96 96" aria-hidden="true">
-      <defs>
-        <linearGradient id="pagepilot-logo-bg" x1="8" x2="88" y1="8" y2="88"><stop stopColor="#0B102F" /><stop offset="0.54" stopColor="#0F4C81" /><stop offset="1" stopColor="#0891B2" /></linearGradient>
-        <linearGradient id="pagepilot-logo-wing" x1="18" x2="78" y1="24" y2="72"><stop stopColor="#67E8F9" /><stop offset="1" stopColor="#A78BFA" /></linearGradient>
-        <linearGradient id="pagepilot-logo-page" x1="31" x2="70" y1="33" y2="76"><stop stopColor="#FFFFFF" /><stop offset="1" stopColor="#E0F7FF" /></linearGradient>
-      </defs>
-      <rect x="6" y="6" width="84" height="84" rx="25" fill="url(#pagepilot-logo-bg)" />
-      <path d="M18 61C34 37 58 25 82 18C75 42 62 65 38 78L41 58L18 61Z" fill="url(#pagepilot-logo-wing)" opacity="0.95" />
-      <path d="M28 62L16 80L38 72" fill="none" stroke="#67E8F9" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" opacity="0.8" />
-      <rect x="30" y="32" width="38" height="42" rx="11" fill="url(#pagepilot-logo-page)" stroke="rgba(255,255,255,.72)" strokeWidth="2" />
-      <path d="M30 44a12 12 0 0 1 12-12h14a12 12 0 0 1 12 12v5H30z" fill="#0EA5E9" />
-      <circle cx="39" cy="42" r="2.5" fill="#F472B6" /><circle cx="49" cy="42" r="2.5" fill="#FDE68A" /><circle cx="59" cy="42" r="2.5" fill="#86EFAC" />
-      <path d="M40 58h18M40 66h12" stroke="#0F172A" strokeWidth="4" strokeLinecap="round" opacity="0.78" />
-      <rect x="64" y="54" width="18" height="18" rx="6" fill="#111827" stroke="#67E8F9" strokeWidth="2" />
-      <path d="M69 63h8M73 59v8" stroke="#67E8F9" strokeWidth="2.4" strokeLinecap="round" />
-    </svg>
+    <img className="logo" src="/brand/pagepilot-logo.png" alt="" aria-hidden="true" />
   );
 }

@@ -39,16 +39,22 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - For a new stable project, prefer a readable `--code`.
 - Keep custom codes stable and route-safe: use lowercase letters, numbers, and hyphens; avoid reserved names such as `admin`, `api`, `skill`, `agent`, `agents`, `deploy`, `login`, and `register`.
 - Before publishing, confirm whether the user wants a new publish or an update to an existing one. If the original code or URL is unknown, ask before deploying.
-- Before a first-time publish (a new `deploy` or `screen publish` — not an `append`/`--update`), ask the user how to handle visibility, category, and access. Ask them separately, because they are independent layers: visibility controls whether the site shows up in the Creation Market, category controls how it is organized, and the access password controls whether viewers can open it.
-- Visibility (`--visibility`): for anonymous sessions, default to `public` and tell the user; for authenticated users, ask every time whether to use `public` (Creation Market, searchable, likeable) or `unlisted` (link-only, not listed).
+- Before a first-time publish (a new `deploy` or `screen publish` — not an `append`/`--update`), ask the user how to handle visibility, category, tags, and access. Ask them separately, because they are independent layers: visibility controls whether the site shows up in the Creation Market, category/tags control how it is organized, and the access password controls whether viewers can open it.
+- Visibility (`--visibility`): default to `unlisted` unless the user explicitly asks to publish into the Creation Market. Anonymous sessions must stay `unlisted`; only authenticated users can choose `public` (Creation Market, searchable, likeable).
 - Category (`--category`): before a new public publish, call `market categories` and choose one category slug from the server response. Do not invent a category from file extension; HTML/Markdown/password/featured are search filters, not market categories.
 - Access password (encryption): ask whether the user wants to protect browser viewing with a password. If yes, let the user supply the password and apply it with `access --password` (or `--access-password` for `screen publish`); do not invent a password for the user. If no, publish without one.
 - Do not re-ask these on `append` / `--update`. Visibility and the access password carry over from the existing publish; only change them when the user explicitly asks, and use the `access` command for password changes.
-- Updating an existing publish requires the existing `code`. The user can get it from the returned `/agent/{code}/` URL, the detail page, the admin site list, or `list_sites`.
-- `--update` / `append` must append a new version to that code. It must not silently create a new code when the user intended to update.
+- Updating an existing publish requires choosing a site that belongs to the current user, token, or anonymous session. Prefer listing available owned sites first, then let the user choose one; do not guess or manually invent a code.
+- `--update` / `append` must append a new version to the selected code. It must not silently create a new code when the user intended to update.
 - Use `visibility=public` for Creation Market entries and `visibility=unlisted` for link-only entries. For protected sites, set an access password after deploy.
 - Do not append to a code unless it belongs to the current user, token, or anonymous session.
 - PagePilot accepts single HTML, single Markdown, multi-file directories, and ZIP packages. Markdown can reference relative images; include those image files in the directory or ZIP.
+- Reveal.js presentations are supported as ordinary user-built static bundles. When the user asks for slides, roadshow decks, reports, lessons, or screen presentations, you may build a Reveal.js site using this Skill's bundled `assets/` directory:
+  - copy `assets/reveal.js` and `assets/reveal-base.css` into the deploy source;
+  - optionally copy `assets/plugin/highlight/`, `assets/plugin/notes/`, and one theme from `assets/themes/`;
+  - generate a deployable `index.html` that references those files with relative paths;
+  - publish the directory or ZIP like any other multi-file PagePilot app.
+- PagePilot hosts the Reveal.js bundle; it does not provide a built-in server-side Reveal.js renderer.
 - For multi-file deploys, paths must be clean relative paths using `/`. Reject absolute paths, drive letters, backslashes, `..`, `.`, empty path segments, symlinks, or files outside the selected source directory. ZIP path traversal is rejected by the server too.
 - Keep the main entry as `index.html` whenever possible. Markdown documents can use `README.md`. If the site uses a different HTML/Markdown entry, pass it explicitly with `--filename` and keep the same entry stable across appended versions.
 - Before deploying a directory, make sure it contains one intended entry such as `index.html` or `README.md`. If several plausible HTML/Markdown entries exist and the intended entry is unclear, ask the user before publishing.
@@ -73,7 +79,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - `screen shutdown` depends on device/OEM capabilities for real power-off. Treat it as soft standby unless the hardware explicitly supports power control.
 - Time-based power scheduling is hardware-specific and not guaranteed on every device. Do not promise universal support without OEM or device-owner integration.
 - After deploying or appending, verify the returned App URL and Version URL. If any URL returns 404, inspect `mainEntry`, current version, uploaded file list, and whether a ZIP wrapper directory was stripped before reporting success.
-- Built-in PagePilot pages such as `/deploy.html`, `/agents/`, `/screens/`, and `/market` should be served by the PagePilot server. API documentation is available in the admin console at `/admin?tab=apiDocs`, with machine-readable OpenAPI at `/openapi.json`. If these return 404, ask the operator to deploy the latest server build and check reverse proxy forwarding.
+- Built-in PagePilot pages such as `/deploy`, `/agents/`, `/screens/`, and `/market` should be served by the PagePilot server. API documentation is available in the admin console at `/admin?tab=apiDocs`, with machine-readable OpenAPI at `/openapi.json`. If these return 404, ask the operator to deploy the latest server build and check reverse proxy forwarding.
 - The downloadable Skill package is served from `/skill/pagep.zip`. The server keeps `/skill/hostctl-deploy.zip` only as a compatibility alias. Admins may upload a replacement ZIP from the admin Skill/MCP/CLI page. Do not expect the admin UI to edit Skill source files directly.
 
 ## Workflows
@@ -101,7 +107,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py deploy ./site \
   --code my-landing \
   --title "项目首页" \
   --category landing \
-  --visibility public \
+  --visibility unlisted \
   --description "Landing page for the project launch."
 ```
 

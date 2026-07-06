@@ -50,7 +50,8 @@ COPY --from=frontend-builder /src/internal/web/user/app ./internal/web/user/app
 # modernc.org/sqlite is pure Go, so CGO can stay disabled.
 ENV CGO_ENABLED=0 GOOS=linux
 RUN go build -trimpath -ldflags="-s -w" -o /out/hostctl-server ./cmd/hostctl-server && \
-    go build -trimpath -ldflags="-s -w" -o /out/hostctl        ./cmd/hostctl
+    go build -trimpath -ldflags="-s -w" -o /out/pagep          ./cmd/hostctl && \
+    go build -trimpath -ldflags="-s -w" -o /out/pagep-mcp      ./cmd/hostctl-mcp
 
 # ===== Runtime =====
 FROM ${ALPINE_IMAGE}
@@ -65,7 +66,10 @@ RUN mkdir -p /var/lib/hostctl/sql /var/www/hosted /var/log/hostctl /opt/pagepilo
     chown -R hostctl:hostctl /var/lib/hostctl /var/www/hosted /var/log/hostctl /opt/pagepilot
 
 COPY --from=builder /out/hostctl-server /usr/local/bin/hostctl-server
-COPY --from=builder /out/hostctl        /usr/local/bin/hostctl
+COPY --from=builder /out/pagep          /usr/local/bin/pagep
+COPY --from=builder /out/pagep-mcp      /usr/local/bin/pagep-mcp
+RUN ln -s /usr/local/bin/pagep /usr/local/bin/hostctl && \
+    ln -s /usr/local/bin/pagep-mcp /usr/local/bin/hostctl-mcp
 
 COPY deploy/Caddyfile              /etc/hostctl/Caddyfile.example
 COPY deploy/hostctl-server.service /etc/hostctl/hostctl-server.service.example

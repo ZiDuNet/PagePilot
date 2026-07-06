@@ -64,15 +64,31 @@ type AdminSetupRequest struct {
 
 type RegisterRequest struct {
 	Username  string `json:"username"`
+	Email     string `json:"email,omitempty"`
 	Password  string `json:"password"`
+	CaptchaID string `json:"captchaId"`
+	Captcha   string `json:"captcha"`
+	EmailCode string `json:"emailCode,omitempty"`
+}
+
+type RegisterResponse struct {
+	Success       bool   `json:"success"`
+	UserID        string `json:"userId"`
+	Username      string `json:"username"`
+	Email         string `json:"email,omitempty"`
+	EmailVerified bool   `json:"emailVerified"`
+}
+
+type EmailVerificationRequest struct {
+	Email     string `json:"email"`
 	CaptchaID string `json:"captchaId"`
 	Captcha   string `json:"captcha"`
 }
 
-type RegisterResponse struct {
-	Success  bool   `json:"success"`
-	UserID   string `json:"userId"`
-	Username string `json:"username"`
+type EmailVerificationResponse struct {
+	Success   bool   `json:"success"`
+	Email     string `json:"email"`
+	ExpiresIn int    `json:"expiresIn"`
 }
 
 type AccountPasswordRequest struct {

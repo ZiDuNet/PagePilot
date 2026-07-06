@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -19,7 +20,9 @@ import (
 	"io/fs"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
+	"net/smtp"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,6 +50,7 @@ type DeployerPort interface {
 	SetVersionStatus(ctx context.Context, code string, version int64, status string) (*LockResponse, *APIError)
 	DeleteVersion(ctx context.Context, code string, version int64) (*SetCurrentResponse, *APIError)
 	GetContent(ctx context.Context, code string, versionPtr *int64) (*GetContentResponse, *APIError)
+	ReadAppFile(ctx context.Context, code string, versionPtr *int64, path string) ([]byte, time.Time, *APIError)
 
 	// StreamDownload 写出下载流到 w（zip 多文件 / 单 HTML 直出）。
 	StreamDownload(ctx context.Context, code string, versionPtr *int64, w http.ResponseWriter) *APIError
@@ -86,6 +90,7 @@ type DeployerPort interface {
 	SiteExists(ctx context.Context, code string) (bool, error)
 	GetSite(ctx context.Context, code string) (store.Site, error)
 	SetSiteCategory(ctx context.Context, code, category string) error
+	SetSiteTags(ctx context.Context, code string, tags []string) error
 	SetSiteAccessPassword(ctx context.Context, code, password string) error
 
 	CreateScreenPairing(ctx context.Context, pairing store.ScreenPairing) error
@@ -123,6 +128,8 @@ type Server struct {
 	version     string
 	captchaMu   sync.Mutex
 	captchas    map[string]captchaChallenge
+	emailMu     sync.Mutex
+	emailCodes  map[string]emailVerificationChallenge
 	screenHub   *screenHub
 }
 
@@ -131,6 +138,12 @@ type captchaChallenge struct {
 	ExpiresAt time.Time
 }
 
+type emailVerificationChallenge struct {
+	Code      string
+	ExpiresAt time.Time
+}
+
+var emailRe = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 var routeCodeRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{2,30}[a-z0-9])?$`)
 
 // New 构造 Server。
@@ -148,6 +161,7 @@ func New(cfg config.Config, deployer DeployerPort, authSvc *auth.Service, requir
 		logger:      logger,
 		version:     "dev",
 		captchas:    map[string]captchaChallenge{},
+		emailCodes:  map[string]emailVerificationChallenge{},
 		screenHub:   newScreenHub(),
 	}
 	s.routes()
@@ -344,6 +358,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/admin/logout", s.handleAdminLogout)
 	s.mux.HandleFunc("POST /api/admin/setup", s.handleAdminSetup)
 	s.mux.HandleFunc("GET /api/auth/captcha", s.handleCaptcha)
+	s.mux.HandleFunc("POST /api/auth/email-code", s.handleEmailVerificationCode)
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("PATCH /api/account/password", s.handleAccountPassword)
 	s.mux.HandleFunc("GET /api/admin/anonymous-sessions", s.handleAdminAnonymousSessions)
@@ -359,6 +374,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/admin/sites", s.handleAdminListSites)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/pin", s.handleAdminSetSitePin)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/category", s.handleAdminSetSiteCategory)
+	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/tags", s.handleAdminSetSiteTags)
 	s.mux.HandleFunc("DELETE /api/admin/sites/{code}", s.handleAdminDeleteSite)
 
 	// admin 后台单页
@@ -367,7 +383,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/", http.FileServer(http.FS(web.AdminAppFS()))))
 	s.mux.Handle("GET /app/assets/", http.StripPrefix("/app/", http.FileServer(http.FS(web.UserSubFS()))))
 	s.mux.HandleFunc("GET /index.html", s.handleUserAppUI)
-	s.mux.HandleFunc("GET /deploy.html", s.handleUserAppUI)
+	s.mux.HandleFunc("GET /deploy", s.handleUserAppUI)
+	s.mux.HandleFunc("GET /deploy/", s.handleUserAppUI)
 	s.mux.HandleFunc("GET /api-docs.html", s.handleAPIDocsRedirect)
 	s.mux.HandleFunc("GET /detail.html", s.handleMarketRedirect)
 	s.mux.HandleFunc("GET /agents/", s.handleAgentGuideUI)
@@ -838,32 +855,34 @@ var _ = errors.Is
 // marketplaceDeployResponse 是 GET /api/deploys 列表里单条记录的 JSON 形态，
 // 字段命名保持稳定，便于前端和 Agent 复用。
 type marketplaceDeployResponse struct {
-	ID                     string  `json:"id"`
-	Code                   string  `json:"code"`
-	Owned                  bool    `json:"owned,omitempty"`
-	CurrentVersionID       *string `json:"currentVersionId,omitempty"`
-	PrimaryVersionStrategy string  `json:"primaryVersionStrategy"`
-	Title                  string  `json:"title"`
-	Description            string  `json:"description"`
-	Filename               string  `json:"filename"`
-	FilePath               string  `json:"filePath"`
-	FileSize               int64   `json:"fileSize"`
-	QrCodePath             string  `json:"qrCodePath"`
-	PrimaryVersionID       *string `json:"primaryVersionId"`
-	CreatedAt              string  `json:"createdAt"`
-	UpdatedAt              string  `json:"updatedAt"`
-	ViewCount              int64   `json:"viewCount"`
-	LikeCount              int64   `json:"likeCount"`
-	FavoriteCount          int64   `json:"favoriteCount"`
-	Favorited              bool    `json:"favorited"`
-	VersionCount           int     `json:"versionCount"`
-	ExpiresAt              *string `json:"expiresAt"`
-	Status                 string  `json:"status"`
-	Visibility             string  `json:"visibility"`
-	Category               string  `json:"category,omitempty"`
-	AccessProtected        bool    `json:"accessProtected"`
-	IsPinned               bool    `json:"isPinned"`
-	PinnedAt               *string `json:"pinnedAt"`
+	ID                     string   `json:"id"`
+	Code                   string   `json:"code"`
+	Owned                  bool     `json:"owned,omitempty"`
+	CanManage              bool     `json:"canManage,omitempty"`
+	CurrentVersionID       *string  `json:"currentVersionId,omitempty"`
+	PrimaryVersionStrategy string   `json:"primaryVersionStrategy"`
+	Title                  string   `json:"title"`
+	Description            string   `json:"description"`
+	Filename               string   `json:"filename"`
+	FilePath               string   `json:"filePath"`
+	FileSize               int64    `json:"fileSize"`
+	QrCodePath             string   `json:"qrCodePath"`
+	PrimaryVersionID       *string  `json:"primaryVersionId"`
+	CreatedAt              string   `json:"createdAt"`
+	UpdatedAt              string   `json:"updatedAt"`
+	ViewCount              int64    `json:"viewCount"`
+	LikeCount              int64    `json:"likeCount"`
+	FavoriteCount          int64    `json:"favoriteCount"`
+	Favorited              bool     `json:"favorited"`
+	VersionCount           int      `json:"versionCount"`
+	ExpiresAt              *string  `json:"expiresAt"`
+	Status                 string   `json:"status"`
+	Visibility             string   `json:"visibility"`
+	Category               string   `json:"category,omitempty"`
+	Tags                   []string `json:"tags,omitempty"`
+	AccessProtected        bool     `json:"accessProtected"`
+	IsPinned               bool     `json:"isPinned"`
+	PinnedAt               *string  `json:"pinnedAt"`
 }
 
 var marketCategorySlugRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$`)
@@ -1123,11 +1142,12 @@ func (s *Server) toMarketplaceResponse(r *http.Request, d store.MarketplaceDeplo
 		t := d.PinnedAt.UTC().Format(time.RFC3339Nano)
 		pinnedAt = &t
 	}
-	owned := isAdmin || (actor != "" && d.OwnerTokenID == actor)
+	owned := actor != "" && d.OwnerTokenID == actor
 	return marketplaceDeployResponse{
 		ID:                     d.ID,
 		Code:                   d.Code,
 		Owned:                  owned,
+		CanManage:              isAdmin || owned,
 		CurrentVersionID:       currentVerID,
 		PrimaryVersionStrategy: d.PrimaryVersionStrategy,
 		Title:                  d.Title,
@@ -1148,10 +1168,38 @@ func (s *Server) toMarketplaceResponse(r *http.Request, d store.MarketplaceDeplo
 		Status:                 d.Status,
 		Visibility:             d.Visibility,
 		Category:               d.Category,
+		Tags:                   splitSiteTags(d.Tags),
 		AccessProtected:        d.AccessProtected,
 		IsPinned:               d.IsPinned,
 		PinnedAt:               pinnedAt,
 	}
+}
+
+func splitSiteTags(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；'
+	})
+	out := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, part := range parts {
+		value := strings.TrimSpace(strings.Trim(part, "# "))
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+		if len(out) >= 6 {
+			break
+		}
+	}
+	return out
 }
 
 func (s *Server) handleQRCode(w http.ResponseWriter, r *http.Request) {
@@ -2514,8 +2562,154 @@ func subtleConstantTimeString(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+func (s *Server) handleEmailVerificationCode(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if !s.cfg.AllowRegistration {
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "register", "user registration is disabled"), reqID))
+		return
+	}
+	if !s.cfg.EmailVerificationEnabled {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "email", "email verification is not enabled"), reqID))
+		return
+	}
+	if !s.emailConfig().SMTPConfigured {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "email", "SMTP is not configured"), reqID))
+		return
+	}
+	var req EmailVerificationRequest
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+	if !s.verifyCaptcha(req.CaptchaID, req.Captcha) {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "captcha", "captcha is incorrect or expired"), reqID))
+		return
+	}
+	email := normalizeEmail(req.Email)
+	if email == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "email", "please enter a valid email address"), reqID))
+		return
+	}
+	code := fmt.Sprintf("%06d", randomIntRange(0, 999999))
+	expiresAt := time.Now().Add(10 * time.Minute)
+	if err := s.sendEmailVerificationCode(email, code); err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "email", "failed to send verification email: "+err.Error()), reqID))
+		return
+	}
+	s.emailMu.Lock()
+	s.pruneExpiredEmailCodesLocked(time.Now())
+	s.emailCodes[email] = emailVerificationChallenge{Code: code, ExpiresAt: expiresAt}
+	s.emailMu.Unlock()
+	writeJSON(w, http.StatusOK, EmailVerificationResponse{Success: true, Email: email, ExpiresIn: int(time.Until(expiresAt).Seconds())})
+}
+
+func normalizeEmail(email string) string {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" || !emailRe.MatchString(email) || len(email) > 254 {
+		return ""
+	}
+	return email
+}
+
+func (s *Server) verifyEmailCode(email, code string) bool {
+	email = normalizeEmail(email)
+	code = strings.TrimSpace(code)
+	if email == "" || code == "" {
+		return false
+	}
+	s.emailMu.Lock()
+	defer s.emailMu.Unlock()
+	s.pruneExpiredEmailCodesLocked(time.Now())
+	item, ok := s.emailCodes[email]
+	if !ok {
+		return false
+	}
+	if time.Now().After(item.ExpiresAt) || !subtleConstantTimeString(item.Code, code) {
+		return false
+	}
+	delete(s.emailCodes, email)
+	return true
+}
+
+func (s *Server) pruneExpiredEmailCodesLocked(now time.Time) {
+	for email, item := range s.emailCodes {
+		if now.After(item.ExpiresAt) {
+			delete(s.emailCodes, email)
+		}
+	}
+}
+
+func (s *Server) sendEmailVerificationCode(email, code string) error {
+	host := strings.TrimSpace(s.cfg.SMTPHost)
+	from := strings.TrimSpace(s.cfg.SMTPFrom)
+	if host == "" || from == "" {
+		return fmt.Errorf("SMTP host and from are required")
+	}
+	port := strings.TrimSpace(s.cfg.SMTPPort)
+	if port == "" {
+		port = "587"
+	}
+	addr := net.JoinHostPort(host, port)
+	message := strings.Join([]string{
+		"From: " + from,
+		"To: " + email,
+		"Subject: PagePilot verification code",
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=UTF-8",
+		"",
+		"你的 PagePilot 注册验证码是：" + code,
+		"",
+		"验证码 10 分钟内有效。如果不是你本人操作，可以忽略这封邮件。",
+	}, "\r\n")
+	var auth smtp.Auth
+	if s.cfg.SMTPUsername != "" || s.cfg.SMTPPassword != "" {
+		auth = smtp.PlainAuth("", s.cfg.SMTPUsername, s.cfg.SMTPPassword, host)
+	}
+	switch strings.ToLower(strings.TrimSpace(s.cfg.SMTPSecure)) {
+	case "ssl", "tls", "true", "465":
+		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		client, err := smtp.NewClient(conn, host)
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+		if auth != nil {
+			if err := client.Auth(auth); err != nil {
+				return err
+			}
+		}
+		if err := client.Mail(from); err != nil {
+			return err
+		}
+		if err := client.Rcpt(email); err != nil {
+			return err
+		}
+		wc, err := client.Data()
+		if err != nil {
+			return err
+		}
+		if _, err := wc.Write([]byte(message)); err != nil {
+			_ = wc.Close()
+			return err
+		}
+		if err := wc.Close(); err != nil {
+			return err
+		}
+		return client.Quit()
+	default:
+		return smtp.SendMail(addr, auth, from, []string{email}, []byte(message))
+	}
+}
+
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	if !s.cfg.AllowRegistration {
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "register", "user registration is disabled"), reqID))
+		return
+	}
 	var req RegisterRequest
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
@@ -2524,7 +2718,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "captcha", "captcha is incorrect or expired"), reqID))
 		return
 	}
-	user, err := s.auth.CreateUser(r.Context(), req.Username, req.Password, false, 20)
+	email := normalizeEmail(req.Email)
+	emailVerified := false
+	if s.cfg.EmailVerificationEnabled {
+		if email == "" {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "email", "email is required when email verification is enabled"), reqID))
+			return
+		}
+		if !s.verifyEmailCode(email, req.EmailCode) {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "email", "email verification code is incorrect or expired"), reqID))
+			return
+		}
+		emailVerified = true
+	}
+	user, err := s.auth.CreateUserWithEmail(r.Context(), req.Username, email, emailVerified, req.Password, false, 20)
 	if err != nil {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "register", "username already exists or password is invalid"), reqID))
 		return
@@ -2532,7 +2739,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if s.claimCurrentAnonymousSession(r, user.ID) {
 		clearAnonymousSessionCookie(w)
 	}
-	writeJSON(w, http.StatusOK, RegisterResponse{Success: true, UserID: user.ID, Username: user.Username})
+	writeJSON(w, http.StatusOK, RegisterResponse{Success: true, UserID: user.ID, Username: user.Username, Email: user.Email, EmailVerified: user.EmailVerified})
 }
 
 func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
@@ -2664,9 +2871,10 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		AnonymousPolicy: AnonymousPolicy{
 			DeployLimit: s.cfg.AnonymousDeployLimit,
 		},
-		Email:   s.emailConfig(),
-		Storage: s.storageConfig(),
-		Version: s.version,
+		RegistrationAllowed: s.cfg.AllowRegistration,
+		Email:               s.emailConfig(),
+		Storage:             s.storageConfig(),
+		Version:             s.version,
 	})
 }
 
@@ -2887,8 +3095,9 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		AnonymousPolicy: AnonymousPolicy{
 			DeployLimit: s.cfg.AnonymousDeployLimit,
 		},
-		Email:   s.emailConfig(),
-		Storage: s.storageConfig(),
+		RegistrationAllowed: s.cfg.AllowRegistration,
+		Email:               s.emailConfig(),
+		Storage:             s.storageConfig(),
 	})
 }
 
@@ -2911,7 +3120,7 @@ func (s *Server) storageConfig() StorageConfig {
 		OSSBucket:        s.cfg.OSSBucket,
 		OSSPrefix:        s.cfg.OSSPrefix,
 		OSSPublicBaseURL: s.cfg.OSSPublicBaseURL,
-		OSSConfigured:    s.cfg.OSSEndpoint != "" && s.cfg.OSSBucket != "",
+		OSSConfigured:    s.cfg.OSSEndpoint != "" && s.cfg.OSSBucket != "" && s.cfg.OSSAccessKeyID != "" && s.cfg.OSSAccessKeySecret != "",
 	}
 }
 
@@ -2943,7 +3152,19 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
-	user, err := s.auth.CreateUser(r.Context(), req.Username, req.Password, req.IsAdmin, req.DeployLimit)
+	email := normalizeEmail(req.Email)
+	if strings.TrimSpace(req.Email) != "" && email == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", "invalid email address"), reqID))
+		return
+	}
+	emailVerified := email != ""
+	if req.EmailVerified != nil {
+		emailVerified = *req.EmailVerified
+	}
+	if email == "" {
+		emailVerified = false
+	}
+	user, err := s.auth.CreateUserWithEmail(r.Context(), req.Username, email, emailVerified, req.Password, req.IsAdmin, req.DeployLimit)
 	if err != nil {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", err.Error()), reqID))
 		return
@@ -2969,6 +3190,20 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Username != nil {
 		user.Username = strings.TrimSpace(*req.Username)
+	}
+	if req.Email != nil {
+		email := normalizeEmail(*req.Email)
+		if strings.TrimSpace(*req.Email) != "" && email == "" {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", "invalid email address"), reqID))
+			return
+		}
+		user.Email = email
+		if email == "" {
+			user.EmailVerified = false
+		}
+	}
+	if req.EmailVerified != nil {
+		user.EmailVerified = *req.EmailVerified && user.Email != ""
 	}
 	if req.IsAdmin != nil {
 		user.IsAdmin = *req.IsAdmin
@@ -3040,15 +3275,17 @@ func toUserListItem(user store.AdminUser) UserListItem {
 		remaining = 0
 	}
 	return UserListItem{
-		ID:          user.ID,
-		Username:    user.Username,
-		IsAdmin:     user.IsAdmin,
-		IsActive:    user.IsActive,
-		DeployLimit: user.DeployLimit,
-		DeployCount: user.DeployCount,
-		Remaining:   remaining,
-		CreatedAt:   user.CreatedAt,
-		LastLoginAt: user.LastLoginAt,
+		ID:            user.ID,
+		Username:      user.Username,
+		Email:         user.Email,
+		EmailVerified: user.EmailVerified,
+		IsAdmin:       user.IsAdmin,
+		IsActive:      user.IsActive,
+		DeployLimit:   user.DeployLimit,
+		DeployCount:   user.DeployCount,
+		Remaining:     remaining,
+		CreatedAt:     user.CreatedAt,
+		LastLoginAt:   user.LastLoginAt,
 	}
 }
 
@@ -3132,6 +3369,7 @@ func (s *Server) handleAdminListSites(w http.ResponseWriter, r *http.Request) {
 			Status:          site.Status,
 			Visibility:      site.Visibility,
 			Category:        site.Category,
+			Tags:            splitSiteTags(site.Tags),
 			Filename:        site.MainEntry,
 			AccessProtected: site.AccessProtected,
 			IsPinned:        site.IsPinned,
@@ -3230,6 +3468,42 @@ func (s *Server) handleAdminSetSiteCategory(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "code": code, "category": category})
+}
+
+func (s *Server) handleAdminSetSiteTags(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	code := r.PathValue("code")
+	if code == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "path", "missing code in path"), reqID))
+		return
+	}
+	actor, isAdmin, authErr := s.authenticateActor(r)
+	if authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	site, err := s.deployer.GetSite(r.Context(), code)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			return
+		}
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_tags", err.Error()), reqID))
+		return
+	}
+	if !isAdmin && site.OwnerTokenID != actor {
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "site_tags", "you can only update your own site tags"), reqID))
+		return
+	}
+	var req SiteTagsRequest
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+	if err := s.deployer.SetSiteTags(r.Context(), code, req.Tags); err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_tags", err.Error()), reqID))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "code": code, "tags": splitSiteTags(strings.Join(req.Tags, ","))})
 }
 
 // handleAdminDeleteSite 删除整个 site。
@@ -3499,11 +3773,7 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 		return
 	}
 
-	base := filepath.Join(s.cfg.HostedDir, code, "current")
 	var mainEntry string
-	if versionPtr != nil {
-		base = filepath.Join(s.cfg.HostedDir, code, "versions", strconv.FormatInt(*versionPtr, 10))
-	}
 	if sub == "" {
 		content, apiErr := s.deployer.GetContent(r.Context(), code, versionPtr)
 		if apiErr != nil {
@@ -3515,29 +3785,21 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 	if sub == "" {
 		sub = mainEntry
 	}
-	full := filepath.Join(base, sub)
-
-	absBase, err := filepath.Abs(base)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	absFull, err := filepath.Abs(full)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	rel, err := filepath.Rel(absBase, absFull)
-	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !hostedSubPathSafe(sub) {
 		http.NotFound(w, r)
 		return
 	}
 
-	// 仅当前版本入口统计浏览量；历史版本预览不计数。
 	if versionPtr == nil && sub == mainEntry {
 		go func(c string) {
 			_ = s.deployer.IncrementViewCount(context.Background(), c)
 		}(code)
+	}
+
+	body, modTime, apiErr := s.deployer.ReadAppFile(r.Context(), code, versionPtr, sub)
+	if apiErr != nil {
+		http.NotFound(w, r)
+		return
 	}
 
 	routePrefix := buildAppRoutePrefix(code)
@@ -3551,44 +3813,51 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 			routePrefix = buildVersionServePath(code, *versionPtr, "")
 		}
 	}
-	s.serveHostedFile(w, r, sub, absFull, routePrefix)
+	s.serveHostedFile(w, r, sub, body, modTime, routePrefix)
 }
 
-func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, sub, absFull, routePrefix string) {
-	s.setHostedContentSecurityHeaders(w)
+func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, sub string, body []byte, modTime time.Time, routePrefix string) {
 	setHostedContentCORSHeaders(w, r)
 	lowerSub := strings.ToLower(sub)
 	if strings.HasSuffix(lowerSub, ".md") || strings.HasSuffix(lowerSub, ".markdown") {
-		body, err := os.ReadFile(absFull)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
+		s.setHostedMarkdownSecurityHeaders(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		rendered := renderHostedMarkdown(body)
-		http.ServeContent(w, r, filepath.Base(absFull)+".html", fileModTime(absFull), strings.NewReader(rendered))
+		http.ServeContent(w, r, filepath.Base(sub)+".html", modTime, strings.NewReader(rendered))
 		return
 	}
+	s.setHostedContentSecurityHeaders(w)
 	if !strings.HasSuffix(lowerSub, ".html") && !strings.HasSuffix(lowerSub, ".htm") {
-		http.ServeFile(w, r, absFull)
-		return
-	}
-	body, err := os.ReadFile(absFull)
-	if err != nil {
-		http.NotFound(w, r)
+		http.ServeContent(w, r, filepath.Base(sub), modTime, bytes.NewReader(body))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	http.ServeContent(w, r, filepath.Base(absFull), fileModTime(absFull), strings.NewReader(injectHostedHTMLCompat(body, routePrefix)))
+	http.ServeContent(w, r, filepath.Base(sub), modTime, strings.NewReader(injectHostedHTMLCompat(body, routePrefix)))
+}
+
+func hostedSubPathSafe(path string) bool {
+	if path == "" || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\\`) {
+		return false
+	}
+	path = filepath.ToSlash(path)
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 func renderHostedMarkdown(body []byte) string {
 	lines := strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n")
 	var out strings.Builder
 	out.WriteString("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Markdown</title>")
-	out.WriteString("<style>body{margin:0;background:#f8fbff;color:#0f172a;font:16px/1.72 -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}.page{max-width:920px;margin:0 auto;padding:48px 22px 72px}h1,h2,h3{line-height:1.18;margin:1.45em 0 .55em;color:#075985}h1{font-size:38px}h2{font-size:28px}h3{font-size:22px}p{margin:.7em 0}a{color:#0284c7}img{max-width:100%;height:auto;border-radius:14px;border:1px solid #dbeafe;box-shadow:0 16px 42px rgba(14,116,144,.12)}pre{overflow:auto;padding:16px;border-radius:14px;background:#0f172a;color:#e2e8f0}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92em}p code,li code{padding:.12em .36em;border-radius:7px;background:#e0f2fe;color:#075985}blockquote{margin:1em 0;padding:.1em 1em;border-left:4px solid #38bdf8;background:#ecfeff}ul,ol{padding-left:1.35em}hr{border:0;border-top:1px solid #bae6fd;margin:2em 0}</style></head><body><main class=\"page\">")
+	out.WriteString("<style>:root{color-scheme:light dark;--bg:#f8fbff;--fg:#0f172a;--muted:#5b6b84;--brand:#2563eb;--line:#dbeafe;--soft:#eff6ff;--code:#08111f;--codefg:#e2e8f0}body{margin:0;background:radial-gradient(circle at 12% 0%,#e0f7ff 0,transparent 34%),var(--bg);color:var(--fg);font:16px/1.72 -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}.page{max-width:960px;margin:0 auto;padding:48px 22px 72px}h1,h2,h3,h4,h5,h6{line-height:1.18;margin:1.45em 0 .55em;color:#0b1b3a}h1{font-size:40px}h2{font-size:30px}h3{font-size:24px}p{margin:.75em 0;color:var(--fg)}a{color:var(--brand);text-decoration:none;border-bottom:1px solid rgba(37,99,235,.28)}img{max-width:100%;height:auto;border-radius:14px;border:1px solid var(--line);box-shadow:0 16px 42px rgba(14,116,144,.12)}pre{overflow:auto;padding:16px 18px;border-radius:14px;background:var(--code);color:var(--codefg);box-shadow:0 18px 44px rgba(15,23,42,.16)}pre code{color:inherit;background:transparent;padding:0}.code-title{display:block;margin:-4px 0 10px;color:#93c5fd;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92em}p code,li code,td code{padding:.12em .36em;border-radius:7px;background:#e0f2fe;color:#075985}blockquote{margin:1em 0;padding:.1em 1em;border-left:4px solid #38bdf8;background:#ecfeff;color:#334155}ul,ol{padding-left:1.35em}.task-list{list-style:none;padding-left:0}.task-list input{margin-right:.55em}hr{border:0;border-top:1px solid var(--line);margin:2em 0}table{width:100%;border-collapse:separate;border-spacing:0;margin:1.1em 0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:rgba(255,255,255,.72)}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--soft);font-weight:800}tr:last-child td{border-bottom:0}.markdown-diagram,.markdown-math{margin:1.2em 0;padding:16px;border-radius:14px;border:1px solid var(--line);background:rgba(255,255,255,.78)}.markdown-diagram figcaption,.markdown-math figcaption{font-size:12px;font-weight:800;color:var(--brand);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}.markdown-diagram pre,.markdown-math pre{margin:0;box-shadow:none}@media (prefers-color-scheme:dark){:root{--bg:#08111f;--fg:#dbeafe;--muted:#93a4b8;--brand:#7dd3fc;--line:#1f3a5f;--soft:#0f253d;--code:#020617;--codefg:#e2e8f0}body{background:radial-gradient(circle at 12% 0%,rgba(14,165,233,.16) 0,transparent 34%),var(--bg)}h1,h2,h3,h4,h5,h6{color:#f8fbff}table,.markdown-diagram,.markdown-math{background:rgba(15,23,42,.68)}p code,li code,td code{background:#0c4a6e;color:#e0f2fe}}</style></head><body><main class=\"page\">")
 	inCode := false
+	codeLang := ""
+	var codeLines []string
 	var paragraph []string
+	listOpen := false
 	flushParagraph := func() {
 		if len(paragraph) == 0 {
 			return
@@ -3598,35 +3867,81 @@ func renderHostedMarkdown(body []byte) string {
 		out.WriteString("</p>")
 		paragraph = paragraph[:0]
 	}
-	for _, line := range lines {
+	closeList := func() {
+		if !listOpen {
+			return
+		}
+		out.WriteString("</ul>")
+		listOpen = false
+	}
+	flushCode := func() {
+		escaped := html.EscapeString(strings.Join(codeLines, "\n"))
+		switch strings.ToLower(codeLang) {
+		case "mermaid":
+			out.WriteString("<figure class=\"markdown-diagram\"><figcaption>Mermaid</figcaption><pre><code class=\"language-mermaid\">")
+			out.WriteString(escaped)
+			out.WriteString("</code></pre></figure>")
+		case "math", "katex", "latex":
+			out.WriteString("<figure class=\"markdown-math\"><figcaption>KaTeX</figcaption><pre><code class=\"language-math\">")
+			out.WriteString(escaped)
+			out.WriteString("</code></pre></figure>")
+		default:
+			out.WriteString("<pre><code")
+			if codeLang != "" {
+				out.WriteString(" class=\"language-")
+				out.WriteString(html.EscapeString(codeLang))
+				out.WriteString("\"><span class=\"code-title\">")
+				out.WriteString(html.EscapeString(codeLang))
+				out.WriteString("</span>")
+			} else {
+				out.WriteString(">")
+			}
+			out.WriteString(escaped)
+			out.WriteString("</code></pre>")
+		}
+		codeLines = codeLines[:0]
+		codeLang = ""
+	}
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			flushParagraph()
+			closeList()
 			if inCode {
-				out.WriteString("</code></pre>")
+				flushCode()
 				inCode = false
 			} else {
 				inCode = true
-				out.WriteString("<pre><code>")
+				codeLang = cleanMarkdownFenceLang(strings.TrimSpace(strings.TrimPrefix(trimmed, "```")))
 			}
 			continue
 		}
 		if inCode {
-			out.WriteString(html.EscapeString(line))
-			out.WriteByte('\n')
+			codeLines = append(codeLines, line)
 			continue
 		}
 		if trimmed == "" {
 			flushParagraph()
+			closeList()
+			continue
+		}
+		if isMarkdownTableHeader(lines, i) {
+			flushParagraph()
+			closeList()
+			out.WriteString(renderMarkdownTable(lines[i], lines[i+2:]))
+			i = markdownTableEnd(lines, i+2) - 1
 			continue
 		}
 		if trimmed == "---" || trimmed == "***" {
 			flushParagraph()
+			closeList()
 			out.WriteString("<hr>")
 			continue
 		}
 		if strings.HasPrefix(trimmed, ">") {
 			flushParagraph()
+			closeList()
 			out.WriteString("<blockquote>")
 			out.WriteString(renderMarkdownInline(strings.TrimSpace(strings.TrimPrefix(trimmed, ">"))))
 			out.WriteString("</blockquote>")
@@ -3634,22 +3949,43 @@ func renderHostedMarkdown(body []byte) string {
 		}
 		if level, text := markdownHeading(trimmed); level > 0 {
 			flushParagraph()
+			closeList()
 			out.WriteString(fmt.Sprintf("<h%d>%s</h%d>", level, renderMarkdownInline(text), level))
 			continue
 		}
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
 			flushParagraph()
-			out.WriteString("<ul><li>")
-			out.WriteString(renderMarkdownInline(strings.TrimSpace(trimmed[2:])))
-			out.WriteString("</li></ul>")
+			if !listOpen {
+				out.WriteString("<ul")
+				if isTaskListItem(strings.TrimSpace(trimmed[2:])) {
+					out.WriteString(" class=\"task-list\"")
+				}
+				out.WriteString(">")
+				listOpen = true
+			}
+			item := strings.TrimSpace(trimmed[2:])
+			out.WriteString("<li>")
+			if checked, text, ok := parseTaskListItem(item); ok {
+				out.WriteString("<input type=\"checkbox\" disabled")
+				if checked {
+					out.WriteString(" checked")
+				}
+				out.WriteString(">")
+				out.WriteString(renderMarkdownInline(text))
+			} else {
+				out.WriteString(renderMarkdownInline(item))
+			}
+			out.WriteString("</li>")
 			continue
 		}
+		closeList()
 		paragraph = append(paragraph, trimmed)
 	}
 	flushParagraph()
 	if inCode {
-		out.WriteString("</code></pre>")
+		flushCode()
 	}
+	closeList()
 	out.WriteString("</main></body></html>")
 	return out.String()
 }
@@ -3667,8 +4003,20 @@ func markdownHeading(line string) (int, string) {
 
 func renderMarkdownInline(text string) string {
 	escaped := html.EscapeString(text)
-	escaped = markdownImagesRe.ReplaceAllString(escaped, `<img src="$2" alt="$1">`)
-	escaped = markdownLinksRe.ReplaceAllString(escaped, `<a href="$2" rel="noreferrer">$1</a>`)
+	escaped = markdownImagesRe.ReplaceAllStringFunc(escaped, func(match string) string {
+		parts := markdownImagesRe.FindStringSubmatch(match)
+		if len(parts) != 3 || !safeMarkdownURL(parts[2], true) {
+			return match
+		}
+		return `<img src="` + parts[2] + `" alt="` + parts[1] + `">`
+	})
+	escaped = markdownLinksRe.ReplaceAllStringFunc(escaped, func(match string) string {
+		parts := markdownLinksRe.FindStringSubmatch(match)
+		if len(parts) != 3 || !safeMarkdownURL(parts[2], false) {
+			return match
+		}
+		return `<a href="` + parts[2] + `" rel="noreferrer">` + parts[1] + `</a>`
+	})
 	escaped = markdownCodeRe.ReplaceAllString(escaped, `<code>$1</code>`)
 	return escaped
 }
@@ -3679,11 +4027,129 @@ var (
 	markdownCodeRe   = regexp.MustCompile("`([^`]+)`")
 )
 
+func cleanMarkdownFenceLang(lang string) string {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	if lang == "" {
+		return ""
+	}
+	var out strings.Builder
+	for _, r := range lang {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+func parseTaskListItem(item string) (bool, string, bool) {
+	if len(item) < 4 || item[0] != '[' || item[2] != ']' || item[3] != ' ' {
+		return false, "", false
+	}
+	mark := item[1]
+	if mark != ' ' && mark != 'x' && mark != 'X' {
+		return false, "", false
+	}
+	return mark == 'x' || mark == 'X', strings.TrimSpace(item[4:]), true
+}
+
+func isTaskListItem(item string) bool {
+	_, _, ok := parseTaskListItem(item)
+	return ok
+}
+
+func isMarkdownTableHeader(lines []string, i int) bool {
+	if i+1 >= len(lines) {
+		return false
+	}
+	header := strings.TrimSpace(lines[i])
+	sep := strings.TrimSpace(lines[i+1])
+	return strings.Contains(header, "|") && markdownTableSeparator(sep)
+}
+
+func markdownTableSeparator(line string) bool {
+	if !strings.Contains(line, "|") {
+		return false
+	}
+	for _, cell := range splitMarkdownTableRow(line) {
+		cell = strings.Trim(cell, " :-")
+		if cell != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func markdownTableEnd(lines []string, start int) int {
+	i := start
+	for i < len(lines) && strings.Contains(strings.TrimSpace(lines[i]), "|") && strings.TrimSpace(lines[i]) != "" {
+		i++
+	}
+	return i
+}
+
+func renderMarkdownTable(header string, body []string) string {
+	var out strings.Builder
+	out.WriteString("<table><thead><tr>")
+	for _, cell := range splitMarkdownTableRow(header) {
+		out.WriteString("<th>")
+		out.WriteString(renderMarkdownInline(strings.TrimSpace(cell)))
+		out.WriteString("</th>")
+	}
+	out.WriteString("</tr></thead><tbody>")
+	for _, line := range body[:markdownTableEnd(body, 0)] {
+		out.WriteString("<tr>")
+		for _, cell := range splitMarkdownTableRow(line) {
+			out.WriteString("<td>")
+			out.WriteString(renderMarkdownInline(strings.TrimSpace(cell)))
+			out.WriteString("</td>")
+		}
+		out.WriteString("</tr>")
+	}
+	out.WriteString("</tbody></table>")
+	return out.String()
+}
+
+func splitMarkdownTableRow(line string) []string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
+	return strings.Split(line, "|")
+}
+
+func safeMarkdownURL(raw string, image bool) bool {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" || strings.ContainsAny(raw, "\"'<>") {
+		return false
+	}
+	if strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "./") || strings.HasPrefix(raw, "../") || strings.HasPrefix(raw, "/") {
+		return true
+	}
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		return true
+	}
+	if !image && (strings.HasPrefix(raw, "mailto:") || strings.HasPrefix(raw, "tel:")) {
+		return true
+	}
+	return !strings.Contains(raw, ":")
+}
+
 func (s *Server) setHostedContentSecurityHeaders(w http.ResponseWriter) {
 	csp := "sandbox allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-pointer-lock allow-top-navigation-by-user-activation; " +
 		"default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; " +
 		"img-src * data: blob:; media-src * data: blob:; font-src * data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval'; " +
 		"connect-src *; frame-src *; child-src *"
+	if frameAncestors := s.frameAncestorsDirective(); frameAncestors != "" {
+		csp += "; " + frameAncestors
+	}
+	w.Header().Set("Content-Security-Policy", csp)
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+}
+
+func (s *Server) setHostedMarkdownSecurityHeaders(w http.ResponseWriter) {
+	csp := "sandbox allow-popups allow-downloads allow-modals; " +
+		"default-src 'none'; img-src * data: blob:; media-src * data: blob:; font-src data: blob:; style-src 'unsafe-inline'; " +
+		"base-uri 'none'; form-action 'none'"
 	if frameAncestors := s.frameAncestorsDirective(); frameAncestors != "" {
 		csp += "; " + frameAncestors
 	}

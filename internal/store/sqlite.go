@@ -159,6 +159,8 @@ func migrateAdminUsersAddPolicyColumns(db *sql.DB) error {
 		{"can_like", "BOOLEAN NOT NULL DEFAULT 1"},
 		{"deploy_limit", "INTEGER NOT NULL DEFAULT 20"},
 		{"deploy_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"email", "TEXT NOT NULL DEFAULT ''"},
+		{"email_verified", "BOOLEAN NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		_, err := db.Exec(fmt.Sprintf(`ALTER TABLE admin_users ADD COLUMN %s %s`, c.name, c.ddl))
@@ -167,6 +169,7 @@ func migrateAdminUsersAddPolicyColumns(db *sql.DB) error {
 		}
 	}
 	_, _ = db.Exec(`UPDATE admin_users SET is_admin = 1 WHERE username = 'admin' AND is_admin = 0`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_admin_users_email ON admin_users(email)`)
 	return nil
 }
 
@@ -182,8 +185,9 @@ func migrateSitesAddMarketplaceColumns(db *sql.DB) error {
 		{"view_count", "INTEGER NOT NULL DEFAULT 0"},
 		{"like_count", "INTEGER NOT NULL DEFAULT 0"},
 		{"status", "TEXT NOT NULL DEFAULT 'active'"},
-		{"visibility", "TEXT NOT NULL DEFAULT 'public'"},
+		{"visibility", "TEXT NOT NULL DEFAULT 'unlisted'"},
 		{"category", "TEXT NOT NULL DEFAULT ''"},
+		{"tags", "TEXT NOT NULL DEFAULT ''"},
 		{"access_password_hash", "TEXT NOT NULL DEFAULT ''"},
 		{"is_pinned", "BOOLEAN NOT NULL DEFAULT 0"},
 		{"pinned_at", "DATETIME"},
@@ -319,9 +323,10 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	}
 	visibility := site.Visibility
 	if visibility == "" {
-		visibility = "public"
+		visibility = "unlisted"
 	}
 	category := strings.TrimSpace(site.Category)
+	tags := strings.TrimSpace(site.Tags)
 	var expiresAt any
 	if site.ExpiresAt != nil {
 		expiresAt = site.ExpiresAt.UTC()
@@ -337,9 +342,9 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sites (code, public_id, owner_token_id, current_version, primary_version_strategy,
-		                   visibility, category, view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source)
-		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, site.Code, publicID, site.OwnerTokenID, strategy, visibility, category, site.ViewCount, site.LikeCount, status, site.AccessPasswordHash, site.IsPinned, pinnedAt, expiresAt, site.CreatedAt.UTC(), updatedAt.UTC(), site.Source)
+		                   visibility, category, tags, view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source)
+		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, site.Code, publicID, site.OwnerTokenID, strategy, visibility, category, tags, site.ViewCount, site.LikeCount, status, site.AccessPasswordHash, site.IsPinned, pinnedAt, expiresAt, site.CreatedAt.UTC(), updatedAt.UTC(), site.Source)
 	if err != nil {
 		return fmt.Errorf("insert site: %w", err)
 	}
@@ -356,11 +361,11 @@ func (s *SQLiteStore) GetSite(ctx context.Context, code string) (Site, error) {
 	var isPinned int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT code, public_id, owner_token_id, current_version, primary_version_strategy,
-		       visibility, category, view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source
+		       visibility, category, COALESCE(tags, ''), view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source
 		FROM sites WHERE code = ?
 	`, code).Scan(
 		&site.Code, &site.PublicID, &site.OwnerTokenID, &cur, &site.PrimaryVersionStrategy,
-		&site.Visibility, &site.Category, &site.ViewCount, &site.LikeCount, &site.Status, &site.AccessPasswordHash, &isPinned, &pinnedAt, &expiresAt, &site.CreatedAt, &updatedAt, &site.Source,
+		&site.Visibility, &site.Category, &site.Tags, &site.ViewCount, &site.LikeCount, &site.Status, &site.AccessPasswordHash, &isPinned, &pinnedAt, &expiresAt, &site.CreatedAt, &updatedAt, &site.Source,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Site{}, ErrNotFound
@@ -909,8 +914,9 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 			s.view_count,
 			s.like_count,
 			COALESCE(s.status, 'active') AS status,
-			COALESCE(s.visibility, 'public') AS visibility,
+			COALESCE(s.visibility, 'unlisted') AS visibility,
 			COALESCE(s.category, '') AS category,
+			COALESCE(s.tags, '') AS tags,
 			COALESCE(cv.main_entry, '') AS main_entry,
 			CASE WHEN COALESCE(s.access_password_hash, '') <> '' THEN 1 ELSE 0 END AS access_protected,
 			COALESCE(s.is_pinned, 0) AS is_pinned,
@@ -941,7 +947,7 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 		if err := rows.Scan(
 			&item.Code, &item.PublicID, &item.OwnerTokenID, &cur, &item.CreatedAt, &updatedAt, &item.Source,
 			&item.ViewCount, &item.LikeCount, &item.Status,
-			&item.Visibility, &item.Category, &item.MainEntry, &accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
+			&item.Visibility, &item.Category, &item.Tags, &item.MainEntry, &accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
 		); err != nil {
 			return nil, fmt.Errorf("scan site row: %w", err)
 		}
@@ -1043,8 +1049,9 @@ const marketplaceSelectCols = `
 	cv.main_entry            AS main_entry,
 	cv.total_size            AS file_size,
 	s.primary_version_strategy AS primary_version_strategy,
-	COALESCE(s.visibility, 'public') AS visibility,
+	COALESCE(s.visibility, 'unlisted') AS visibility,
 	COALESCE(s.category, '') AS category,
+	COALESCE(s.tags, '') AS tags,
 	s.view_count             AS view_count,
 	s.like_count             AS like_count,
 	(SELECT COUNT(*) FROM favorites fcnt WHERE fcnt.site_code = s.code) AS favorite_count,
@@ -1083,13 +1090,14 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	var status sql.NullString
 	var visibility sql.NullString
 	var category sql.NullString
+	var tags sql.NullString
 	var accessProtected int
 	var isPinned int
 	var favorited int
 	var pinnedAt sql.NullString
 	if err := sc.Scan(
 		&d.ID, &d.Code, &d.OwnerTokenID, &curVer, &curVerID, &title, &desc, &mainEntry, &fileSize,
-		&strategy, &visibility, &category, &d.ViewCount, &d.LikeCount, &d.FavoriteCount, &favorited, &status, &accessProtected, &isPinned, &pinnedAt, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
+		&strategy, &visibility, &category, &tags, &d.ViewCount, &d.LikeCount, &d.FavoriteCount, &favorited, &status, &accessProtected, &isPinned, &pinnedAt, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
 	); err != nil {
 		return d, err
 	}
@@ -1127,6 +1135,9 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	}
 	if category.Valid {
 		d.Category = category.String
+	}
+	if tags.Valid {
+		d.Tags = tags.String
 	}
 	if d.Status == "" {
 		d.Status = "active"
@@ -1173,11 +1184,11 @@ func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sor
 
 	var where []string
 	var args []any
-	where = append(where, `COALESCE(s.visibility, 'public') = 'public'`)
+	where = append(where, `COALESCE(s.visibility, 'unlisted') = 'public'`)
 	if q != "" {
-		where = append(where, `(s.code LIKE ? OR cv.title LIKE ? OR cv.description LIKE ? OR cv.main_entry LIKE ?)`)
+		where = append(where, `(s.code LIKE ? OR cv.title LIKE ? OR cv.description LIKE ? OR cv.main_entry LIKE ? OR COALESCE(s.tags, '') LIKE ?)`)
 		like := "%" + q + "%"
-		args = append(args, like, like, like, like)
+		args = append(args, like, like, like, like, like)
 	}
 	if status == "active" || status == "inactive" {
 		where = append(where, `s.status = ?`)
@@ -1415,6 +1426,20 @@ func (s *SQLiteStore) SetSiteCategory(ctx context.Context, code, category string
 		strings.TrimSpace(category), time.Now().UTC(), code)
 	if err != nil {
 		return fmt.Errorf("set site category: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLiteStore) SetSiteTags(ctx context.Context, code, tags string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sites SET tags = ?, updated_at = ? WHERE code = ?`,
+		strings.TrimSpace(tags), time.Now().UTC(), code)
+	if err != nil {
+		return fmt.Errorf("set site tags: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {

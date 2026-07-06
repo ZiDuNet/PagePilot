@@ -30,6 +30,7 @@ type Config struct {
 	BootstrapAdminUsername string
 	BootstrapAdminPassword string
 
+	AllowRegistration        bool
 	EmailVerificationEnabled bool
 	SMTPHost                 string
 	SMTPPort                 string
@@ -63,6 +64,7 @@ func Default() Config {
 		MaxFilesPerSite:      100,
 		CooldownSeconds:      10,
 		AnonymousDeployLimit: 5,
+		AllowRegistration:    true,
 		StorageBackend:       "local",
 		OSSProvider:          "aliyun",
 		SMTPSecure:           "starttls",
@@ -138,6 +140,9 @@ func Default() Config {
 	}
 	if v := os.Getenv("HOSTCTL_ADMIN_PASSWORD"); v != "" {
 		c.BootstrapAdminPassword = v
+	}
+	if v := os.Getenv("HOSTCTL_ALLOW_REGISTRATION"); v != "" {
+		c.AllowRegistration = parseBoolEnv(v)
 	}
 	if v := os.Getenv("HOSTCTL_EMAIL_VERIFICATION_ENABLED"); v != "" {
 		c.EmailVerificationEnabled = parseBoolEnv(v)
@@ -246,6 +251,9 @@ func Default() Config {
 	}
 	if v := os.Getenv("ADMIN_PASSWORD"); v != "" {
 		c.BootstrapAdminPassword = v
+	}
+	if v := os.Getenv("ALLOW_REGISTRATION"); v != "" {
+		c.AllowRegistration = parseBoolEnv(v)
 	}
 	if v := os.Getenv("EMAIL_VERIFICATION_ENABLED"); v != "" {
 		c.EmailVerificationEnabled = parseBoolEnv(v)
@@ -363,6 +371,9 @@ func (c Config) Validate() error {
 	if c.StorageBackend == "oss" {
 		if c.OSSEndpoint == "" || c.OSSBucket == "" {
 			return fmt.Errorf("OSS endpoint and bucket are required when StorageBackend is oss")
+		}
+		if c.OSSAccessKeyID == "" || c.OSSAccessKeySecret == "" {
+			return fmt.Errorf("OSS access key id and secret are required when StorageBackend is oss")
 		}
 	}
 	if c.EmailVerificationEnabled && (c.SMTPHost == "" || c.SMTPFrom == "") {

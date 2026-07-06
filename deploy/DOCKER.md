@@ -32,7 +32,7 @@ docker compose logs -f hostctl
 - 用户端 React：`frontend/user` 构建到 `internal/web/user/app`。
 - 后台 React：`frontend/admin` 构建到 `internal/web/admin/app`。
 - 内置 Skill 包：`internal/web/skill/hostctl-deploy.zip`，由 `skill/hostctl-deploy` 重新打包得到，对外主下载地址为 `/skill/pagep.zip`。
-- `/admin`、`/deploy.html`、`/api-docs.html`、`/agents/`、`/screens/` 都应由 PagePilot 服务自身返回。
+- `/admin`、`/deploy`、`/market`、`/agents/`、`/screens/` 都应由 PagePilot 服务自身返回；旧 `/api-docs.html` 仅作为兼容入口重定向到 `/admin?tab=apiDocs`。
 
 ## 首次管理员
 
@@ -60,6 +60,24 @@ HOSTCTL_ADMIN_PASSWORD: "123456"
 
 升级容器前请保留这些目录。删除这些目录会删除数据库和已发布站点。
 
+## 注册、邮箱验证与 OSS
+
+常用环境变量可以直接写入 `docker-compose.yml` 或 systemd unit：
+
+```yaml
+HOSTCTL_ALLOW_REGISTRATION: "true"
+HOSTCTL_STORAGE_BACKEND: "local" # local 或 oss
+# HOSTCTL_STORAGE_BACKEND: "oss"
+# HOSTCTL_OSS_ENDPOINT: "https://oss-cn-hangzhou.aliyuncs.com"
+# HOSTCTL_OSS_BUCKET: "pagepilot-assets"
+# HOSTCTL_OSS_ACCESS_KEY_ID: "..."
+# HOSTCTL_OSS_ACCESS_KEY_SECRET: "..."
+# HOSTCTL_OSS_PREFIX: "prod/pagepilot"
+```
+
+- `HOSTCTL_ALLOW_REGISTRATION=false` 会关闭公开注册；登录页只保留登录入口，管理员仍可在后台维护用户。
+- `HOSTCTL_STORAGE_BACKEND=oss` 时，发布写入、预览读取、源码下载、覆盖版本、删除版本和删除站点都会走阿里云 OSS；SQLite 仍然保存在 `/var/lib/hostctl`。
+- 开启邮箱验证后，注册页会先通过图片验证码请求邮箱验证码，再用 6 位邮箱验证码完成注册；后台运行设置会展示 SMTP 是否配置完整。
 ## 反向代理
 
 PagePilot 容器内监听 `0.0.0.0:8787`。外层反向代理只需要把整个站点转发到容器端口，不需要维护路径白名单。
@@ -110,7 +128,7 @@ docker compose logs -f hostctl
 curl -fsS http://127.0.0.1:8787/api/health
 
 # 进入容器执行 CLI
-docker compose exec hostctl hostctl --help
+docker compose exec hostctl pagep --help
 
 # 停止
 docker compose down
@@ -129,13 +147,13 @@ docker compose logs -f hostctl
 
 ```bash
 curl -fsS http://127.0.0.1:8787/api/health
-curl -fsS http://127.0.0.1:8787/deploy.html >/dev/null
-curl -fsS http://127.0.0.1:8787/api-docs.html >/dev/null
+curl -fsS http://127.0.0.1:8787/deploy >/dev/null
+curl -fsSI http://127.0.0.1:8787/api-docs.html | grep -i 'location: /admin?tab=apiDocs'
 curl -fsS http://127.0.0.1:8787/screens/ >/dev/null
 curl -fsS http://127.0.0.1:8787/admin >/dev/null
 ```
 
-`/admin`、`/deploy.html`、`/api-docs.html`、`/agents/` 和 `/screens/` 是内置页面，应该由 PagePilot 直接返回，不能被反向代理拦截成 404。
+`/admin`、`/deploy`、`/market`、`/agents/` 和 `/screens/` 是内置页面，应该由 PagePilot 直接返回，不能被反向代理拦截成 404。旧 `/api-docs.html` 只保留为 302 兼容重定向，真正的 API 文档在 `/admin?tab=apiDocs`，机器可读契约在 `/openapi.json`。
 
 ## 备份与恢复
 
@@ -172,7 +190,7 @@ docker compose up -d
 
 | 现象 | 检查项 |
 |---|---|
-| 首页可访问但 `/deploy.html` 或 `/screens/` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
+| 首页可访问但 `/deploy` 或 `/screens/` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
 | `/skill/pagep.zip` 404 | 确认镜像包含 `internal/web/skill/hostctl-deploy.zip`，并已重新构建；正常情况下没有后台上传包也会返回内置默认包。旧 `/skill/hostctl-deploy.zip` 也保留兼容。 |
 | 二维码或分享链接域名错误 | 请先确认浏览器当前打开的域名正确；再检查反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，不要把内网地址透传给后端。 |
 | Skill/MCP 发布后返回内网链接 | 检查 `--server` 或 `HOSTCTL_SERVER` 是否使用了内网地址。路径模式下要返回公网链接，就让 Skill/MCP 用公网入口调用 PagePilot。 |

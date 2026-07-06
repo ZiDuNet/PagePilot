@@ -17,7 +17,7 @@ PagePilot is an Agent-first publishing platform for HTML, Markdown, ZIP, and mul
 
 - Public homepage.
 - Creation Market at `/market`.
-- Manual deploy at `/deploy.html`.
+- Manual deploy at `/deploy`.
 - Agent / Skill / MCP page at `/agents/`.
 - Screen publishing page at `/screens/`.
 - User/admin console at `/admin`.
@@ -30,13 +30,16 @@ The public UI should feel like a polished PagePilot product, not a generic admin
 - Default app URL mode is path mode: `/agent/{code}/`.
 - Domain and dual modes are still supported through env/config: `HOSTCTL_APP_URL_MODE`, `HOSTCTL_APP_DOMAIN_SUFFIX`, `HOSTCTL_APP_URL_SCHEME`, `HOSTCTL_APP_URL_PORT`.
 - Docker default admin for an empty database is `admin / 123456`; users must change it after first login.
-- Uploaded files currently persist on local filesystem:
+- Uploaded files persist through the configured storage backend:
+  - `HOSTCTL_STORAGE_BACKEND=local` uses local filesystem paths.
+  - `HOSTCTL_STORAGE_BACKEND=oss` uses Aliyun OSS for publish, preview/read, source download, version overwrite cleanup, version delete, and whole-site delete.
+- Local filesystem paths:
   - Docker host: `./data/docker/hosted`
   - Container: `/var/www/hosted`
   - Dev mode: `./data/hosted`
 - SQLite data persists under Docker host `./data/docker/hostctl`.
-- OSS env placeholders exist, but full object-storage read/write adapter is not implemented yet.
-- Email verification env placeholders exist, but full verification mail/token flow is not implemented yet.
+- OSS envs: `HOSTCTL_OSS_ENDPOINT`, `HOSTCTL_OSS_BUCKET`, `HOSTCTL_OSS_ACCESS_KEY_ID`, `HOSTCTL_OSS_ACCESS_KEY_SECRET`, `HOSTCTL_OSS_PREFIX`, `HOSTCTL_OSS_PUBLIC_BASE_URL`.
+- Email registration verification is implemented behind env/config: captcha -> email code -> register -> `email_verified=true`; admin user management exposes email and verification state.
 
 ## Important Compatibility Rules
 
@@ -52,7 +55,7 @@ The public UI should feel like a polished PagePilot product, not a generic admin
 Use these before committing:
 
 ```bash
-go test ./cmd/... ./internal/...
+go test -count=1 ./cmd/... ./internal/... ./apps/...
 npm run build --prefix frontend/admin
 npm run build --prefix frontend/user
 python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py
@@ -64,8 +67,10 @@ Do not use plain `go test ./...` while the local `竞品/jpage` checkout exists 
 
 After editing `skill/hostctl-deploy`, rebuild:
 
-```bash
-python - <<'PY'
+PowerShell-safe rebuild command:
+
+```powershell
+@'
 from pathlib import Path
 import zipfile
 root = Path('skill/hostctl-deploy')
@@ -78,13 +83,13 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
         if '__pycache__' in rel.parts or path.suffix in {'.pyc', '.pyo'}:
             continue
         z.write(path, Path('hostctl-deploy') / rel)
-PY
+'@ | python -
 ```
 
 ## Known Follow-Ups
 
-- Implement full SMTP email verification: user email fields, verification token table/hash, send mail, resend, login blocking policy, admin visibility.
-- Implement full OSS storage adapter: write/read/delete/list/download/serve assets, migration path from local files, signed/private/public object access model.
+- Live-test SMTP email verification with a real provider, and decide whether login should require verified email for non-admin accounts.
+- Live-test OSS with real Aliyun credentials; still consider local-to-OSS migration tooling and signed/private object access policy.
 - Improve Markdown rendering toward first-class docs: code highlight, KaTeX, Mermaid, theme switching, and safe CSP.
 - Continue tightening preview isolation: independent preview endpoints, sandbox/CSP by content type, and no parent-context access from user HTML.
 - Consider public share-key separation later, but not in the current product plan.

@@ -1,4 +1,10 @@
 import {
+  Button,
+  Steps,
+  Tag,
+  Timeline
+} from "antd";
+import {
   Bot,
   Bookmark,
   ChevronLeft,
@@ -22,13 +28,14 @@ import {
   Smartphone,
   Sparkles,
   Tablet,
+  Trash2,
   Upload,
   UserRound,
   Workflow
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { api } from "./api";
+import { APIError, api } from "./api";
 import type {
   DeployFilePayload,
   DeployResponse,
@@ -85,16 +92,30 @@ interface ScreensResponse {
   screens?: ScreenInfo[];
 }
 
+interface DeploySiteItem {
+  code: string;
+  title?: string;
+  filename?: string;
+  currentVersion?: number;
+  versionCount?: number;
+  visibility?: string;
+  updatedAt?: string;
+}
+
+interface SiteListResponse {
+  sites?: DeploySiteItem[];
+}
+
 const navItems: Array<{ page: Page; label: string; href: string }> = [
   { page: "home", label: "首页", href: "/" },
   { page: "market", label: "创作市场", href: "/market" },
-  { page: "deploy", label: "手动部署", href: "/deploy.html" },
+  { page: "deploy", label: "手动部署", href: "/deploy" },
   { page: "screens", label: "广告屏", href: "/screens/" }
 ];
 
 function getPageFromPath(pathname: string): Page {
   if (pathname.startsWith("/market")) return "market";
-  if (pathname.startsWith("/deploy.html")) return "deploy";
+  if (pathname.startsWith("/deploy")) return "deploy";
   if (pathname.startsWith("/agents")) return "agents";
   if (pathname.startsWith("/screens")) return "screens";
   return "home";
@@ -112,6 +133,30 @@ function formatDate(value?: string): string {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleDateString("zh-CN");
+}
+
+function formatDateTime(value?: string): string {
+  if (!value) return "-";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+}
+
+function parseTagInput(value: string): string[] {
+  const seen = new Set<string>();
+  return value
+    .split(/[,，;；\n]/)
+    .map((item) => item.trim().replace(/^#+/, ""))
+    .filter(Boolean)
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 6)
+    .map((item) => Array.from(item).slice(0, 24).join(""));
 }
 
 function formatDeviceInfo(info: unknown): string {
@@ -201,11 +246,27 @@ function useRuntime() {
 export function App() {
   const [page, setPage] = useState<Page>(() => getPageFromPath(location.pathname));
   const { config, session } = useRuntime();
+  const [toast, setToast] = useState("");
 
   useEffect(() => {
     const onPop = () => setPage(getPageFromPath(location.pathname));
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  useEffect(() => {
+    let timer: number | undefined;
+    const onToast = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      setToast(typeof detail === "string" && detail ? detail : "操作失败，请稍后重试。");
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => setToast(""), 2600);
+    };
+    window.addEventListener("pagepilot-toast", onToast);
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      window.removeEventListener("pagepilot-toast", onToast);
+    };
   }, []);
 
   const navigate = useCallback((next: Page, href: string) => {
@@ -220,10 +281,11 @@ export function App() {
       <main className={`page-main ${page === "market" ? "market-main" : ""}`}>
         {page === "home" && <HomePage config={config} onNavigate={navigate} />}
         {page === "market" && <MarketPage config={config} session={session} />}
-        {page === "deploy" && <DeployPage config={config} />}
+        {page === "deploy" && <DeployPage config={config} session={session} />}
         {page === "agents" && <AgentsPage config={config} />}
         {page === "screens" && <ScreensPage />}
       </main>
+      {toast && <div className="page-toast" role="status">{toast}</div>}
       <Footer config={config} />
     </div>
   );
@@ -284,22 +346,7 @@ function TopNav({
 
 function Logo() {
   return (
-    <svg className="logo" viewBox="0 0 96 96" aria-hidden="true">
-      <defs>
-        <linearGradient id="pagepilot-logo-bg" x1="8" x2="88" y1="8" y2="88"><stop stopColor="#0B102F" /><stop offset="0.54" stopColor="#0F4C81" /><stop offset="1" stopColor="#0891B2" /></linearGradient>
-        <linearGradient id="pagepilot-logo-wing" x1="18" x2="78" y1="24" y2="72"><stop stopColor="#67E8F9" /><stop offset="1" stopColor="#A78BFA" /></linearGradient>
-        <linearGradient id="pagepilot-logo-page" x1="31" x2="70" y1="33" y2="76"><stop stopColor="#FFFFFF" /><stop offset="1" stopColor="#E0F7FF" /></linearGradient>
-      </defs>
-      <rect x="6" y="6" width="84" height="84" rx="25" fill="url(#pagepilot-logo-bg)" />
-      <path d="M18 61C34 37 58 25 82 18C75 42 62 65 38 78L41 58L18 61Z" fill="url(#pagepilot-logo-wing)" opacity="0.95" />
-      <path d="M28 62L16 80L38 72" fill="none" stroke="#67E8F9" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" opacity="0.8" />
-      <rect x="30" y="32" width="38" height="42" rx="11" fill="url(#pagepilot-logo-page)" stroke="rgba(255,255,255,.72)" strokeWidth="2" />
-      <path d="M30 44a12 12 0 0 1 12-12h14a12 12 0 0 1 12 12v5H30z" fill="#0EA5E9" />
-      <circle cx="39" cy="42" r="2.5" fill="#F472B6" /><circle cx="49" cy="42" r="2.5" fill="#FDE68A" /><circle cx="59" cy="42" r="2.5" fill="#86EFAC" />
-      <path d="M40 58h18M40 66h12" stroke="#0F172A" strokeWidth="4" strokeLinecap="round" opacity="0.78" />
-      <rect x="64" y="54" width="18" height="18" rx="6" fill="#111827" stroke="#67E8F9" strokeWidth="2" />
-      <path d="M69 63h8M73 59v8" stroke="#67E8F9" strokeWidth="2.4" strokeLinecap="round" />
-    </svg>
+    <img className="logo" src="/brand/pagepilot-logo.png" alt="" aria-hidden="true" />
   );
 }
 
@@ -350,6 +397,72 @@ function FlowStep({ label, title, text }: { label: string; title: string; text: 
   );
 }
 
+function HeroAiCanvas() {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const cnv = canvas;
+    const ctx = context;
+
+    let frame = 0;
+    let width = 0;
+    let height = 0;
+    let raf = 0;
+    const nodes = Array.from({ length: 34 }, (_, index) => ({
+      baseX: (Math.sin(index * 2.17) * 0.5 + 0.5) * 0.92 + 0.04,
+      baseY: (Math.cos(index * 1.73) * 0.5 + 0.5) * 0.82 + 0.08,
+      drift: 0.6 + (index % 7) * 0.12,
+      phase: index * 0.73,
+      radius: 1.2 + (index % 4) * 0.35
+    }));
+
+    function resize() {
+      const rect = cnv.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      width = Math.max(1, rect.width);
+      height = Math.max(1, rect.height);
+      cnv.width = Math.floor(width * dpr);
+      cnv.height = Math.floor(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function draw() {
+      frame += 0.008;
+      ctx.clearRect(0, 0, width, height);
+      const points = nodes.map((node) => {
+        const x = node.baseX * width + Math.sin(frame * node.drift + node.phase) * 18;
+        const y = node.baseY * height + Math.cos(frame * node.drift + node.phase) * 14;
+        return { ...node, x, y };
+      });
+
+      points.forEach((point, index) => {
+        const pulse = Math.sin(frame * 2.6 + point.phase) * 0.5 + 0.5;
+        ctx.fillStyle = index % 5 === 0 ? `rgba(166, 135, 255, ${0.18 + pulse * 0.16})` : `rgba(70, 126, 255, ${0.12 + pulse * 0.10})`;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, point.radius + pulse * 1.2, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      if (!reduceMotion.matches) raf = window.requestAnimationFrame(draw);
+    }
+
+    resize();
+    draw();
+    window.addEventListener("resize", resize);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
+
+  return <canvas ref={canvasRef} className="hero-ai-canvas" aria-hidden="true" />;
+}
+
 function HomePage({
   config,
   onNavigate
@@ -357,114 +470,212 @@ function HomePage({
   config: RuntimeConfig | null;
   onNavigate: (page: Page, href: string) => void;
 }) {
+  const homeRef = useRef<HTMLDivElement | null>(null);
+  const [homePreviewTab, setHomePreviewTab] = useState<"agent" | "publish" | "result">("agent");
   const publishLimit = config?.anonymousPolicy?.deployLimit == null ? "-" : String(config.anonymousPolicy.deployLimit);
   const maxSize = formatSize(config?.limits?.maxSiteTotalBytes);
   const fileLimit = config?.limits?.maxFilesPerSite == null ? "-" : String(config.limits.maxFilesPerSite);
+  const capabilities = [
+    ["多格式应用发布", "HTML、Markdown、ZIP、多文件静态站点都能上线；Markdown 文档页也作为一等应用进入预览、市场和二次修改。"],
+    ["Agent 原生交付", "pagep CLI、Skill、MCP 和 HTTP API 围绕同一套发布能力组织，让 Agent 生成后可以直接部署、更新和读取状态。"],
+    ["访问与安全控制", "公开展示、私有内容、访问密码和隔离预览分层处理，避免用户页面影响后台或父页面上下文。"],
+    ["版本治理", "每次修改都形成版本链，可查看历史、复制链接、锁定、回滚或下架，适合持续迭代的 Agent 应用。"],
+    ["创作市场复用", "公开作品可被发现、预览、收藏、点赞、下载源码，也可以交给 Agent/MCP 作为下一次创作参考。"],
+    ["广告屏投放", "把 PagePilot 应用投放到 Android 屏幕，支持远程刷新、截图回传和现场展示确认。"]
+  ];
+  const releaseNotes = [
+    {
+      version: "V0.2",
+      title: "PagePilot 品牌、创作市场和多文件发布",
+      date: "2026-06",
+      body: "支持 HTML / Markdown / ZIP、多文件静态站点、分类、收藏、点赞、版本历史、广告屏菜单和 pagep Skill。"
+    },
+    {
+      version: "V0.1",
+      title: "从 Agent 发布 API 起步",
+      date: "2026-05",
+      body: "建立部署 API、访问链接、基础后台、Token 与匿名 Agent session，让 AI 生成页面可以直接上线。"
+    }
+  ];
+  const previewTabs: Array<{ key: "agent" | "publish" | "result"; label: string; content: string; meta: string }> = [
+    {
+      key: "agent",
+      label: "Agent 输出",
+      content: "<main>\\n  <h1>新品活动页</h1>\\n  <section data-chart=\\\"budget\\\"></section>\\n</main>\\n\\n/assets/hero.png\\n/docs/README.md",
+      meta: "Agent 生成 HTML、Markdown、图片和多文件目录"
+    },
+    {
+      key: "publish",
+      label: "PagePilot 发布",
+      content: "pagep deploy ./dist \\\\\\n  --title \\\"新品活动页\\\" \\\\\\n  --category landing \\\\\\n  --password optional",
+      meta: "自动识别入口文件，记录版本、分类、访问策略"
+    },
+    {
+      key: "result",
+      label: "交付结果",
+      content: "✓ 已生成可访问链接\\n✓ 已记录 v3 版本\\n✓ 已启用访问密码\\n✓ 可进入创作市场 / 广告屏投放",
+      meta: "适合官网、看板、文档、活动页、屏幕展示和 Agent 二次创作"
+    }
+  ];
+  const activePreview = previewTabs.find((item) => item.key === homePreviewTab) || previewTabs[0];
+
+  useEffect(() => {
+    const root = homeRef.current;
+    if (!root) return;
+    const homeRoot = root;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let locked = false;
+
+    function onWheel(event: WheelEvent) {
+      if (event.deltaY <= 0 || Math.abs(event.deltaY) < 18 || reduceMotion.matches || locked) return;
+      const screens = Array.from(homeRoot.querySelectorAll<HTMLElement>("[data-home-screen]"));
+      const viewport = window.innerHeight;
+      const current = screens.find((screen) => {
+        const rect = screen.getBoundingClientRect();
+        return rect.top <= 96 && rect.bottom > 140;
+      });
+      if (current) {
+        const rect = current.getBoundingClientRect();
+        const hasUnreadLongContent = rect.height > viewport + 140 && rect.top < 80 && rect.bottom > viewport + 160;
+        if (hasUnreadLongContent) return;
+      }
+      const next = screens.find((screen) => screen.getBoundingClientRect().top > 120);
+      if (!next) return;
+      event.preventDefault();
+      locked = true;
+      next.scrollIntoView({ behavior: "smooth", block: "start" });
+      window.setTimeout(() => { locked = false; }, 760);
+    }
+
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => window.removeEventListener("wheel", onWheel);
+  }, []);
 
   return (
-    <div className="home-page">
-      <HeroBarrage />
-      <section className="hero-band hero-band-refined">
-        <div className="hero-copy">
-          <div className="eyebrow"><Sparkles size={16} />Agent native publishing platform</div>
-          <h1>把想法交给 Agent，把上线交给 PagePilot</h1>
-          <p>
-            面向 AI 生成应用的发布平台：HTML、Markdown、ZIP、多文件静态站点都能一键上线。
-            PagePilot 继续负责访问密码、版本回滚、锁定下架、屏幕投放和创作市场复用。
-          </p>
-          <div className="hero-pills">
-            <span><Bot size={15} />告诉 Agent 需求</span>
-            <span><Rocket size={15} />秒级上线应用</span>
-            <span><Lock size={15} />访问密码加密</span>
-            <span><Layers size={15} />版本管理回滚</span>
+    <div className="home-page ant-home" ref={homeRef}>
+      <section className="ant-hero-section" data-home-screen>
+        <HeroAiCanvas />
+        <div className="ant-hero-copy">
+          <div className="ant-home-tags">
+            {['HTML', 'Markdown', 'ZIP', 'Agent', 'MCP', 'Screen'].map((item) => <Tag key={item}>{item}</Tag>)}
           </div>
-          <div className="hero-actions">
-            <a
-              className="button primary"
-              href="/agents/"
-              onClick={(event) => {
-                event.preventDefault();
-                onNavigate("agents", "/agents/");
-              }}
-            >
-              <Bot size={18} />交给 Agent 部署
-            </a>
-            <a
-              className="button"
-              href="/market"
-              onClick={(event) => {
-                event.preventDefault();
-                onNavigate("market", "/market");
-              }}
-            >
-              <PackageOpen size={18} />进入创作市场
-            </a>
+          <h1 className="hero-brand-word">
+            <Logo />
+            <span><em>Page</em><b>Pilot</b></span>
+          </h1>
+          <h2>Agent 生成应用的发布控制台</h2>
+          <p>让 Agent 负责生成，让 PagePilot 负责上线、加密、版本、市场复用和广告屏投放。它不是一个 HTML 托管页，而是一套 AI 时代的应用交付工作流。</p>
+          <div className="ant-hero-actions">
+            <Button type="primary" size="large" icon={<Bot size={18} />} onClick={() => onNavigate('agents', '/agents/')}>交给 Agent 部署</Button>
+            <Button size="large" icon={<Upload size={18} />} onClick={() => onNavigate('deploy', '/deploy')}>手动发布</Button>
+          </div>
+          <div className="hero-proof-row" aria-label="PagePilot 核心能力">
+            <span><Rocket size={16} />秒级上线</span>
+            <span><Lock size={16} />访问加密</span>
+            <span><Layers size={16} />版本回滚</span>
+            <span><PackageOpen size={16} />市场复用</span>
           </div>
         </div>
-        <div className="hero-product-flow" aria-label="PagePilot 发布流程">
-          <div className="hero-flow-header">
-            <span>PAGEPILOT PIPELINE</span>
-            <strong>从需求到可访问链接</strong>
+        <div className="hero-flow-motion" aria-label="Agent 生成并发布到 PagePilot">
+          <div className="flow-core"><Logo /><strong>PagePilot</strong></div>
+          <div className="flow-agent"><Bot size={22} /><span>Agent</span></div>
+          <div className="flow-output flow-html"><FileCode2 size={18} /><span>HTML</span></div>
+          <div className="flow-output flow-md"><FileText size={18} /><span>Markdown</span></div>
+          <div className="flow-output flow-zip"><FileArchive size={18} /><span>ZIP</span></div>
+          <div className="flow-path flow-path-a" />
+          <div className="flow-path flow-path-b" />
+          <div className="flow-path flow-path-c" />
+          <div className="flow-launch"><Rocket size={18} /><span>生成可访问链接</span></div>
+          <div className="flow-feature flow-secure"><Lock size={15} /><span>访问密码</span></div>
+          <div className="flow-feature flow-version"><Layers size={15} /><span>版本管理</span></div>
+          <div className="flow-feature flow-market"><PackageOpen size={15} /><span>进入创作市场</span></div>
+          <div className="flow-feature flow-screen"><Monitor size={15} /><span>广告屏投放</span></div>
+        </div>
+        <div className="hero-scroll-cue" aria-hidden="true"><span>继续了解 PagePilot</span><i /></div>
+      </section>
+
+      <section className="home-screen home-second-screen" data-home-screen>
+        <div className="ant-section ant-instant-section">
+          <div className="ant-section-copy">
+            <span>TRY IT NOW</span>
+            <h2>一次发布，补齐应用交付闭环</h2>
+            <p>PagePilot 把 Agent 生成的文件变成可访问、可治理、可复用、可投放的应用资产。你只负责说清需求，剩下的交给发布链路。</p>
+            <div className="delivery-chain" aria-label="PagePilot 发布链路">
+              <div><em>01</em><strong>接收产物</strong><span>HTML / Markdown / ZIP / 多文件站点</span></div>
+              <div><em>02</em><strong>发布治理</strong><span>访问密码、分类、版本、锁定和下架</span></div>
+              <div><em>03</em><strong>交付复用</strong><span>创作市场、源码下载、Agent 二次创作、广告屏投放</span></div>
+            </div>
           </div>
-          <div className="flow-node active">
-            <Bot size={18} />
-            <div><strong>Agent 生成</strong><span>HTML / MD / ZIP / 多文件站点</span></div>
+          <div className="ant-live-editor" aria-label="PagePilot 快速发布预览">
+            <div className="editor-tabs" role="tablist" aria-label="发布预览步骤">
+              {previewTabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={homePreviewTab === tab.key}
+                  className={homePreviewTab === tab.key ? "active" : ""}
+                  onClick={() => setHomePreviewTab(tab.key)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            <pre>{activePreview.content}</pre>
+            <div className="preview-result-bar">
+              <span>{activePreview.meta}</span>
+              <Button type="link" onClick={() => onNavigate('deploy', '/deploy')}>立即发布</Button>
+            </div>
           </div>
-          <div className="flow-node">
-            <Upload size={18} />
-            <div><strong>PagePilot 发布</strong><span>路径或泛域名模式，保留原 code 版本链</span></div>
-          </div>
-          <div className="flow-node">
-            <ShieldCheck size={18} />
-            <div><strong>权限与安全</strong><span>公开、私有、访问密码、隔离预览</span></div>
-          </div>
-          <div className="flow-node">
-            <PackageOpen size={18} />
-            <div><strong>创作市场复用</strong><span>收藏点赞、下载源码、CLI/MCP 二次创作</span></div>
-          </div>
-          <div className="hero-flow-footer">
-            <span><strong>{publishLimit}</strong><em>匿名额度</em></span>
-            <span><strong>{maxSize}</strong><em>整站上限</em></span>
-            <span><strong>{fileLimit}</strong><em>文件数</em></span>
+        </div>
+
+        <div className="second-feature-strip" aria-label="PagePilot 核心能力">
+          <span>FEATURES</span>
+          <div>
+            {capabilities.map(([title], index) => <strong key={title}><em>{String(index + 1).padStart(2, '0')}</em>{title}</strong>)}
           </div>
         </div>
       </section>
 
-      <section className="capability-section home-capabilities">
-        <div className="section-head">
-          <div>
-            <h2>不是普通 HTML 托管，是 Agent 的交付控制台</h2>
-            <p>把 jpage 这类作品市场的复用体验吸收进来，但 PagePilot 更强调版本、加密、后台治理和屏幕投放。</p>
+      <section className="home-screen home-third-screen" data-home-screen>
+        <div className="ant-section ant-market-section">
+          <div className="ant-section-copy">
+            <span>CREATION MARKET</span>
+            <h2>把一次性交付变成可复用的应用资产</h2>
+            <p>创作市场不是模板橱窗，而是 Agent 继续工作的上下文。公开作品可以被发现、收藏、下载源码、复制 CLI，或者作为下一次生成的参考。</p>
+            <Button icon={<PackageOpen size={17} />} onClick={() => onNavigate('market', '/market')}>浏览创作市场</Button>
+          </div>
+          <div className="market-scenario-list">
+            {['产品官网', '数据看板', '文档手册', '活动落地页', '屏幕展示', '效率工具'].map((item) => <button key={item}>{item}</button>)}
           </div>
         </div>
-        <div className="feature-board feature-board-open">
-          <FeatureTile icon={<Rocket />} title="秒级上线应用" desc="HTML、Markdown、ZIP 和多文件静态站点都能发布。" />
-          <FeatureTile icon={<Lock />} title="可加密网页" desc="给页面设置访问密码，公开展示和访问权限分开控制。" />
-          <FeatureTile icon={<Layers />} title="版本管理" desc="每次修改形成新版本，可查看、回滚、锁定和下架。" />
-          <FeatureTile icon={<PackageOpen />} title="创作市场" desc="公开作品可预览、收藏、下载源码，并交给 Agent/MCP 继续创作。" />
-          <FeatureTile icon={<Monitor />} title="广告屏投放" desc="绑定屏幕，远程发布、刷新、截图，适合展厅和门店大屏。" />
-          <FeatureTile icon={<KeyRound />} title="CLI / MCP / API" desc="网页、pagep CLI、Skill 和 MCP 围绕同一套发布能力。" />
+
+        <div className="ant-section ant-workflow-section">
+          <div className="ant-section-copy wide"><span>HOW IT WORKS</span><h2>三步，从 Agent 产物到可访问应用</h2></div>
+          <Steps className="ant-home-steps" items={[
+            { title: '生成或上传', description: 'Agent 生成 HTML、Markdown、ZIP，或你手动上传目录与文件。' },
+            { title: '发布与治理', description: 'PagePilot 生成访问地址，记录版本、权限、分类和市场状态。' },
+            { title: '分享与复用', description: '复制链接、投放屏幕、下载源码，或让 Agent 基于旧作品继续迭代。' }
+          ]} />
+          <div className="ant-stat-line"><div><strong>{publishLimit}</strong><span>匿名额度</span></div><div><strong>{maxSize}</strong><span>整站上限</span></div><div><strong>{fileLimit}</strong><span>文件上限</span></div><div><strong>pagep</strong><span>CLI / Skill</span></div></div>
         </div>
       </section>
 
-      <section className="flow-section">
-        <div className="section-head">
-          <div>
-            <h2>从想法到链接，只走一条线</h2>
-            <p>用户说需求，Agent 生成页面，PagePilot 负责上线、治理和复用；后续迭代继续追加版本，不把作品散成一堆地址。</p>
-          </div>
+      <section className="home-screen home-fourth-screen" data-home-screen>
+        <div className="ant-section ant-version-section">
+          <div className="ant-section-copy"><span>VERSION HISTORY</span><h2>持续进化的产品能力</h2><p>每次迭代都围绕 Agent 生成应用的真实交付链路展开。后续版本会继续追加到这里，形成可回顾的产品路线。</p></div>
+          <Timeline items={releaseNotes.map((note, index) => ({ color: index === 0 ? '#575ff5' : '#001541', children: <><strong>{note.version} · {note.title}</strong><p><span>{note.date}</span>{note.body}</p></> }))} />
         </div>
-        <div className="flow-grid">
-          <FlowStep label="01" title="告诉 Agent 需求" text="让 Agent 生成网页、修复样式、整理多文件结构。" />
-          <FlowStep label="02" title="发布到 PagePilot" text="使用 pagep Skill、MCP 或手动部署，把文件包推到服务器。" />
-          <FlowStep label="03" title="分享或加密" text="公开展示、访问密码、版本历史和屏幕投放按需开启。" />
-          <FlowStep label="04" title="进入创作市场" text="公开作品可以下载源码、复制 CLI，或交给 Agent 二次创作。" />
-        </div>
+
+        <section className="ant-philosophy-section">
+          <div><strong>AI-Native</strong><span>让 Agent 成为内容生产者，PagePilot 成为交付系统。</span></div>
+          <div><strong>可治理</strong><span>版本、权限、密码、下架、分类和审计是发布平台的核心。</span></div>
+          <div><strong>可复用</strong><span>每个公开作品都可以成为下一次生成和二次创作的上下文。</span></div>
+        </section>
       </section>
     </div>
   );
 }
-
 
 function MarketPage({ config, session }: { config: RuntimeConfig | null; session: SessionInfo | null }) {
   const pageSize = 24;
@@ -481,6 +692,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
   const [marketCategories, setMarketCategories] = useState<MarketCategoryInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const listScrollRef = useRef(0);
   const hasMore = items.length < total;
   const pinnedCount = items.filter((item) => item.isPinned).length;
   const categories: Array<{ key: MarketCategory; label: string; note: string; icon: React.ReactNode }> = [
@@ -506,6 +718,14 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
     { key: "newest", label: "最新发布" },
     { key: "featured", label: "精选优先" }
   ];
+  const selectedCategoryLabel = categories.find((item) => item.key === category)?.label || "全部分类";
+  const selectedKindLabel = kindFilters.find((item) => item.key === kind)?.label || "全部类型";
+  const feedScope = category === "all" && kind === "all"
+    ? "全部分类"
+    : [kind !== "all" ? selectedKindLabel : "", category !== "all" ? selectedCategoryLabel : ""].filter(Boolean).join(" / ") || "全部分类";
+  const feedSummary = loading
+    ? feedScope + " · 正在加载作品"
+    : feedScope + " · 共 " + total + " 个作品" + (pinnedCount ? " · 本页 " + pinnedCount + " 个精选" : "") + " · 可预览、复用和交给 Agent 二次创作";
 
   const load = useCallback(async (nextPage = 1, append = false) => {
     if (append) {
@@ -526,6 +746,20 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
       setItems((current) => append ? [...current, ...(data.deploys || [])] : (data.deploys || []));
       setTotal(data.total || 0);
       setPage(nextPage);
+    } catch (err) {
+      if (err instanceof APIError && err.status === 401 && (kind === "mine" || kind === "favorites")) {
+        window.dispatchEvent(new CustomEvent("pagepilot-toast", {
+          detail: kind === "mine"
+            ? "请先登录后查看账号发布；匿名发布只能在当前浏览器会话未失效时识别。"
+            : "请先登录后查看收藏，收藏会同步到用户中心。"
+        }));
+        setKind("all");
+        setItems([]);
+        setTotal(0);
+        setPage(1);
+        return;
+      }
+      throw err;
     } finally {
       if (append) {
         setLoadingMore(false);
@@ -540,6 +774,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
   }, [load]);
 
   const openDetail = useCallback(async (item: MarketplaceDeploy) => {
+    listScrollRef.current = window.scrollY;
     setDetailLoading(true);
     setDetail(item);
     try {
@@ -549,6 +784,13 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
     } finally {
       setDetailLoading(false);
     }
+  }, []);
+
+  const backToList = useCallback(() => {
+    setDetail(null);
+    window.setTimeout(() => {
+      window.scrollTo({ top: listScrollRef.current, behavior: "auto" });
+    }, 0);
   }, []);
 
   useEffect(() => {
@@ -673,12 +915,6 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
                   <option value="views_desc">访问最多</option>
                   <option value="oldest">最早发布</option>
                 </select>
-                {kind === "all" && (
-                  <div className="market-inline-actions">
-                    <a className="button compact primary" href="/agents/"><Bot size={15} />交给 Agent</a>
-                    <a className="button compact" href="/deploy.html"><Upload size={15} />手动部署</a>
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -688,19 +924,14 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
               item={detail}
               loading={detailLoading}
               session={session}
-              onBack={() => setDetail(null)}
+              onBack={backToList}
               onUse={setSelected}
             />
           ) : (
             <>
               <div className="market-feed-head">
                 <div>
-                  <h2>{categories.find((item) => item.key === category)?.label || "全部作品"}</h2>
-                  <p>
-                    {loading
-                      ? "正在加载作品"
-                      : `共 ${total} 个作品，${pinnedCount ? `本页 ${pinnedCount} 个精选，` : ""}可预览、复用和交给 Agent 二次创作。`}
-                  </p>
+                  <h2 className="market-feed-titleline">{feedSummary}</h2>
                 </div>
                 <div className="market-feed-meta">整站上限 {formatSize(config?.limits?.maxSiteTotalBytes)}</div>
               </div>
@@ -713,6 +944,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
                     <MarketplaceCard
                       key={item.code}
                       item={item}
+                      session={session}
                       onChanged={refresh}
                       onUse={setSelected}
                       onDetail={openDetail}
@@ -754,11 +986,13 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
 
 function MarketplaceCard({
   item,
+  session,
   onChanged,
   onUse,
   onDetail
 }: {
   item: MarketplaceDeploy;
+  session: SessionInfo | null;
   onChanged: () => void;
   onUse: (item: MarketplaceDeploy) => void;
   onDetail: (item: MarketplaceDeploy) => void;
@@ -769,6 +1003,8 @@ function MarketplaceCard({
   const title = item.title || item.code || "未命名作品";
   const appURL = sameSiteURL(`/agent/${encodeURIComponent(item.code)}/`);
   const isLocked = Boolean(item.accessProtected);
+  const displayTags = (item.tags || []).slice(0, 3);
+  const heat = getMarketHeat(item);
 
   useEffect(() => {
     const iframe = previewRef.current;
@@ -805,6 +1041,10 @@ function MarketplaceCard({
   };
 
   const toggleFavorite = async () => {
+    if (!session?.success && !session?.userId) {
+      window.dispatchEvent(new CustomEvent("pagepilot-toast", { detail: "请先登录后再收藏作品，登录后可在用户中心查看收藏。" }));
+      return;
+    }
     try {
       await api(`/api/deploys/${encodeURIComponent(item.code)}/favorite`, {
         method: "POST",
@@ -812,8 +1052,18 @@ function MarketplaceCard({
         body: JSON.stringify({ favorited: !item.favorited })
       });
       onChanged();
+    } catch {
+      window.dispatchEvent(new CustomEvent("pagepilot-toast", { detail: "收藏失败，请确认已登录后重试。" }));
+    }
+  };
+
+  const deleteSite = async () => {
+    if (!window.confirm(`确认删除「${title}」？删除后站点和所有版本都会移除。`)) return;
+    try {
+      await api(`/api/admin/sites/${encodeURIComponent(item.code)}`, { method: "DELETE" });
+      onChanged();
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "请先登录，或先发布一次以建立本浏览器身份。");
+      window.alert(err instanceof Error ? err.message : "删除失败，请确认你有权限删除这个作品。");
     }
   };
 
@@ -835,51 +1085,59 @@ function MarketplaceCard({
             sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"
           />
         )}
-        <div className="card-quickbar">
-          <span><Eye size={13} />{item.viewCount || 0}</span>
-          <span><Layers size={13} />{item.versionCount || 1}</span>
-          <button className={`quick-icon ${item.favorited ? "active" : ""}`} type="button" aria-label="收藏" onClick={toggleFavorite}>
-            <Bookmark size={14} />{item.favoriteCount || 0}
+        <div className="card-quickbar" aria-label="作品数据">
+          <span title="访问量"><Eye size={13} />{compactNumber(item.viewCount || 0)}</span>
+          <span title="版本数"><Layers size={13} />v{item.versionCount || 1}</span>
+        </div>
+        <div className="card-hover-actions">
+          <button className="button compact dark" type="button" onClick={() => onDetail(item)}>查看详情</button>
+          <button className="button compact primary" type="button" onClick={() => onUse(item)}>使用模板</button>
+          <button className="quick-action" type="button" aria-label="点赞" onClick={like}>
+            <Heart size={15} /><span>{compactNumber(item.likeCount || 0)}</span>
           </button>
-          <button className="quick-icon" type="button" aria-label="点赞" onClick={like}>
-            <Heart size={14} />{item.likeCount || 0}
+          <button className={`quick-action ${item.favorited ? "active" : ""}`} type="button" aria-label="收藏" onClick={toggleFavorite}>
+            <Bookmark size={15} /><span>{compactNumber(item.favoriteCount || 0)}</span>
           </button>
-          <a className="quick-open" href={appURL} target="_blank" rel="noreferrer" aria-label="打开应用">
-            <ExternalLink size={14} />
+          <a className="quick-action" href={appURL} target="_blank" rel="noreferrer" aria-label="打开应用">
+            <ExternalLink size={15} /><span>打开</span>
           </a>
+          {item.canManage && (
+            <button className="quick-action danger" type="button" onClick={() => void deleteSite()}>
+              <Trash2 size={15} /><span>删除</span>
+            </button>
+          )}
         </div>
       </div>
       <div className="card-body">
+        <div className="market-card-tags compact">
+          <span className="scene">{marketCategoryLabel(item.category)}</span>
+          {item.isPinned && <span className="featured">精选</span>}
+          <span className="type">{marketFileType(item)}</span>
+        </div>
         <div className="card-title-row">
           <div className="title-wrap">
             <h3>{title}</h3>
-            <code>{item.code}</code>
           </div>
-          <div className="badge-row">
-            {item.isPinned && <span className="badge amber">置顶</span>}
-            {isLocked && <span className="badge rose">加密</span>}
-            {item.visibility === "public" && <span className="badge green">公开</span>}
-          </div>
+          {heat && <span className={`ct-heat ${heat.level}`}>{heat.label}</span>}
         </div>
         <p>{item.description || "这个作品还没有描述。"}</p>
-        <div className="market-card-tags">
-          <span>{marketFileType(item)}</span>
-          {item.category && <span>{marketCategoryLabel(item.category)}</span>}
-          {item.owned && <span>我的发布</span>}
-          {item.accessProtected && <span>访问密码</span>}
+        <div className="market-card-tags user-tags">
+          {displayTags.map((tag) => <span className="user-tag" key={tag}>#{tag}</span>)}
         </div>
-        <div className="card-footnote">
-          <span>{formatDate(item.updatedAt || item.createdAt)}</span>
-        </div>
-        <div className="card-actions">
-          <button className="button compact primary" type="button" onClick={() => onUse(item)}>
-            <Workflow size={14} />使用
-          </button>
-          <button className="button compact" type="button" onClick={() => onDetail(item)}>详情</button>
+        <div className="market-card-footer">
+          <span>{item.owned ? "我的发布" : "PagePilot 创作者"}</span>
+          <time>{formatDateTime(item.updatedAt || item.createdAt)}</time>
         </div>
       </div>
     </article>
   );
+}
+
+function compactNumber(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value >= 10000) return `${(value / 10000).toFixed(value >= 100000 ? 0 : 1)}w`;
+  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k`;
+  return String(value);
 }
 
 function MarketDetailViewFull({
@@ -898,11 +1156,12 @@ function MarketDetailViewFull({
   const appURL = sameSiteURL(`/agent/${encodeURIComponent(item.code)}/`);
   const isLocked = Boolean(item.accessProtected);
   const canDownload = Boolean(session?.success) && !isLocked;
-  const canManage = Boolean(item.owned || session?.isAdmin);
+  const canManage = Boolean(item.canManage || item.owned || session?.isAdmin);
   const [versions, setVersions] = useState<VersionItem[]>([]);
   const [viewport, setViewport] = useState<PreviewViewport>("desktop");
   const [busyVersion, setBusyVersion] = useState<number | null>(null);
   const [showAllVersions, setShowAllVersions] = useState(false);
+  const displayTags = (item.tags || []).slice(0, 6);
 
   const loadVersions = useCallback(async () => {
     const data = await api<VersionsResponse>(`/api/deploys/${encodeURIComponent(item.code)}/versions`);
@@ -957,17 +1216,20 @@ function MarketDetailViewFull({
   };
 
   const currentVersion = versions.find((version) => version.isCurrent) || versions[0];
-  const visibleVersions = showAllVersions ? versions : versions.slice(0, 3);
-  const updateURL = `/deploy.html?code=${encodeURIComponent(item.code)}&version=1`;
+  const visibleVersions = showAllVersions ? versions : versions.slice(0, 2);
+  const updateURL = `/deploy?code=${encodeURIComponent(item.code)}&version=1`;
 
   return (
     <section className="market-detail-layout">
       <div className="market-detail-stage">
         <div className="detail-preview-frame">
           <div className="detail-preview-toolbar">
-            <div>
-              <strong>v{currentVersion?.versionNumber || item.versionCount || 1} 预览</strong>
-              <span>{isLocked ? "已加密，打开后输入访问密码" : "桌面、平板、手机三端查看"}</span>
+            <div className="detail-toolbar-left">
+              <button className="button compact detail-back-button" type="button" onClick={onBack}><ChevronLeft size={15} />返回列表</button>
+              <div>
+                <strong>v{currentVersion?.versionNumber || item.versionCount || 1} 预览</strong>
+                <span>{isLocked ? "已加密，打开后输入访问密码" : "桌面、平板、手机三端查看"}</span>
+              </div>
             </div>
             <div className="viewport-tabs" role="group" aria-label="预览尺寸">
               <button className={viewport === "desktop" ? "active" : ""} type="button" title="桌面端" onClick={() => setViewport("desktop")}><Monitor size={15} /></button>
@@ -989,13 +1251,29 @@ function MarketDetailViewFull({
         </div>
       </div>
       <aside className="market-detail-card">
-        <button className="button compact" type="button" onClick={onBack}><ChevronLeft size={15} />返回列表</button>
         <div>
           <span className="mini-label">{loading ? "LOADING" : "MARKET DETAIL"}</span>
           <h2>{item.title || item.code}</h2>
           <p>{item.description || "这个作品还没有描述。"}</p>
         </div>
-        <div className="market-detail-meta">
+        <div className="detail-identity">
+          <button className="detail-code-box" type="button" onClick={() => void copyText(item.code)} title="复制 code">
+            <span>应用 code</span>
+            <strong>{item.code}</strong>
+          </button>
+          <div className="detail-state-row">
+            <span>{item.visibility === "public" ? "公开展示" : "仅链接访问"}</span>
+            {isLocked && <span>访问密码</span>}
+            {item.owned && <span>我的发布</span>}
+            {item.isPinned && <span>精选</span>}
+          </div>
+          {!!displayTags.length && (
+            <div className="detail-tag-row">
+              {displayTags.map((tag) => <span key={tag}>#{tag}</span>)}
+            </div>
+          )}
+        </div>
+        <div className="market-detail-meta compact">
           <span><strong>{marketCategoryLabel(item.category)}</strong><em>分类</em></span>
           <span><strong>{marketFileType(item)}</strong><em>类型</em></span>
           <span><strong>{item.likeCount || 0}</strong><em>点赞</em></span>
@@ -1046,93 +1324,11 @@ function MarketDetailViewFull({
               </div>
             );
           })}
-          {versions.length > 3 && (
-            <button className="button compact full" type="button" onClick={() => setShowAllVersions((value) => !value)}>
-              {showAllVersions ? "收起版本" : `查看更多版本（${versions.length - 3}）`}
+          {versions.length > 2 && (
+            <button className="button compact full detail-version-more" type="button" onClick={() => setShowAllVersions((value) => !value)}>
+              {showAllVersions ? "收起版本" : `更多版本（${versions.length - 2}）`}
             </button>
           )}
-          {!versions.length && <span className="muted-line">暂无版本记录</span>}
-        </div>
-      </aside>
-    </section>
-  );
-}
-
-function MarketDetailView({
-  item,
-  loading,
-  session,
-  onBack,
-  onUse
-}: {
-  item: MarketplaceDeploy;
-  loading: boolean;
-  session: SessionInfo | null;
-  onBack: () => void;
-  onUse: (item: MarketplaceDeploy) => void;
-}) {
-  const appURL = sameSiteURL(`/agent/${encodeURIComponent(item.code)}/`);
-  const isLocked = Boolean(item.accessProtected);
-  const canDownload = Boolean(session?.success) && !isLocked;
-  const [versions, setVersions] = useState<VersionItem[]>([]);
-
-  useEffect(() => {
-    api<VersionsResponse>(`/api/deploys/${encodeURIComponent(item.code)}/versions`)
-      .then((data) => setVersions((data.versions || []).slice().sort((a, b) => Number(b.versionNumber) - Number(a.versionNumber))))
-      .catch(() => setVersions([]));
-  }, [item.code]);
-
-  return (
-    <section className="market-detail-layout">
-      <div className={`market-detail-preview ${isLocked ? "is-locked" : ""}`}>
-        {isLocked ? (
-          <div className="locked-preview">
-            <Lock size={36} />
-            <strong>网页已加密</strong>
-            <span>打开应用并输入访问密码后才能查看内容。</span>
-          </div>
-        ) : (
-          <iframe src={appURL} title={`${item.title || item.code} 预览`} sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals" />
-        )}
-      </div>
-      <aside className="market-detail-card">
-        <button className="button compact" type="button" onClick={onBack}><ChevronLeft size={15} />返回列表</button>
-        <div>
-          <span className="mini-label">{loading ? "LOADING" : "MARKET DETAIL"}</span>
-          <h2>{item.title || item.code}</h2>
-          <p>{item.description || "这个作品还没有描述。"}</p>
-        </div>
-        <div className="market-detail-meta">
-          <span><strong>{marketCategoryLabel(item.category)}</strong><em>分类</em></span>
-          <span><strong>{marketFileType(item)}</strong><em>类型</em></span>
-          <span><strong>{item.likeCount || 0}</strong><em>点赞</em></span>
-          <span><strong>{item.viewCount || 0}</strong><em>访问</em></span>
-          <span><strong>{item.versionCount || 1}</strong><em>版本</em></span>
-          <span><strong>{formatDate(item.updatedAt || item.createdAt)}</strong><em>更新</em></span>
-        </div>
-        <div className="market-detail-actions">
-          <button className="button primary full" type="button" onClick={() => onUse(item)}>
-            <Workflow size={16} />使用此模板
-          </button>
-          <a className="button full" href={appURL} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开应用</a>
-          {canDownload ? (
-            <a className="button full" href={`/api/deploy/content?code=${encodeURIComponent(item.code)}&download=1`}><Download size={16} />下载源文件</a>
-          ) : (
-            <a className="button full" href="/admin?mode=login"><Download size={16} />登录后下载源文件</a>
-          )}
-        </div>
-        <div className="detail-qr-block">
-          <img src={`/api/deploys/${encodeURIComponent(item.code)}/qr`} alt={`${item.code} 二维码`} />
-          <span>扫码打开当前应用</span>
-        </div>
-        <div className="detail-version-list">
-          <strong>历史版本</strong>
-          {versions.slice(0, 8).map((version) => (
-            <a href={`/agent/${encodeURIComponent(item.code)}/versions/${version.versionNumber}/`} target="_blank" rel="noreferrer" key={version.versionNumber}>
-              <span>v{version.versionNumber}{version.isCurrent ? " · 当前" : ""}</span>
-              <em>{formatDate(version.createdAt)}</em>
-            </a>
-          ))}
           {!versions.length && <span className="muted-line">暂无版本记录</span>}
         </div>
       </aside>
@@ -1158,6 +1354,13 @@ function marketCategoryLabel(category?: string) {
   };
   if (!category) return "未分类";
   return labels[category] || category;
+}
+
+function getMarketHeat(item: MarketplaceDeploy): { label: string; level: "high" | "warm" } | null {
+  const score = (item.viewCount || 0) + (item.likeCount || 0) * 6 + (item.favoriteCount || 0) * 8 + (item.versionCount || 1) * 2;
+  if (score >= 80) return { label: "爆款", level: "high" };
+  if (score >= 32) return { label: "热门", level: "warm" };
+  return null;
 }
 
 function categoryIcon(slug?: string) {
@@ -1235,23 +1438,28 @@ function UseCard({ icon, title, text, children }: { icon: React.ReactNode; title
   );
 }
 
-function DeployPage({ config }: { config: RuntimeConfig | null }) {
+function DeployPage({ config, session }: { config: RuntimeConfig | null; session: SessionInfo | null }) {
   const [mode, setMode] = useState<"single" | "multi">("single");
   const [filename, setFilename] = useState("index.html");
   const [content, setContent] = useState("<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>PagePilot App</title>\n</head>\n<body>\n  <h1>Hello PagePilot</h1>\n</body>\n</html>");
   const [files, setFiles] = useState<EditableDeployFile[]>([{ path: "index.html", content: "<h1>Hello PagePilot</h1>", isText: true, size: 24 }]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [visibility, setVisibility] = useState<"public" | "unlisted">("public");
+  const [visibility, setVisibility] = useState<"public" | "unlisted">("unlisted");
   const [deployCategory, setDeployCategory] = useState<MarketCategory>("");
+  const [tagsInput, setTagsInput] = useState("");
   const [marketCategories, setMarketCategories] = useState<MarketCategoryInfo[]>([]);
   const [accessPassword, setAccessPassword] = useState("");
   const [enableCustom, setEnableCustom] = useState(false);
   const [customCode, setCustomCode] = useState("");
   const [createVersion, setCreateVersion] = useState(false);
+  const [updatableSites, setUpdatableSites] = useState<DeploySiteItem[]>([]);
+  const [loadingUpdatableSites, setLoadingUpdatableSites] = useState(false);
+  const [updatableSitesError, setUpdatableSitesError] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<DeployResponse | null>(null);
+  const canPublishToMarket = Boolean(session?.success || session?.userId);
 
   const totalSize = mode === "single" ? fileTextSize(content) : files.reduce((sum, file) => sum + (file.size ?? fileTextSize(file.content)), 0);
   const ready = mode === "single"
@@ -1263,7 +1471,6 @@ function DeployPage({ config }: { config: RuntimeConfig | null }) {
       .then((data) => {
         const next = data.categories || [];
         setMarketCategories(next);
-        setDeployCategory((current) => current || next[0]?.slug || "");
       })
       .catch(() => setMarketCategories([]));
   }, []);
@@ -1274,9 +1481,41 @@ function DeployPage({ config }: { config: RuntimeConfig | null }) {
     const shouldCreateVersion = params.get("version") === "1" || params.get("mode") === "version";
     if (!code || !shouldCreateVersion) return;
     setCreateVersion(true);
-    setEnableCustom(true);
     setCustomCode(code);
   }, []);
+
+  useEffect(() => {
+    if (!createVersion) {
+      setUpdatableSitesError("");
+      return;
+    }
+    let alive = true;
+    setLoadingUpdatableSites(true);
+    setUpdatableSitesError("");
+    api<SiteListResponse>("/api/admin/sites")
+      .then((data) => {
+        if (!alive) return;
+        const sites = (data.sites || []).filter((site) => site.code);
+        setUpdatableSites(sites);
+        if (!customCode && sites.length) setCustomCode(sites[0].code);
+        if (customCode && sites.length && !sites.some((site) => site.code === customCode)) {
+          setUpdatableSitesError("当前登录账号或匿名会话无权更新这个发布，请从列表中重新选择。");
+          setCustomCode("");
+        }
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setUpdatableSites([]);
+        setCustomCode("");
+        setUpdatableSitesError(err instanceof Error ? err.message : "请先登录，或使用创建该发布的匿名会话。");
+      })
+      .finally(() => {
+        if (alive) setLoadingUpdatableSites(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [createVersion]);
 
   const readUploaded = async (list: FileList | null) => {
     if (!list?.length) return;
@@ -1312,11 +1551,15 @@ function DeployPage({ config }: { config: RuntimeConfig | null }) {
     setError("");
     setResult(null);
     try {
+      if (createVersion && !customCode.trim()) {
+        throw new Error("请先从可更新发布列表中选择一个作品。");
+      }
       const payload: Record<string, unknown> = {
         title: title.trim(),
         description: description.trim(),
-        visibility,
-        category: createVersion ? undefined : deployCategory,
+        visibility: canPublishToMarket ? visibility : "unlisted",
+        category: createVersion ? undefined : (deployCategory || undefined),
+        tags: createVersion ? undefined : parseTagInput(tagsInput),
         accessPassword: accessPassword.trim() || undefined
       };
       if (enableCustom || createVersion) payload.code = customCode.trim();
@@ -1392,15 +1635,21 @@ function DeployPage({ config }: { config: RuntimeConfig | null }) {
           <label className="field">
             <span>市场可见性</span>
             <select value={visibility} onChange={(event) => setVisibility(event.target.value as "public" | "unlisted")}>
-              <option value="public">进入创作市场</option>
+              <option value="public" disabled={!canPublishToMarket}>进入创作市场（登录后可选）</option>
               <option value="unlisted">不进入市场</option>
+            </select>
+            {!canPublishToMarket && <em>匿名发布默认仅链接访问，登录后可进入创作市场。</em>}
+          </label>
+          <label className="field">
+            <span>作品分类（可选）</span>
+            <select value={deployCategory} onChange={(event) => setDeployCategory(event.target.value as MarketCategory)} disabled={createVersion}>
+              <option value="">暂不分类</option>
+              {marketCategories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}
             </select>
           </label>
           <label className="field">
-            <span>作品分类</span>
-            <select value={deployCategory} onChange={(event) => setDeployCategory(event.target.value as MarketCategory)} disabled={createVersion}>
-              {marketCategories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}
-            </select>
+            <span>作品标签</span>
+            <input value={tagsInput} onChange={(event) => setTagsInput(event.target.value)} disabled={createVersion} placeholder="官网, 看板, 活动页" />
           </label>
         </div>
         <div className="field-grid">
@@ -1413,7 +1662,7 @@ function DeployPage({ config }: { config: RuntimeConfig | null }) {
           <input type="checkbox" checked={enableCustom || createVersion} disabled={createVersion} onChange={(event) => setEnableCustom(event.target.checked)} />
           自定义 code 后缀
         </label>
-        {(enableCustom || createVersion) && (
+        {enableCustom && !createVersion && (
           <input className="standalone-input mono" value={customCode} onChange={(event) => setCustomCode(event.target.value)} placeholder={createVersion ? "输入已有 code" : "my-landing"} />
         )}
         <label className="check-line">
@@ -1422,12 +1671,31 @@ function DeployPage({ config }: { config: RuntimeConfig | null }) {
             checked={createVersion}
             onChange={(event) => {
               setCreateVersion(event.target.checked);
-              if (event.target.checked) setEnableCustom(true);
+              if (event.target.checked) setEnableCustom(false);
             }}
           />
           更新已有发布，追加为新版本
         </label>
-        {createVersion && <div className="hint-box">只有站点所有者或管理员可以更新已有 code；不会覆盖其他用户的作品。</div>}
+        {createVersion && (
+          <div className="update-version-picker">
+            <label className="field">
+              <span>选择要更新的发布</span>
+              <select value={customCode} onChange={(event) => setCustomCode(event.target.value)} disabled={loadingUpdatableSites || !updatableSites.length}>
+                <option value="">{loadingUpdatableSites ? "正在加载可更新发布..." : "请选择当前账号或匿名会话的发布"}</option>
+                {updatableSites.map((site) => (
+                  <option value={site.code} key={site.code}>
+                    {(site.title || site.code)} / {site.code} / v{site.currentVersion || site.versionCount || 1}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="hint-box">
+              更新只能从当前登录用户或当前匿名 session 拥有的发布中选择；认领后的匿名发布需要登录对应账号更新。
+              {updatableSitesError && <strong>{updatableSitesError}</strong>}
+              {!loadingUpdatableSites && !updatableSitesError && !updatableSites.length && <strong>暂无可更新发布。</strong>}
+            </div>
+          </div>
+        )}
 
         {mode === "single" ? (
           <>
@@ -1480,13 +1748,13 @@ function DeployPage({ config }: { config: RuntimeConfig | null }) {
           <Rocket size={18} />{busy ? "部署中..." : "立即部署"}
         </button>
         {error && <div className="error-box">{error}</div>}
-        {result && <DeployResult result={result} />}
       </aside>
+      {result && <DeployResult result={result} onClose={() => setResult(null)} />}
     </section>
   );
 }
 
-function DeployResult({ result }: { result: DeployResponse }) {
+function DeployResult({ result, onClose }: { result: DeployResponse; onClose: () => void }) {
   const appURL = sameSiteURL(result.url);
   const detailURL = sameSiteURL(result.detailUrl || result.url);
   const versionURL = sameSiteURL(result.versionUrl || "");
@@ -1498,18 +1766,30 @@ function DeployResult({ result }: { result: DeployResponse }) {
     ["版本", result.versionNumber ? `v${result.versionNumber}` : "-"]
   ];
   return (
-    <div className="result-box">
-      <strong>部署成功</strong>
-      {rows.map(([label, value]) => (
-        <div className="result-row" key={label}>
-          <span>{label}</span>
-          <code>{value}</code>
-          <button type="button" onClick={() => navigator.clipboard.writeText(value)}><Copy size={14} /></button>
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="部署成功">
+      <div className="result-modal">
+        <div className="result-modal-head">
+          <div>
+            <span className="mini-label">DEPLOY SUCCESS</span>
+            <strong>部署成功</strong>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">×</button>
         </div>
-      ))}
-      <div className="card-actions">
-        <a className="button compact primary" href={appURL} target="_blank" rel="noreferrer">打开</a>
-        <a className="button compact" href="/market" target="_blank" rel="noreferrer">创作市场</a>
+        <p>应用已经上线，下面这些链接可以直接复制给用户、Agent 或继续进入创作市场复用。</p>
+        <div className="result-box">
+          {rows.map(([label, value]) => (
+            <div className="result-row" key={label}>
+              <span>{label}</span>
+              <code>{value}</code>
+              <button type="button" onClick={() => navigator.clipboard.writeText(value)} aria-label={`复制${label}`}><Copy size={14} /></button>
+            </div>
+          ))}
+        </div>
+        <div className="modal-actions">
+          <a className="button primary" href={appURL} target="_blank" rel="noreferrer">打开应用</a>
+          <a className="button" href="/market" target="_blank" rel="noreferrer">进入创作市场</a>
+          <button className="button" type="button" onClick={onClose}>继续部署</button>
+        </div>
       </div>
     </div>
   );
@@ -1703,40 +1983,67 @@ function ScreensPage() {
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
 
+  const onlineCount = screens.filter((screen) => String(screen.status || "").toLowerCase().includes("online")).length;
+
   return (
-    <section className="content-page">
-      <div className="sub-hero screen-hero">
-        <div className="eyebrow"><Monitor size={16} />屏幕投放</div>
-        <h1>把 PagePilot 应用发布到广告屏</h1>
-        <p>Android 屏幕 App 一次绑定到用户后，可由后台、Skill 或 MCP 投放应用、刷新 WebView、截图和远程控制。</p>
-        <div className="hero-actions">
-          <a className="button primary" href="/admin"><Monitor size={18} />管理屏幕</a>
-          <a className="button" href="/agents/"><Bot size={18} />用 Agent 投屏</a>
-        </div>
-      </div>
-      <div className="panel-table">
-        <div className="screen-capability-grid">
-          <FeatureTile icon={<Monitor />} title="屏幕绑定" desc="Android 屏幕 App 一次绑定，后续由账号统一管理。" />
-          <FeatureTile icon={<Rocket />} title="远程投放" desc="从后台、Skill 或 MCP 选择 PagePilot 应用投放到屏幕。" />
-          <FeatureTile icon={<Eye />} title="截图回传" desc="请求屏幕截图，确认现场展示是否正常。" />
-          <FeatureTile icon={<Workflow />} title="运行命令" desc="支持刷新、休眠、唤醒和基础远程控制。" />
-        </div>
-        <div className="section-head">
-          <div>
-            <h2>我的屏幕</h2>
-            <p>{error ? "登录注册用户后可查看自己的屏幕。" : `服务器：${currentOrigin()}`}</p>
+    <section className="content-page screen-page-v2">
+      <div className="screen-hero-v2">
+        <div className="screen-hero-copy">
+          <div className="eyebrow"><Monitor size={16} />广告屏投放</div>
+          <h1>把 Agent 生成的应用，投到真实屏幕上</h1>
+          <p>屏幕绑定后，PagePilot 可以从后台、Skill、MCP 或 CLI 远程投放应用、刷新 WebView、回传截图，并把线上页面变成可管理的展示终端。</p>
+          <div className="screen-hero-actions">
+            <a className="button primary" href="/admin?tab=screens"><Monitor size={18} />进入屏幕管理</a>
+            <a className="button" href="/market"><PackageOpen size={18} />选择市场作品</a>
           </div>
         </div>
+        <div className="screen-device-demo" aria-hidden="true">
+          <div className="screen-device-frame">
+            <div className="screen-device-top"><span /><span /><span /></div>
+            <div className="screen-device-canvas">
+              <strong>PagePilot Screen</strong>
+              <span>/agent/product-launch/</span>
+              <em>refresh · screenshot · publish</em>
+            </div>
+          </div>
+          <div className="screen-command-card">
+            <span>pagep screens publish</span>
+            <strong>{screens.length || 0} 屏幕 · {onlineCount} 在线</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="screen-feature-strip">
+        <FeatureTile icon={<Monitor />} title="一次绑定" desc="Android 屏幕 App 绑定到账号后，由后台统一管理。" />
+        <FeatureTile icon={<Rocket />} title="远程投放" desc="从应用管理或创作市场选择作品，一键发布到屏幕。" />
+        <FeatureTile icon={<Eye />} title="截图回传" desc="远程请求截图，确认现场展示是否按预期运行。" />
+        <FeatureTile icon={<Workflow />} title="运行命令" desc="支持刷新、休眠、唤醒和基础远程控制。" />
+      </div>
+
+      <div className="screen-panel-v2">
+        <div className="screen-panel-head">
+          <div>
+            <span className="mini-label">MY SCREENS</span>
+            <h2>我的屏幕</h2>
+            <p>{error ? "登录注册用户后可查看自己的屏幕。" : "服务器：" + currentOrigin()}</p>
+          </div>
+          <a className="button compact" href="/admin?tab=screens">管理绑定</a>
+        </div>
         {error ? <div className="empty-wide">{error}</div> : (
-          <div className="screen-list">
+          <div className="screen-list-v2">
             {screens.map((screen) => (
-              <div className="screen-row" key={screen.id}>
-                <strong>{screen.name || screen.id}</strong>
-                <span>{screen.status || "未知"} / {screen.currentSiteCode || "空闲"}</span>
-                <code>{formatDeviceInfo(screen.deviceInfo)}</code>
+              <div className="screen-row-v2" key={screen.id}>
+                <div>
+                  <strong>{screen.name || screen.id}</strong>
+                  <span>{formatDeviceInfo(screen.deviceInfo)}</span>
+                </div>
+                <div className="screen-row-status">
+                  <em>{screen.status || "未知"}</em>
+                  <code>{screen.currentSiteCode || "空闲"}</code>
+                </div>
               </div>
             ))}
-            {!screens.length && <div className="empty-wide">还没有绑定屏幕。</div>}
+            {!screens.length && <div className="empty-wide">还没有绑定屏幕。进入后台生成绑定码后，在 Android 屏幕 App 中完成绑定。</div>}
           </div>
         )}
       </div>

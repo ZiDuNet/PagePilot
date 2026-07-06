@@ -73,6 +73,55 @@ func TestSQLiteMigrationDropsLegacyBindingsAndUnownedTokens(t *testing.T) {
 	}
 }
 
+func TestSQLiteMigrationAddsAdminEmailColumnsBeforeIndex(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "hostctl.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	now := time.Now().UTC()
+	_, err = db.Exec(`
+		CREATE TABLE admin_users (
+			id TEXT PRIMARY KEY,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			is_active BOOLEAN NOT NULL DEFAULT 1,
+			created_at DATETIME NOT NULL,
+			last_login_at DATETIME
+		);
+		INSERT INTO admin_users (id, username, password_hash, is_active, created_at)
+		VALUES ('admin-1', 'admin', 'hash', 1, ?);
+	`, now)
+	if err != nil {
+		t.Fatalf("seed legacy admin users: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	defer store.Close()
+
+	var email string
+	var verified bool
+	if err := store.db.QueryRow(`SELECT email, email_verified FROM admin_users WHERE id = 'admin-1'`).Scan(&email, &verified); err != nil {
+		t.Fatalf("query migrated email columns: %v", err)
+	}
+	if email != "" || verified {
+		t.Fatalf("email = %q verified = %v, want empty/false", email, verified)
+	}
+	var indexCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_admin_users_email'`).Scan(&indexCount); err != nil {
+		t.Fatalf("query email index: %v", err)
+	}
+	if indexCount != 1 {
+		t.Fatalf("idx_admin_users_email count = %d, want 1", indexCount)
+	}
+}
+
 func TestClaimAnonymousSessionMigratesSitesAndStats(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()
@@ -214,6 +263,57 @@ func TestMarketplacePinnedDeploysStayAboveLikeRanking(t *testing.T) {
 	}
 }
 
+func TestCreateSiteDefaultsToUnlistedAndStaysOutOfMarketplace(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := store.CreateSite(ctx, Site{
+		Code:         "hidden-by-default",
+		PublicID:     "hidden-by-default-public-id",
+		OwnerTokenID: "anon:anon-default",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Source:       "api",
+	}); err != nil {
+		t.Fatalf("create default site: %v", err)
+	}
+	if err := store.CreateVersion(ctx, Version{
+		ID:            "hidden-by-default-version-id",
+		SiteCode:      "hidden-by-default",
+		VersionNumber: 1,
+		Title:         "Hidden by default",
+		Description:   "This site should not enter marketplace by default.",
+		MainEntry:     "index.html",
+		TotalSize:     100,
+		FileCount:     1,
+		ContentSha256: "hidden-by-default-sha",
+		Status:        "active",
+		CreatedAt:     now,
+	}); err != nil {
+		t.Fatalf("create default version: %v", err)
+	}
+	v := int64(1)
+	if err := store.SetCurrentVersion(ctx, "hidden-by-default", &v); err != nil {
+		t.Fatalf("set current version: %v", err)
+	}
+
+	site, err := store.GetSite(ctx, "hidden-by-default")
+	if err != nil {
+		t.Fatalf("get default site: %v", err)
+	}
+	if site.Visibility != "unlisted" {
+		t.Fatalf("visibility = %q, want unlisted", site.Visibility)
+	}
+	deploys, total, err := store.ListMarketplaceDeploys(ctx, "", "", "likes_desc", "", "", "", "", 1, 10)
+	if err != nil {
+		t.Fatalf("list marketplace: %v", err)
+	}
+	if total != 0 || len(deploys) != 0 {
+		t.Fatalf("marketplace deploys = total:%d items:%#v, want hidden by default", total, deploys)
+	}
+}
+
 func TestSetCurrentVersionUpdatesSiteUpdatedAt(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()
@@ -317,6 +417,7 @@ func seedMarketplaceSite(t *testing.T, store *SQLiteStore, code string, likes in
 		Code:         code,
 		PublicID:     code + "-public-id",
 		OwnerTokenID: "user:owner",
+		Visibility:   "public",
 		LikeCount:    likes,
 		CreatedAt:    createdAt,
 		UpdatedAt:    createdAt,

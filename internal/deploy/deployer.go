@@ -108,7 +108,12 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	if visibilityErr != nil {
 		return nil, visibilityErr
 	}
+	if strings.HasPrefix(ownerTokenID, "anon:") {
+		visibility = "unlisted"
+		updateVisibility = true
+	}
 	category := normalizeCategory(req.Category)
+	tags := normalizeTags(req.Tags)
 
 	// 3. 解析 + 校验内容（content、files 或单 ZIP）
 	rfiles, mainEntry, apiErr := d.resolveContent(req, filenameHint)
@@ -144,10 +149,11 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 				WithHint("Use the same account, token, or anonymous session that created this site.")
 		}
 		category = site.Category
+		tags = site.Tags
 	}
 
-	if err := d.writeFiles(code, versionNumber, rfiles); err != nil {
-		_ = os.RemoveAll(d.versionDir(code, versionNumber))
+	if err := d.writeFiles(ctx, code, versionNumber, rfiles); err != nil {
+		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
 		return nil, api.NewError(api.CodeInternal, "write_files",
 			fmt.Sprintf("failed to write files: %v", err))
 	}
@@ -163,7 +169,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	now := time.Now().UTC()
 	versionID, err := newUUID()
 	if err != nil {
-		_ = os.RemoveAll(d.versionDir(code, versionNumber))
+		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
 		return nil, api.NewError(api.CodeInternal, "uuid",
 			fmt.Sprintf("failed to generate uuid: %v", err))
 	}
@@ -173,7 +179,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		if strings.TrimSpace(req.AccessPassword) != "" {
 			hash, herr := auth.HashPassword(req.AccessPassword)
 			if herr != nil {
-				_ = os.RemoveAll(d.versionDir(code, versionNumber))
+				_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
 				return nil, api.NewError(api.CodeInternal, "access_password", herr.Error())
 			}
 			accessHash = hash
@@ -184,17 +190,18 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			PrimaryVersionStrategy: string(api.StrategyLikes),
 			Visibility:             visibility,
 			Category:               category,
+			Tags:                   tags,
 			AccessPasswordHash:     accessHash,
 			CreatedAt:              now,
 			Source:                 normalizeSource(req.Source),
 		}); err != nil {
-			_ = os.RemoveAll(d.versionDir(code, versionNumber))
+			_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
 			return nil, api.NewError(api.CodeInternal, "create_site",
 				fmt.Sprintf("failed to create site: %v", err))
 		}
 	} else if updateVisibility {
 		if err := d.store.SetSiteVisibility(ctx, code, visibility); err != nil {
-			_ = os.RemoveAll(d.versionDir(code, versionNumber))
+			_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
 			return nil, api.NewError(api.CodeInternal, "site_visibility",
 				fmt.Sprintf("failed to update site visibility: %v", err))
 		}
@@ -214,7 +221,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		Status:        "active",
 		CreatedAt:     now,
 	}); err != nil {
-		_ = os.RemoveAll(d.versionDir(code, versionNumber))
+		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
 		return nil, api.NewError(api.CodeInternal, "create_version",
 			fmt.Sprintf("failed to create version: %v", err))
 	}
@@ -232,7 +239,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		})
 	}
 	if err := d.store.CreateFiles(ctx, fileMetas); err != nil {
-		_ = os.RemoveAll(d.versionDir(code, versionNumber))
+		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
 		return nil, api.NewError(api.CodeInternal, "create_files",
 			fmt.Sprintf("failed to create files: %v", err))
 	}
@@ -749,7 +756,19 @@ func (d *Deployer) decideVersion(ctx context.Context, code string, isCustom bool
 
 // writeFiles 把文件写到磁盘。所有文件先写到 tmp 目录，再原子 rename。
 // 写前用 safeJoin 做路径校验，杜绝穿越。
-func (d *Deployer) writeFiles(code string, version int64, files []resolvedFile) error {
+func (d *Deployer) writeFiles(ctx context.Context, code string, version int64, files []resolvedFile) error {
+	if d.useOSS() {
+		oss := newOSSStorage(d.cfg)
+		for _, f := range files {
+			if !zipPathSafe(f.Path) {
+				return fmt.Errorf("unsafe path %s", f.Path)
+			}
+			if err := oss.put(ctx, oss.versionObjectKey(code, version, f.Path), f.Bytes, ""); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	vDir := d.versionDir(code, version)
 	if err := os.MkdirAll(vDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir version dir: %w", err)
@@ -793,6 +812,9 @@ func (d *Deployer) writeFiles(code string, version int64, files []resolvedFile) 
 //
 // 生产环境部署在 Linux，Windows 路径仅用于本地开发测试。
 func (d *Deployer) swapCurrentSymlink(code string, version int64) error {
+	if d.useOSS() {
+		return nil
+	}
 	siteDir := d.siteDir(code)
 	if err := os.MkdirAll(siteDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir site dir: %w", err)
@@ -907,10 +929,34 @@ func normalizeSource(s string) string {
 	return s
 }
 
+func normalizeTags(raw []string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, min(len(raw), 6))
+	for _, item := range raw {
+		value := strings.TrimSpace(strings.Trim(item, "，,;； "))
+		if value == "" || seen[value] {
+			continue
+		}
+		runes := []rune(value)
+		if len(runes) > 24 {
+			value = string(runes[:24])
+		}
+		seen[value] = true
+		out = append(out, value)
+		if len(out) >= 6 {
+			break
+		}
+	}
+	return strings.Join(out, ",")
+}
+
 func normalizeVisibility(raw string) (string, bool, *api.APIError) {
 	value := strings.TrimSpace(strings.ToLower(raw))
 	if value == "" {
-		return "public", false, nil
+		return "unlisted", false, nil
 	}
 	switch value {
 	case "public", "unlisted":
@@ -1000,12 +1046,10 @@ func (d *Deployer) DeleteSite(ctx context.Context, code string) *api.APIError {
 			fmt.Sprintf("failed to look up site: %v", err))
 	}
 	// 1. 删磁盘
-	dir := d.siteDir(code)
-	if err := os.RemoveAll(dir); err != nil {
+	if err := d.deleteSiteFiles(ctx, code); err != nil {
 		return api.NewError(api.CodeInternal, "rm_tree",
-			fmt.Sprintf("failed to remove site dir %s: %v", dir, err))
-	}
-	// 2. 删数据库
+			fmt.Sprintf("failed to remove site files: %v", err))
+	} // 2. 删数据库
 	if err := d.store.DeleteSite(ctx, code); err != nil {
 		return api.NewError(api.CodeInternal, "delete_site",
 			fmt.Sprintf("failed to delete site from db: %v", err))
@@ -1290,6 +1334,10 @@ func (d *Deployer) SetSiteVisibility(ctx context.Context, code, visibility strin
 
 func (d *Deployer) SetSiteCategory(ctx context.Context, code, category string) error {
 	return d.store.SetSiteCategory(ctx, code, normalizeCategory(category))
+}
+
+func (d *Deployer) SetSiteTags(ctx context.Context, code string, tags []string) error {
+	return d.store.SetSiteTags(ctx, code, normalizeTags(tags))
 }
 
 func (d *Deployer) SetSiteAccessPassword(ctx context.Context, code, password string) error {

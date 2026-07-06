@@ -1,18 +1,18 @@
-// hostctl-mcp 是 hostctl 的 MCP server（stdio JSON-RPC 2.0）。
+// pagep-mcp 是 PagePilot 的 MCP server（stdio JSON-RPC 2.0）。
 //
 // 实现 MCP 协议核心子集（initialization / tools/list / tools/call），
 // 不依赖第三方库，便于单二进制部署。
 //
 // 使用：
 //
-//	HOSTCTL_SERVER=https://host.example.com HOSTCTL_TOKEN=xxx hostctl-mcp
+//	HOSTCTL_SERVER=https://host.example.com HOSTCTL_TOKEN=xxx pagep-mcp
 //
 // 在 Claude Code 里配置：
 //
 //	{
 //	  "mcpServers": {
-//	    "hostctl": {
-//	      "command": "hostctl-mcp",
+//	    "pagepilot": {
+//	      "command": "pagep-mcp",
 //	      "env": {
 //	        "HOSTCTL_SERVER": "https://host.example.com",
 //	        "HOSTCTL_TOKEN": "..."
@@ -130,7 +130,7 @@ func dispatch(ctx context.Context, c *client.Client, req *rpcReq) rpcResp {
 		return rpcResp{Result: map[string]any{
 			"protocolVersion": "2024-11-05",
 			"serverInfo": map[string]any{
-				"name":    "hostctl",
+				"name":    "pagepilot",
 				"version": "0.1.0",
 			},
 			"capabilities": map[string]any{

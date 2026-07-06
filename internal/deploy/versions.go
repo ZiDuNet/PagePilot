@@ -179,34 +179,36 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 	}
 
 	// 删除旧文件 + 写新文件
-	oldDir := d.versionDir(code, version)
-	// 写到临时目录再 swap
-	tmpDir := d.versionDir(code, -1*version) // 负数避免与正常版本号冲突
-	_ = os.RemoveAll(tmpDir)
-	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		return nil, api.NewError(api.CodeInternal, "mkdir_tmp", err.Error())
-	}
-
-	// 写文件到 tmpDir
-	if err := d.writeFilesToDir(tmpDir, rfiles); err != nil {
+	if d.useOSS() {
+		if err := d.deleteVersionFiles(ctx, code, version); err != nil {
+			return nil, api.NewError(api.CodeInternal, "delete_old_files", err.Error())
+		}
+		if err := d.writeFiles(ctx, code, version, rfiles); err != nil {
+			return nil, api.NewError(api.CodeInternal, "write_files", err.Error())
+		}
+	} else {
+		oldDir := d.versionDir(code, version)
+		tmpDir := d.versionDir(code, -1*version)
 		_ = os.RemoveAll(tmpDir)
-		return nil, api.NewError(api.CodeInternal, "write_files", err.Error())
+		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+			return nil, api.NewError(api.CodeInternal, "mkdir_tmp", err.Error())
+		}
+		if err := d.writeFilesToDir(tmpDir, rfiles); err != nil {
+			_ = os.RemoveAll(tmpDir)
+			return nil, api.NewError(api.CodeInternal, "write_files", err.Error())
+		}
+		bakDir := oldDir + ".bak." + randomSuffix()
+		if err := os.Rename(oldDir, bakDir); err != nil {
+			_ = os.RemoveAll(tmpDir)
+			return nil, api.NewError(api.CodeInternal, "rename_old", err.Error())
+		}
+		if err := os.Rename(tmpDir, oldDir); err != nil {
+			_ = os.Rename(bakDir, oldDir)
+			_ = os.RemoveAll(tmpDir)
+			return nil, api.NewError(api.CodeInternal, "rename_new", err.Error())
+		}
+		_ = os.RemoveAll(bakDir)
 	}
-
-	// 原子替换：rename oldDir -> oldDir.bak，rename tmpDir -> oldDir
-	bakDir := oldDir + ".bak." + randomSuffix()
-	if err := os.Rename(oldDir, bakDir); err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return nil, api.NewError(api.CodeInternal, "rename_old", err.Error())
-	}
-	if err := os.Rename(tmpDir, oldDir); err != nil {
-		// 回滚：把 bak 改回来
-		_ = os.Rename(bakDir, oldDir)
-		_ = os.RemoveAll(tmpDir)
-		return nil, api.NewError(api.CodeInternal, "rename_new", err.Error())
-	}
-	_ = os.RemoveAll(bakDir)
-
 	// 更新元数据
 	aggregateSha := aggregateSha256(rfiles)
 	var totalSize int64
@@ -297,7 +299,7 @@ func (d *Deployer) DeleteVersion(ctx context.Context, code string, version int64
 
 	// 删磁盘文件（用 .del 后缀再异步清理，避免 race；这里同步删简化）
 	go func() {
-		_ = os.RemoveAll(d.versionDir(code, version))
+		_ = d.deleteVersionFiles(context.Background(), code, version)
 	}()
 
 	// 如果删的是当前版本，找一个 active 版本顶上

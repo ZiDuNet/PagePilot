@@ -276,7 +276,12 @@ func (a *Service) GetUser(ctx context.Context, id string) (store.AdminUser, erro
 }
 
 func (a *Service) CreateUser(ctx context.Context, username, password string, isAdmin bool, deployLimit int) (store.AdminUser, error) {
+	return a.CreateUserWithEmail(ctx, username, "", false, password, isAdmin, deployLimit)
+}
+
+func (a *Service) CreateUserWithEmail(ctx context.Context, username, email string, emailVerified bool, password string, isAdmin bool, deployLimit int) (store.AdminUser, error) {
 	username = strings.TrimSpace(username)
+	email = strings.TrimSpace(strings.ToLower(email))
 	if username == "" || password == "" {
 		return store.AdminUser{}, ErrInvalid
 	}
@@ -292,14 +297,16 @@ func (a *Service) CreateUser(ctx context.Context, username, password string, isA
 		deployLimit = -1
 	}
 	user := store.AdminUser{
-		ID:           id,
-		Username:     username,
-		PasswordHash: hash,
-		IsAdmin:      isAdmin,
-		IsActive:     true,
-		CanLike:      true,
-		DeployLimit:  deployLimit,
-		CreatedAt:    time.Now().UTC(),
+		ID:            id,
+		Username:      username,
+		Email:         email,
+		EmailVerified: emailVerified,
+		PasswordHash:  hash,
+		IsAdmin:       isAdmin,
+		IsActive:      true,
+		CanLike:       true,
+		DeployLimit:   deployLimit,
+		CreatedAt:     time.Now().UTC(),
 	}
 	if err := a.store.CreateAdminUser(ctx, user); err != nil {
 		return store.AdminUser{}, err

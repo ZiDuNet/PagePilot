@@ -20,8 +20,9 @@ CREATE TABLE IF NOT EXISTS sites (
     owner_token_id             TEXT NOT NULL,
     current_version            INTEGER,                          -- 当前对外服务的版本号；NULL = 已下线
     primary_version_strategy   TEXT NOT NULL DEFAULT 'likes',    -- 'likes' | 'latest'
-    visibility                 TEXT NOT NULL DEFAULT 'public',   -- 'public' | 'unlisted'
+    visibility                 TEXT NOT NULL DEFAULT 'unlisted', -- 'public' | 'unlisted'
     category                   TEXT NOT NULL DEFAULT '',         -- 创作市场分类 slug
+    tags                       TEXT NOT NULL DEFAULT '',         -- 创作市场标签，逗号分隔
     view_count                 INTEGER NOT NULL DEFAULT 0,       -- 访问数（页面 GET）
     like_count                 INTEGER NOT NULL DEFAULT 0,       -- 点赞数
     status                     TEXT NOT NULL DEFAULT 'active',   -- 'active' | 'inactive'
@@ -115,6 +116,8 @@ CREATE INDEX IF NOT EXISTS idx_anonymous_sessions_last_used ON anonymous_session
 CREATE TABLE IF NOT EXISTS admin_users (
     id              TEXT PRIMARY KEY,
     username        TEXT NOT NULL UNIQUE,
+    email           TEXT NOT NULL DEFAULT '',
+    email_verified  BOOLEAN NOT NULL DEFAULT 0,
     password_hash   TEXT NOT NULL,
     is_admin        BOOLEAN NOT NULL DEFAULT 0,
     is_active       BOOLEAN NOT NULL DEFAULT 1,

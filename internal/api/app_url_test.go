@@ -48,7 +48,10 @@ func TestDomainHostServesAppContent(t *testing.T) {
 	srv.cfg.AppDomainSuffix = "pagepilot.example.com"
 	srv.cfg.AppURLScheme = "https"
 	srv.cfg.AppURLPort = "1143"
-	srv.deployer = &appServeDeployerStub{site: store.Site{Code: "demo"}}
+	srv.deployer = &appServeDeployerStub{
+		site:     store.Site{Code: "demo"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "demo"),
+	}
 
 	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
 	if err := os.MkdirAll(currentDir, 0o755); err != nil {
@@ -101,7 +104,8 @@ func TestDomainHostAllowsOwnPasswordLogin(t *testing.T) {
 		t.Fatalf("hash password: %v", err)
 	}
 	srv.deployer = &appServeDeployerStub{
-		site: store.Site{Code: "demo", AccessPasswordHash: hash},
+		site:     store.Site{Code: "demo", AccessPasswordHash: hash},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "demo"),
 	}
 
 	body, _ := json.Marshal(siteAccessRequest{Password: "secret123"})

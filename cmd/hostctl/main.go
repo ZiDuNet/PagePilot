@@ -1,4 +1,4 @@
-// hostctl 是命令行客户端，封装 hostctl HTTP API。
+// pagep 是 PagePilot 命令行客户端，封装 PagePilot HTTP API。
 package main
 
 import (
@@ -103,14 +103,14 @@ func withSignalCancel() (context.Context, context.CancelFunc) {
 
 func main() {
 	root := &cobra.Command{
-		Use:   "hostctl",
-		Short: "Static site hosting CLI for Agent-driven deploys",
+		Use:   "pagep",
+		Short: "PagePilot CLI for Agent-driven application publishing",
 		// 持久 flag（所有子命令可用）
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			// cobra 默认会把 -h 处理掉；这里什么都不做
 		},
 	}
-	root.PersistentFlags().StringVar(&flagServer, "server", "", "hostctl server URL (default: from ~/.hostctl/config.json or $HOSTCTL_SERVER)")
+	root.PersistentFlags().StringVar(&flagServer, "server", "", "PagePilot server URL (default: from ~/.hostctl/config.json or $HOSTCTL_SERVER)")
 	root.PersistentFlags().StringVar(&flagToken, "token", "", "bearer token (default: from ~/.hostctl/config.json or $HOSTCTL_TOKEN)")
 	root.PersistentFlags().BoolVar(&flagJSON, "json", false, "output structured JSON (Agent mode)")
 	root.PersistentFlags().BoolVar(&flagNoColor, "no-color", false, "disable ANSI color output")

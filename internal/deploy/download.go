@@ -5,9 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -51,9 +49,6 @@ func (d *Deployer) StreamDownload(ctx context.Context, code string, versionPtr *
 	if err != nil {
 		return api.NewError(api.CodeInternal, "list_files", err.Error())
 	}
-
-	versionDir := d.versionDir(code, version)
-
 	// 始终以 zip 包下载，方便用户拿到完整源码。
 	zipName := fmt.Sprintf("%s-v%d.zip", code, version)
 	w.Header().Set("Content-Type", "application/zip")
@@ -67,21 +62,15 @@ func (d *Deployer) StreamDownload(ctx context.Context, code string, versionPtr *
 		if !zipPathSafe(mf.Path) {
 			return nil
 		}
-		full := filepath.Join(versionDir, mf.Path)
-		if err := ensureWithin(versionDir, full); err != nil {
-			// 已 write header，无法返回错误；只能 break
-			return nil
-		}
 		writer, err := zw.Create(mf.Path)
 		if err != nil {
 			return nil
 		}
-		f, err := os.Open(full)
-		if err != nil {
+		body, _, apiErr := d.ReadAppFile(ctx, code, &version, mf.Path)
+		if apiErr != nil {
 			return nil
 		}
-		_, _ = io.Copy(writer, f)
-		_ = f.Close()
+		_, _ = writer.Write(body)
 	}
 	return nil
 }
