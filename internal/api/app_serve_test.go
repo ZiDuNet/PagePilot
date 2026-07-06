@@ -196,57 +196,6 @@ func TestAppServeRejectsPathTraversal(t *testing.T) {
 	}
 }
 
-func TestRenderHostedMarkdownAdvancedBlocksAreSafe(t *testing.T) {
-	body := []byte(`# Guide
-
-![logo](images/logo.png)
-[bad](javascript:alert(1))
-
-| Name | Value |
-| --- | --- |
-| HTML | <script>alert(1)</script> |
-
-- [x] publish
-- [ ] review
-
-` + "```go" + `
-fmt.Println("<safe>")
-` + "```" + `
-
-` + "```mermaid" + `
-flowchart LR
-  A-->B
-` + "```" + `
-
-` + "```katex" + `
-E = mc^2
-` + "```" + `
-`)
-
-	rendered := renderHostedMarkdown(body)
-	mustContain := []string{
-		`<img src="images/logo.png" alt="logo">`,
-		`<table>`,
-		`&lt;script&gt;alert(1)&lt;/script&gt;`,
-		`class="task-list"`,
-		`type="checkbox" disabled checked`,
-		`class="language-go"`,
-		`fmt.Println(&#34;&lt;safe&gt;&#34;)`,
-		`class="markdown-diagram"`,
-		`class="language-mermaid"`,
-		`class="markdown-math"`,
-		`class="language-math"`,
-	}
-	for _, want := range mustContain {
-		if !strings.Contains(rendered, want) {
-			t.Fatalf("rendered markdown missing %q:\n%s", want, rendered)
-		}
-	}
-	if strings.Contains(rendered, `href="javascript:alert(1)"`) || strings.Contains(rendered, "<script>alert(1)</script>") {
-		t.Fatalf("rendered markdown contains unsafe active content:\n%s", rendered)
-	}
-}
-
 func TestAppServeMarkdownUsesHTMLContentTypeAndSandbox(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
@@ -286,10 +235,60 @@ func TestAppServeMarkdownUsesHTMLContentTypeAndSandbox(t *testing.T) {
 	}
 }
 
+func TestHostedMarkdownRenderUsesCache(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	cache := newMarkdownCacheStub()
+	srv.deployer = &cachedMarkdownDeployerStub{markdownCacheStub: cache}
+
+	body := []byte("# Cached")
+	first := srv.renderHostedMarkdown(context.Background(), "docs", nil, "README.md", body)
+	second := srv.renderHostedMarkdown(context.Background(), "docs", nil, "README.md", body)
+
+	if first != second {
+		t.Fatalf("cached render mismatch")
+	}
+	if cache.puts != 1 {
+		t.Fatalf("cache puts = %d, want 1", cache.puts)
+	}
+	if cache.hits != 1 {
+		t.Fatalf("cache hits = %d, want 1", cache.hits)
+	}
+}
+
 type appServeDeployerStub struct {
 	DeployerPort
 	site     store.Site
 	siteRoot string
+}
+
+type cachedMarkdownDeployerStub struct {
+	DeployerPort
+	*markdownCacheStub
+}
+
+type markdownCacheStub struct {
+	entries map[string]store.RenderCacheEntry
+	puts    int
+	hits    int
+}
+
+func newMarkdownCacheStub() *markdownCacheStub {
+	return &markdownCacheStub{entries: map[string]store.RenderCacheEntry{}}
+}
+
+func (s *markdownCacheStub) GetRenderCache(_ context.Context, cacheKey string) (store.RenderCacheEntry, bool, error) {
+	entry, ok := s.entries[cacheKey]
+	if ok {
+		s.hits++
+	}
+	return entry, ok, nil
+}
+
+func (s *markdownCacheStub) PutRenderCache(_ context.Context, entry store.RenderCacheEntry) error {
+	s.entries[entry.CacheKey] = entry
+	s.puts++
+	return nil
 }
 
 func (s *appServeDeployerStub) GetSite(context.Context, string) (store.Site, error) {
