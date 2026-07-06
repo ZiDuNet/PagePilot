@@ -86,10 +86,45 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
 '@ | python -
 ```
 
+## Current Completion State
+
+The latest pushed remediation commit before this context update was `ad49ce6`.
+
+Implemented and verified in the current round:
+
+- PagePilot/pagep naming alignment across CLI/MCP/docs while keeping compatibility aliases.
+- Embedded user/admin SPA assets, updated logo assets, and removal of old standalone HTML pages.
+- Email fields and admin user management support for `email` and `email_verified`.
+- Old SQLite migration fix for `admin_users.email`: the email index is created after migrations add the column.
+- Registration email-verification flow behind config/env.
+- OSS storage adapter and storage abstraction for deployed files.
+- Default publish visibility is `unlisted`.
+- Anonymous/public visibility tests.
+- Markdown hosted rendering improvements: code blocks, tables, task lists, Mermaid/math semantic blocks, relative images, safer URL handling.
+- Stricter no-script CSP for hosted Markdown while keeping HTML app compatibility.
+- Skill ZIP includes jpage-derived Reveal.js assets as optional user-bundled static presentation support.
+- README, Docker/deploy docs, remediation plan, and Skill docs were updated.
+
+Verification commands that passed:
+
+```bash
+go test -count=1 ./cmd/... ./internal/... ./apps/...
+npm run build --prefix frontend/user
+npm run build --prefix frontend/admin
+python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py
+```
+
 ## Known Follow-Ups
 
+See `docs/CODEX_HANDOFF.md` for the detailed unfinished checklist.
+
+High-priority remaining work:
+
+- Runtime smoke-test a clean checkout and an upgraded old SQLite database.
+- Full UI/UX review of homepage, market, deploy, screens, login/register, encrypted page, and all admin pages.
+- Marketplace product-logic review for categories, tags, owned updates, anonymous claim, favorites, deletes, and permissions.
 - Live-test SMTP email verification with a real provider, and decide whether login should require verified email for non-admin accounts.
 - Live-test OSS with real Aliyun credentials; still consider local-to-OSS migration tooling and signed/private object access policy.
-- Improve Markdown rendering toward first-class docs: code highlight, KaTeX, Mermaid, theme switching, and safe CSP.
+- Decide whether to keep the minimal safe Markdown renderer or add a real local Markdown pipeline for syntax highlighting, KaTeX, Mermaid, and theme switching.
 - Continue tightening preview isolation: independent preview endpoints, sandbox/CSP by content type, and no parent-context access from user HTML.
 - Consider public share-key separation later, but not in the current product plan.
