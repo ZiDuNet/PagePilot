@@ -9,7 +9,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		"info": map[string]any{
 			"title":       "PagePilot API",
 			"version":     s.version,
-			"description": "Agent-friendly application publishing API with deploys, versions, marketplace, screens, and admin operations.",
+			"description": "Agent-friendly application publishing API with deploys, versions, creation market, screens, and admin operations.",
 		},
 		"servers": []map[string]any{{"url": base}},
 		"security": []map[string]any{
@@ -141,7 +141,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			},
 			"/api/deploys": map[string]any{
 				"get": map[string]any{
-					"summary":  "Search public marketplace",
+					"summary":  "Search PagePilot creation market",
 					"security": []any{},
 					"parameters": []map[string]any{
 						queryParam("q", "string", false),
@@ -150,7 +150,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 						queryParam("page", "integer", false),
 						queryParam("pageSize", "integer", false),
 					},
-					"responses": map[string]any{"200": map[string]any{"description": "Marketplace deploy list"}},
+					"responses": map[string]any{"200": map[string]any{"description": "Creation market deploy list"}},
 				},
 			},
 			"/api/deploys/{publicId}": map[string]any{
@@ -398,8 +398,8 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			},
 			"/api/admin/sites/{code}/pin": map[string]any{
 				"patch": map[string]any{
-					"summary":     "Pin or unpin a marketplace site",
-					"description": "Admin required. Pinned sites appear before normal marketplace ranking; like ranking is still preserved within pinned and unpinned groups.",
+					"summary":     "Pin or unpin a creation market site",
+					"description": "Admin required. Pinned sites appear before normal creation market ranking; like ranking is still preserved within pinned and unpinned groups.",
 					"parameters":  []map[string]any{pathParam("code", "string")},
 					"requestBody": jsonBodyRef("SitePinRequest"),
 					"responses": map[string]any{

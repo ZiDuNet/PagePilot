@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stdlib-only hostctl API wrapper for agents.
 
-Commands cover deploy/version operations, marketplace browsing, admin session,
+Commands cover deploy/version operations, PagePilot creation market browsing, admin session,
 token management, site administration, and production readiness checks.
 """
 from __future__ import annotations
@@ -1025,8 +1025,8 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--update", action="store_true", help="Require updating an existing remembered/explicit code; refuse to create a new link.")
         if with_create_version:
             p.add_argument("--create-version", action="store_true", help="Deprecated: deploy now appends automatically when --code is present")
-        p.add_argument("--visibility", choices=["public", "unlisted"], default="", help="public enters Creation Market; unlisted is link-only")
-        p.add_argument("--category", default="", help="Creation Market category slug for new sites, e.g. landing/dashboard/docs/tool/game/screen")
+        p.add_argument("--visibility", choices=["public", "unlisted"], default="", help="public 进入 PagePilot 创作市场；unlisted 仅链接访问")
+        p.add_argument("--category", default="", help="新站点的创作市场分类 slug，例如 landing/dashboard/docs/tool/game/screen")
         p.add_argument("--access-password", help="Optional visit password. Existing codes are updated after deploy.")
 
     p = sub.add_parser("deploy", help="Deploy a new site from a file or directory")
@@ -1077,7 +1077,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--unlock", action="store_true")
     p.set_defaults(func=cmd_lock)
 
-    p_market = sub.add_parser("market", help="Browse public marketplace")
+    p_market = sub.add_parser("market", help="浏览 PagePilot 创作市场")
     market_sub = p_market.add_subparsers(dest="market_cmd", required=True)
     pm = market_sub.add_parser("search", help="Search/browse deploys")
     pm.add_argument("query", nargs="?")
@@ -1093,7 +1093,7 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("public_id")
     pm.set_defaults(func=cmd_market_show)
 
-    p = sub.add_parser("like", help="Like a deploy for marketplace ranking")
+    p = sub.add_parser("like", help="为创作市场作品点赞并影响排序")
     p.add_argument("code")
     p.set_defaults(func=cmd_like)
 
@@ -1129,9 +1129,9 @@ def build_parser() -> argparse.ArgumentParser:
     pa = admin_sub.add_parser("delete-site", help="Delete a whole site")
     pa.add_argument("code")
     pa.set_defaults(func=cmd_admin_delete_site)
-    pa = admin_sub.add_parser("pin-site", help="Pin or unpin a marketplace site")
+    pa = admin_sub.add_parser("pin-site", help="置顶或取消置顶创作市场作品")
     pa.add_argument("code")
-    pa.add_argument("--unpin", action="store_true", help="Clear the marketplace pin")
+    pa.add_argument("--unpin", action="store_true", help="取消创作市场置顶")
     pa.set_defaults(func=cmd_admin_pin_site)
 
     p_config = sub.add_parser("config", help="Read or update runtime config")

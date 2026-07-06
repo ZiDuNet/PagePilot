@@ -1179,7 +1179,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ visibility })
     });
-    showToast(visibility === "public" ? "已公开进商城" : "已设为未公开");
+    showToast(visibility === "public" ? "已公开进创作市场" : "已设为未公开");
     await load();
   }
 
@@ -2393,7 +2393,7 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
         <div className="doc-grid">
           <DocBlock title="启动方式" lines={[`pagep-mcp --server ${base} --token YOUR_TOKEN`, "私有服务器请替换 --server；屏幕能力必须使用注册用户 Token。"]} />
           <DocBlock title="发布工具" lines={["deploy_site: 新建发布或追加版本，支持多文件和访问密码。", "list_sites: 查询当前用户或匿名 session 的站点。", "set_access_password: 设置或清除访问密码。", "claim_anonymous_session: 将匿名发布归属到注册用户。"]} />
-          <DocBlock title="屏幕工具" lines={["list_screens: 查询用户屏幕。", "publish_screen: 从自己的站点或商城选择投放。", "request_screen_screenshot: 下发一次截图指令。", "send_screen_command: refresh、sleep、wake、shutdown。"]} />
+          <DocBlock title="屏幕工具" lines={["list_screens: 查询用户屏幕。", "publish_screen: 从自己的站点或创作市场选择投放。", "request_screen_screenshot: 下发一次截图指令。", "send_screen_command: refresh、sleep、wake、shutdown。"]} />
           <DocBlock title="匿名身份" lines={["Agent 匿名以 X-Hostctl-Session 为所有权依据。", "X-Hostctl-Agent-Id、Agent-Label、IP、UA 只用于后台展示和排查。", "网页匿名使用浏览器 HttpOnly cookie，同样计入匿名发布。"]} />
         </div>
       )}

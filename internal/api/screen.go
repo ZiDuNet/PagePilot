@@ -105,7 +105,7 @@ func (s *Server) handlePublishScreen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isAdmin && !screenPublishAllowedForUser(site, userID) {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "site", "you can publish your own apps or public unprotected marketplace apps to screens"), reqID))
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "site", "you can publish your own apps or public unprotected creation market apps to screens"), reqID))
 		return
 	}
 	publishOwnerID := userID

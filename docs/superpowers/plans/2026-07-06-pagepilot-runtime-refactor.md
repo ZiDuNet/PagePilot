@@ -10,6 +10,22 @@
 
 ---
 
+## 当前状态（2026-07-06）
+
+这份文件是运行时重构的执行计划，不是最新产品说明。当前已经落地：
+
+- `internal/bundle`：ZIP 入口识别、嵌套根目录剥离、显式入口提示、路径穿越防护和批量包拒绝。
+- `internal/render`：Markdown 安全渲染、相对图片、表格、任务列表、Mermaid/数学语义块和渲染缓存接入。
+- SQLite：`site_search_fts`、`audit_logs`、`render_cache`、`version_bundles` 已加入 schema 和 Store 接口。
+- `/api/deploy`：已支持 `multipart/form-data`；CLI、MCP、Skill 发布本地文件、目录和 ZIP 时优先使用 multipart。
+- 文档与内置 Skill ZIP 已更新并重新打包。
+
+仍未落地：
+
+- 独立 `internal/hosted`、`internal/audit` 模块尚未拆出，相关能力仍在现有 API/Store 层中。
+- 后台审计日志 API/UI、站点文件树和更完整的 Bundle/安全模式展示仍待实现。
+- Markdown 目前是安全语义渲染，不是完整的 highlight.js、KaTeX、Mermaid 浏览器渲染链路。
+
 ## 文件结构
 
 - 创建 `internal/bundle/bundle.go`：解析目录/ZIP、识别真实根目录、入口文件和 bundle 类型。
@@ -46,7 +62,7 @@
 - 修改：`internal/deploy/deployer.go`
 - 修改：`internal/deploy/zip_test.go`
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 ```go
 func TestAnalyzeZipBundleStripsNestedDistRoot(t *testing.T) {
@@ -81,7 +97,7 @@ func TestAnalyzeZipBundleStripsNestedDistRoot(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```bash
 go test -count=1 ./internal/bundle ./internal/deploy
@@ -89,7 +105,7 @@ go test -count=1 ./internal/bundle ./internal/deploy
 
 预期：`internal/bundle` 包不存在或 `AnalyzeZip` 未定义。
 
-- [ ] **步骤 3：实现最小 bundle 模块**
+- [x] **步骤 3：实现最小 bundle 模块**
 
 ```go
 package bundle
@@ -129,17 +145,17 @@ func AnalyzeZip(input Input) (Result, error) {
 }
 ```
 
-- [ ] **步骤 4：接入 Deployer**
+- [x] **步骤 4：接入 Deployer**
 
 把 `internal/deploy/deployer.go` 中 `expandZipContent`、`chooseArchiveRoot`、ZIP 路径校验逻辑迁移到 `internal/bundle`，`resolveContent` 只负责把 `bundle.Result` 转换成 `resolvedFile`。
 
-- [ ] **步骤 5：运行验证**
+- [x] **步骤 5：运行验证**
 
 ```bash
 go test -count=1 ./internal/bundle ./internal/deploy
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add internal/bundle internal/deploy/deployer.go internal/deploy/zip_test.go docs/superpowers/plans/2026-07-06-pagepilot-runtime-refactor.md
@@ -154,7 +170,7 @@ git commit -m "refactor: 拆分 Bundle 入口识别"
 - 修改：`internal/store/sqlite.go`
 - 创建：`internal/store/search_audit_test.go`
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 ```go
 func TestMarketplaceSearchUsesFTSAndBackfills(t *testing.T) {
@@ -172,7 +188,7 @@ func TestMarketplaceSearchUsesFTSAndBackfills(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```bash
 go test -count=1 ./internal/store
@@ -180,7 +196,7 @@ go test -count=1 ./internal/store
 
 预期：FTS 表或新接口不存在。
 
-- [ ] **步骤 3：增加 schema 与迁移**
+- [x] **步骤 3：增加 schema 与迁移**
 
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS site_search_fts USING fts5(
@@ -232,7 +248,7 @@ CREATE TABLE IF NOT EXISTS version_bundles (
 );
 ```
 
-- [ ] **步骤 4：实现 Store 接口**
+- [x] **步骤 4：实现 Store 接口**
 
 ```go
 type AuditLog struct {
@@ -263,13 +279,13 @@ type VersionBundle struct {
 
 在创建/更新版本时同步 `site_search_fts` 和 `version_bundles`，删除站点时清理相关表。
 
-- [ ] **步骤 5：运行验证**
+- [x] **步骤 5：运行验证**
 
 ```bash
 go test -count=1 ./internal/store ./internal/deploy
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add internal/store internal/deploy
@@ -285,7 +301,7 @@ git commit -m "feat: 增加搜索审计和 Bundle 元数据"
 - 修改：`internal/api/server.go`
 - 修改：`internal/api/app_serve_test.go`
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 ```go
 func TestRenderMarkdownSupportsSafeAdvancedBlocks(t *testing.T) {
@@ -308,27 +324,27 @@ func TestRenderMarkdownSupportsSafeAdvancedBlocks(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```bash
 go test -count=1 ./internal/render ./internal/api
 ```
 
-- [ ] **步骤 3：实现 Markdown 渲染**
+- [x] **步骤 3：实现 Markdown 渲染**
 
 使用 Go 侧安全渲染和本地资源注入：先实现 CommonMark 常用块、代码块 class、Mermaid/KaTeX 容器与 nonce 初始化脚本，避免 CDN。HTML sanitizer 拒绝 `script`、事件属性、`javascript:` URL。
 
-- [ ] **步骤 4：接入缓存**
+- [x] **步骤 4：接入缓存**
 
 在 `serveHostedFile` 读取 Markdown 时，以 `siteCode/version/mainEntry/contentSha256/theme` 取缓存；没有缓存则渲染并写入缓存。缓存失败不阻断访问。
 
-- [ ] **步骤 5：运行验证**
+- [x] **步骤 5：运行验证**
 
 ```bash
 go test -count=1 ./internal/render ./internal/api
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add internal/render internal/api internal/store
@@ -344,7 +360,7 @@ git commit -m "feat: 增强 Markdown 渲染链路"
 - 修改：`internal/api/server.go`
 - 修改：`internal/api/app_serve_test.go`
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 ```go
 func TestCSPProfilesSeparateHTMLMarkdownAndPreview(t *testing.T) {
@@ -364,23 +380,23 @@ func TestCSPProfilesSeparateHTMLMarkdownAndPreview(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```bash
 go test -count=1 ./internal/hosted ./internal/api
 ```
 
-- [ ] **步骤 3：迁移 CSP 与 HTML 兼容脚本**
+- [x] **步骤 3：迁移 CSP 与 HTML 兼容脚本**
 
 把 `setHostedContentSecurityHeaders`、`setHostedMarkdownSecurityHeaders`、`injectHostedHTMLCompat` 从 `server.go` 移入 `internal/hosted`，API 层只选择 profile 和写 header。
 
-- [ ] **步骤 4：运行验证**
+- [x] **步骤 4：运行验证**
 
 ```bash
 go test -count=1 ./internal/hosted ./internal/api
 ```
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```bash
 git add internal/hosted internal/api
@@ -400,7 +416,7 @@ git commit -m "refactor: 抽离托管 CSP 策略"
 - 修改：`skill/hostctl-deploy/scripts/hostctl_deploy_test.py`
 - 修改：`internal/web/skill/hostctl-deploy.zip`
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 ```go
 func TestDeployUploadAcceptsMultipartZip(t *testing.T) {
@@ -427,21 +443,21 @@ func TestDeployUploadAcceptsMultipartZip(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```bash
 go test -count=1 ./internal/api
 ```
 
-- [ ] **步骤 3：实现 multipart API**
+- [x] **步骤 3：实现 multipart API**
 
 `POST /api/deploy/upload` 接收字段：`description`、`title`、`code`、`filename`、`visibility`、`category`、`tags`、`accessPassword`、`createVersion`、`source`，文件字段支持 `file` 或多段 `files`。服务端复用 `DeployRequest` 进入 `Deployer.Deploy`。
 
-- [ ] **步骤 4：改 CLI 和 Python Skill**
+- [x] **步骤 4：改 CLI 和 Python Skill**
 
 CLI 对文件/目录/ZIP 优先 multipart；遇到旧服务 404/405 时 fallback JSON/base64。Python Skill 同样增加 multipart，MCP 工具描述提示大文件走 CLI。
 
-- [ ] **步骤 5：重写 Skill 规约并打包**
+- [x] **步骤 5：重写 Skill 规约并打包**
 
 ```bash
 python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py
@@ -461,7 +477,7 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
 PY
 ```
 
-- [ ] **步骤 6：运行验证**
+- [x] **步骤 6：运行验证**
 
 ```bash
 go test -count=1 ./cmd/... ./internal/...
@@ -469,14 +485,16 @@ python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py
 python test_skill.py
 ```
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```bash
 git add internal/api cmd/hostctl cmd/hostctl-mcp skill internal/web/skill README.md
 git commit -m "feat: 增加 multipart 发布并对齐 Skill MCP"
 ```
 
-## 任务 6：市场复用、后台文件树和审计日志 UI
+## 任务 6：创作市场复用、后台文件树和审计日志 UI
+
+> 当前状态：本任务尚未完成。底层 Bundle 元数据、部分复用抽屉和发布链路已经具备基础，但后台审计 API/UI、文件树展示和安全模式展示仍待实现。
 
 **文件：**
 - 修改：`frontend/user/src/types.ts`
@@ -498,11 +516,11 @@ npm run typecheck --prefix frontend/admin
 
 - [ ] **步骤 2：扩展 API 返回**
 
-市场详情和后台站点详情返回 `bundle`、`files`、`securityMode`、`reuse` 信息；新增 `GET /api/admin/audit-logs`。
+创作市场详情和后台站点详情返回 `bundle`、`files`、`securityMode`、`reuse` 信息；新增 `GET /api/admin/audit-logs`。
 
 - [ ] **步骤 3：用户端改造**
 
-市场详情和复用抽屉显示：下载源码、Agent 提示词、CLI 命令、MCP 参数；默认提示“发布为新作品”，更新必须选择自己的 code。
+创作市场详情和复用抽屉显示：下载源码、Agent 提示词、CLI 命令、MCP 参数；默认提示“发布为新作品”，更新必须选择自己的 code。
 
 - [ ] **步骤 4：后台改造**
 
@@ -520,7 +538,7 @@ go test -count=1 ./internal/api ./internal/store
 
 ```bash
 git add frontend internal/api internal/store
-git commit -m "feat: 完善市场复用和审计后台"
+git commit -m "feat: 完善创作市场复用和审计后台"
 ```
 
 ## 任务 7：文档、完整验证和推送
@@ -532,11 +550,11 @@ git commit -m "feat: 完善市场复用和审计后台"
 - 修改：`docs/PAGEPILOT_REMEDIATION_PLAN.md`
 - 修改：`docs/CODEX_HANDOFF.md`
 
-- [ ] **步骤 1：更新文档**
+- [x] **步骤 1：更新文档**
 
 文档必须覆盖：高级 Markdown、ZIP Bundle、multipart 发布、FTS 搜索、审计日志、CSP profile、Skill/MCP/CLI 行为、Docker 数据不丢失升级说明。
 
-- [ ] **步骤 2：完整验证**
+- [x] **步骤 2：完整验证**
 
 ```bash
 go test -count=1 ./cmd/... ./internal/... ./apps/...
@@ -546,14 +564,14 @@ python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py
 python test_skill.py
 ```
 
-- [ ] **步骤 3：检查 diff 和无关文件**
+- [x] **步骤 3：检查 diff 和无关文件**
 
 ```bash
 git status --short
 git diff --stat
 ```
 
-- [ ] **步骤 4：提交和推送**
+- [x] **步骤 4：提交和推送**
 
 ```bash
 git add README.md deploy docs

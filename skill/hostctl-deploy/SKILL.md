@@ -39,14 +39,14 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - For a new stable project, prefer a readable `--code`.
 - Keep custom codes stable and route-safe: use lowercase letters, numbers, and hyphens; avoid reserved names such as `admin`, `api`, `skill`, `agent`, `agents`, `deploy`, `login`, and `register`.
 - Before publishing, confirm whether the user wants a new publish or an update to an existing one. If the original code or URL is unknown, ask before deploying.
-- Before a first-time publish (a new `deploy` or `screen publish` — not an `append`/`--update`), ask the user how to handle visibility, category, tags, and access. Ask them separately, because they are independent layers: visibility controls whether the site shows up in the Creation Market, category/tags control how it is organized, and the access password controls whether viewers can open it.
-- Visibility (`--visibility`): default to `unlisted` unless the user explicitly asks to publish into the Creation Market. Anonymous sessions must stay `unlisted`; only authenticated users can choose `public` (Creation Market, searchable, likeable).
+- Before a first-time publish (a new `deploy` or `screen publish` — not an `append`/`--update`), ask the user how to handle visibility, category, tags, and access. Ask them separately, because they are independent layers: visibility controls whether the site shows up in PagePilot 创作市场, category/tags control how it is organized, and the access password controls whether viewers can open it.
+- Visibility (`--visibility`): default to `unlisted` unless the user explicitly asks to publish into PagePilot 创作市场. Anonymous sessions must stay `unlisted`; only authenticated users can choose `public` (创作市场, searchable, likeable).
 - Category (`--category`): before a new public publish, call `market categories` and choose one category slug from the server response. Do not invent a category from file extension; HTML/Markdown/password/featured are search filters, not market categories.
 - Access password (encryption): ask whether the user wants to protect browser viewing with a password. If yes, let the user supply the password and apply it with `access --password` (or `--access-password` for `screen publish`); do not invent a password for the user. If no, publish without one.
 - Do not re-ask these on `append` / `--update`. Visibility and the access password carry over from the existing publish; only change them when the user explicitly asks, and use the `access` command for password changes.
 - Updating an existing publish requires choosing a site that belongs to the current user, token, or anonymous session. Prefer listing available owned sites first, then let the user choose one; do not guess or manually invent a code.
 - `--update` / `append` must append a new version to the selected code. It must not silently create a new code when the user intended to update.
-- Use `visibility=public` for Creation Market entries and `visibility=unlisted` for link-only entries. For protected sites, set an access password after deploy.
+- Use `visibility=public` for 创作市场 entries and `visibility=unlisted` for link-only entries. For protected sites, set an access password after deploy.
 - Do not append to a code unless it belongs to the current user, token, or anonymous session.
 - PagePilot accepts single HTML, single Markdown, multi-file directories, and ZIP packages. Markdown can reference relative images; include those image files in the directory or ZIP.
 - The bundled Python script sends deploy/append/screen source publishes as multipart uploads. Directories are zipped locally and uploaded as one package; the server detects the deployable root and entry file. JSON/base64 is only kept for compatibility paths such as unlocked version overwrite.
@@ -71,7 +71,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py claim-session
 - Confirm before deleting a whole site.
 - For private work, set or clear access with the `access` command. Do not expose protected content in summaries.
 - Access passwords protect browser viewing only. Anonymous visitors can enter the password; a successful check grants a signed 5-minute browser cookie, and changing the site password invalidates old cookies.
-- Marketplace like ranking is still available. Admin-pinned sites appear before all normal ranking results; only admins should pin or unpin sites from the admin console/API/script/MCP.
+- 创作市场 like ranking is still available. Admin-pinned sites appear before all normal ranking results; only admins should pin or unpin sites from the admin console/API/script/MCP.
 - A registered user can bind multiple hardware screens. Use `screen list` to inspect the current user's screens, and publish only to screens owned by that user. If multiple screens are available, ask the user to choose one before publishing.
 - Before publishing to a screen, confirm the intended layout direction of the app: `portrait`, `landscape`, or `any`. Compare it with the target screen's reported `deviceInfo.orientation` / resolution from `screen list` or `screen status`. If they differ, warn the user that the page may be cropped, scaled, or leave empty space, and ask whether to continue.
 - When the intended direction is known, pass `--expected-orientation portrait` or `--expected-orientation landscape` to `screen publish`. The script blocks mismatches unless `--force-orientation` is explicitly provided after the user confirms.
@@ -135,7 +135,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy.py access my-landing --passwo
 python skill/hostctl-deploy/scripts/hostctl_deploy.py access my-landing --clear
 ```
 
-Pin marketplace entries as an admin:
+Pin 创作市场 entries as an admin:
 
 ```bash
 python skill/hostctl-deploy/scripts/hostctl_deploy.py admin pin-site my-landing

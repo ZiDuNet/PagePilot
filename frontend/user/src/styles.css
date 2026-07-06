@@ -6739,7 +6739,7 @@ body::before,
   }
 }
 
-/* Creation Market card refinement: preview first, actions on hover. */
+/* 创作市场卡片优化：预览优先，操作 hover 展示。 */
 .market-card-grid {
   grid-template-columns: repeat(auto-fill, minmax(282px, 1fr));
   gap: 22px;

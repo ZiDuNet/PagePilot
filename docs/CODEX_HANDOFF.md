@@ -3,7 +3,7 @@
 This document is a handoff note for continuing PagePilot development on another machine or in another Codex session.
 
 Last updated: 2026-07-06
-Last pushed commit at the time of writing: `ad49ce6`
+Last pushed commit at the time of writing: `0666e0f`
 
 Additional local branch in progress: `codex/pagepilot-runtime-refactor`.
 
@@ -39,7 +39,7 @@ The work is not complete yet. The repository has made large progress, but comple
 - Implemented OSS storage adapter and storage abstraction for deployed app files.
 - Added local/OSS storage tests and config tests.
 - Changed default publish visibility to `unlisted`.
-- Added tests that anonymous/public requests stay out of the marketplace by default.
+- Added tests that anonymous/public requests stay out of 创作市场 by default.
 - Added and rebuilt Skill ZIP assets:
   - `/skill/pagep.zip` primary route
   - `/skill/hostctl-deploy.zip` compatibility alias
@@ -84,7 +84,7 @@ The work is not complete yet. The repository has made large progress, but comple
   - `audit_logs`
   - `render_cache`
   - `version_bundles`
-- Marketplace search now uses FTS5 with Chinese `LIKE` fallback and startup backfill for existing sites.
+- 创作市场 search now uses FTS5 with Chinese `LIKE` fallback and startup backfill for existing sites.
 - Moved Markdown rendering into `internal/render` and added render-cache integration for hosted Markdown.
 - `POST /api/deploy` accepts multipart uploads in addition to JSON.
 - Go CLI and MCP deploy local files/directories/ZIPs via multipart, with upload filename separated from entry filename.
@@ -94,14 +94,13 @@ The work is not complete yet. The repository has made large progress, but comple
 Verification run on this branch:
 
 ```powershell
-go test -count=1 ./internal/client ./cmd/hostctl ./cmd/hostctl-mcp ./internal/api ./internal/deploy ./internal/store ./internal/render
+go test -count=1 ./...
+python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py
 python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
 ```
 
 Known remaining work on this refactor:
 
-- Full `go test -count=1 ./...` still needs to be run before final merge/push.
-- Rebuild and verify `internal/web/skill/hostctl-deploy.zip` after Skill changes.
 - Admin audit-log API/UI and richer Bundle/file-tree display are not complete yet.
 - Markdown still needs a true maintained renderer pipeline if full KaTeX/Mermaid/highlight.js rendering is required.
   - pagep/pagep-mcp usage
@@ -152,8 +151,8 @@ The UI has changed a lot, but it still needs a product-quality review across all
 Review with `ui-ux-pro-max` style expectations:
 
 - homepage
-- creation market list
-- creation market detail
+- 创作市场列表
+- 创作市场详情
 - use-template modal
 - manual deploy
 - agents page
@@ -179,9 +178,9 @@ Things to watch:
 - no repeated unnecessary cards
 - no old PagePilot/hostctl wording mismatch
 - desktop wide layout should not feel artificially narrow
-- market card actions should be hover/compact and not visually noisy
+- 创作市场卡片操作应保持 hover/compact，不要视觉噪音过重
 
-### 3. Marketplace Product Logic
+### 3. 创作市场 Product Logic
 
 Still needs deeper review:
 
