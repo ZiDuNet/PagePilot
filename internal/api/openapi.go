@@ -47,6 +47,29 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					},
 				},
 			},
+			"/api/security/csp-report": map[string]any{
+				"post": map[string]any{
+					"summary":     "Receive browser CSP violation reports",
+					"description": "Public browser reporting endpoint. The server normalizes supported CSP report shapes and records them as security.csp_report audit logs.",
+					"security":    []any{},
+					"requestBody": map[string]any{
+						"required": false,
+						"content": map[string]any{
+							"application/csp-report": map[string]any{"schema": map[string]any{"type": "object"}},
+							"application/json":       map[string]any{"schema": map[string]any{"type": "object"}},
+							"application/reports+json": map[string]any{
+								"schema": map[string]any{
+									"type":  "array",
+									"items": map[string]any{"type": "object"},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"204": map[string]any{"description": "Report accepted or ignored"},
+					},
+				},
+			},
 			"/api/config": map[string]any{
 				"get": map[string]any{
 					"summary":  "Read runtime configuration",
@@ -104,7 +127,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/deploy": map[string]any{
 				"post": map[string]any{
 					"summary":     "Deploy a new static site or append a version",
-					"description": "Use content for a single HTML file, or files[] for a multi-file static site. Without a bearer token, X-Hostctl-Session is allowed up to the anonymous deploy quota.",
+					"description": "Use content for a single HTML file, or files[] for a multi-file static site. ZIP uploads are analyzed as one website bundle; ZIP failures return stage=zip_bundle with stable error codes such as ZIP_UNSAFE_PATH, ZIP_AMBIGUOUS_ENTRY, and ZIP_ENTRY_MISSING. Without a bearer token, X-Hostctl-Session is allowed up to the anonymous deploy quota.",
 					"requestBody": jsonBodyRef("DeployRequest"),
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Deploy created", "content": jsonSchemaRef("DeployResponse")},
@@ -172,12 +195,16 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/deploys/{code}/access": map[string]any{
 				"post": map[string]any{
 					"summary":     "Verify a site access password",
-					"description": "Public endpoint. Anonymous visitors can submit the password. On success, the browser receives a signed 5-minute HttpOnly cookie for viewing this protected site.",
+					"description": "Public endpoint. Anonymous visitors can submit the password. On success, the browser receives a signed 5-minute HttpOnly cookie scoped to the current site version, or to the explicit version query when provided.",
 					"security":    []any{},
-					"parameters":  []map[string]any{pathParam("code", "string")},
+					"parameters": []map[string]any{
+						pathParam("code", "string"),
+						queryParam("version", "integer", false),
+					},
 					"requestBody": jsonBodyRef("SiteAccessRequest"),
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Access granted"},
+						"400": errorResponse(),
 						"401": errorResponse(),
 					},
 				},
@@ -385,7 +412,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/admin/session": map[string]any{
 				"get": map[string]any{
 					"summary":     "Validate admin login session",
-					"description": "Returns dev session without a token in development mode. Requires an admin token in production.",
+					"description": "Validates an admin login cookie or bearer token. Development mode only reports mode=dev and still requires login.",
 					"responses":   map[string]any{"200": map[string]any{"description": "Admin session", "content": jsonSchemaRef("AdminSessionResponse")}, "403": errorResponse()},
 				},
 			},
@@ -394,6 +421,32 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"summary":     "List all sites",
 					"description": "Admin token required in production.",
 					"responses":   map[string]any{"200": map[string]any{"description": "Site list", "content": jsonSchemaRef("SiteListResponse")}},
+				},
+			},
+			"/api/admin/audit-logs": map[string]any{
+				"get": map[string]any{
+					"summary":     "Search audit logs",
+					"description": "Admin required. Supports pagination, action/site/user/role/result/time filters, and keyword search over action, target, site code, IP, UA, and detail JSON.",
+					"parameters": []map[string]any{
+						queryParam("actorType", "string", false),
+						queryParam("action", "string", false),
+						queryParam("siteCode", "string", false),
+						queryParam("actorId", "string", false),
+						queryParam("actorRole", "string", false),
+						queryParam("targetType", "string", false),
+						queryParam("targetId", "string", false),
+						queryParam("result", "string", false),
+						queryParam("q", "string", false),
+						queryParam("since", "string", false),
+						queryParam("until", "string", false),
+						queryParam("page", "integer", false),
+						queryParam("pageSize", "integer", false),
+					},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Audit log list", "content": jsonSchemaRef("AuditLogListResponse")},
+						"400": errorResponse(),
+						"403": errorResponse(),
+					},
 				},
 			},
 			"/api/admin/sites/{code}/pin": map[string]any{
@@ -405,6 +458,34 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Pin state updated", "content": jsonSchemaRef("SitePinResponse")},
 						"403": errorResponse(),
+					},
+				},
+			},
+			"/api/admin/sites/{code}/reuse-policy": map[string]any{
+				"patch": map[string]any{
+					"summary":     "Update site source download and reuse policy",
+					"description": "Admin required. auto allows source download/reuse only for public unprotected sites. Encrypted sites never provide source download/reuse; remove the access password before source delivery.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteReusePolicyRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Reuse policy updated", "content": jsonSchemaRef("SiteReusePolicyResponse")},
+						"400": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+			},
+			"/api/admin/sites/{code}/security-mode": map[string]any{
+				"patch": map[string]any{
+					"summary":     "Update site runtime security mode",
+					"description": "Admin required. auto uses bundle analysis; strict is safest, compatible relaxes runtime compatibility, trusted is only for trusted content.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteSecurityModeRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Security mode updated", "content": jsonSchemaRef("SiteSecurityModeResponse")},
+						"400": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
 					},
 				},
 			},
@@ -444,6 +525,16 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			"/api/admin/sites/{code}": map[string]any{
+				"get": map[string]any{
+					"summary":     "Read admin site detail",
+					"description": "Admin required. Returns site metadata, versions, bundle type, entry, file tree, security mode, and reuse parameters.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Site detail", "content": jsonSchemaRef("SiteDetailResponse")},
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
 				"delete": map[string]any{
 					"summary":     "Delete a whole site and its files",
 					"description": "Admin token required in production.",
@@ -551,6 +642,14 @@ func openAPISchemas() map[string]any {
 			"filename": str, "description": str, "title": str, "content": str,
 			"files":            map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/DeployFile"}},
 			"enableCustomCode": boolSchema, "customCode": str, "createVersion": boolSchema, "source": str,
+			"templateSourceCode": map[string]any{
+				"type":        "string",
+				"description": "When publishing a remix, record the source marketplace site code and increment its reuse count.",
+			},
+			"templateSourceVersion": map[string]any{
+				"type":        "integer",
+				"description": "Source marketplace version number. When omitted, the source site's current version is used.",
+			},
 			"accessPassword": map[string]any{
 				"type":        "string",
 				"description": "Optional visit password for the new site. Anonymous visitors can enter it later to receive a signed 5-minute browser access cookie.",
@@ -561,6 +660,7 @@ func openAPISchemas() map[string]any {
 			"qrCode": str, "description": str, "versionId": str, "versionNumber": intSchema,
 			"currentVersionId": str, "preserveHint": str, "agentGuideUrl": str,
 			"primaryVersionStrategy": str, "requestId": str, "cooldownSeconds": intSchema,
+			"reuseCount": intSchema, "templateSourceCode": str, "templateSourceVersion": intSchema,
 			"nextAvailableAt": timeSchema, "versionCount": intSchema, "size": intSchema, "createdAt": str,
 		}},
 		"VersionCreatedResponse": map[string]any{"type": "object", "properties": map[string]any{
@@ -658,8 +758,54 @@ func openAPISchemas() map[string]any {
 		}},
 		"UserDeleteResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "id": str}},
 		"SiteListResponse":   map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "sites": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
-		"SitePinRequest":     map[string]any{"type": "object", "required": []string{"pinned"}, "properties": map[string]any{"pinned": boolSchema}},
-		"SitePinResponse":    map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "code": str, "isPinned": boolSchema, "pinnedAt": timeSchema}},
+		"ContentFile": map[string]any{"type": "object", "properties": map[string]any{
+			"path": str, "size": intSchema, "sha256": str, "isBinary": boolSchema, "content": str,
+		}},
+		"BundleDetail": map[string]any{"type": "object", "properties": map[string]any{
+			"kind":      map[string]any{"type": "string", "enum": []any{"single_html", "markdown", "zip_site", "static_site"}},
+			"kindLabel": str, "root": str, "mainEntry": str, "securityMode": str,
+			"siteSecurityMode": str, "effectiveSecurityMode": str,
+			"fileCount": intSchema, "totalSize": intSchema, "tree": objectSchema, "entryNote": str,
+		}},
+		"ReuseDetail": map[string]any{"type": "object", "properties": map[string]any{
+			"downloadUrl": str, "detailUrl": str, "cli": str, "agentPrompt": str,
+			"mcp": objectSchema, "allowReuse": boolSchema, "allowDownload": boolSchema, "policyNote": str,
+		}},
+		"SiteDetailResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success":  boolSchema,
+			"site":     map[string]any{"type": "object"},
+			"versions": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+			"bundle":   map[string]any{"$ref": "#/components/schemas/BundleDetail"},
+			"files":    map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/ContentFile"}},
+			"reuse":    map[string]any{"$ref": "#/components/schemas/ReuseDetail"},
+		}},
+		"AuditLogListItem": map[string]any{"type": "object", "properties": map[string]any{
+			"id": intSchema, "actorType": str, "actorId": str, "actorRole": str, "action": str, "result": str,
+			"siteCode": str, "targetType": str, "targetId": str, "ip": str, "userAgent": str,
+			"detail": objectSchema, "createdAt": timeSchema,
+		}},
+		"AuditLogListResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema,
+			"logs":    map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/AuditLogListItem"}},
+			"total":   intSchema, "page": intSchema, "pageSize": intSchema,
+		}},
+		"SitePinRequest":  map[string]any{"type": "object", "required": []string{"pinned"}, "properties": map[string]any{"pinned": boolSchema}},
+		"SitePinResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "code": str, "isPinned": boolSchema, "pinnedAt": timeSchema}},
+		"SiteReusePolicyRequest": map[string]any{"type": "object", "required": []string{"reusePolicy", "sourceDownloadPolicy"}, "properties": map[string]any{
+			"reusePolicy":          map[string]any{"type": "string", "enum": []string{"auto", "allow", "deny"}},
+			"sourceDownloadPolicy": map[string]any{"type": "string", "enum": []string{"auto", "allow", "deny"}},
+		}},
+		"SiteReusePolicyResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema,
+			"site":    map[string]any{"type": "object"},
+		}},
+		"SiteSecurityModeRequest": map[string]any{"type": "object", "required": []string{"securityMode"}, "properties": map[string]any{
+			"securityMode": map[string]any{"type": "string", "enum": []string{"auto", "strict", "compatible", "trusted"}},
+		}},
+		"SiteSecurityModeResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema,
+			"site":    map[string]any{"type": "object"},
+		}},
 		"ScreenItem": map[string]any{"type": "object", "properties": map[string]any{
 			"id": str, "ownerUserId": str, "ownerUsername": str, "name": str, "deviceName": str, "status": str,
 			"currentSiteCode": str, "currentVersion": intSchema, "lastSeenAt": timeSchema, "appVersion": str,

@@ -16,6 +16,23 @@ import (
 const (
 	KindHTML     = "html"
 	KindMarkdown = "markdown"
+
+	StageZipBundle = "zip_bundle"
+)
+
+type ErrorCode string
+
+const (
+	ErrCodeZipOpen        ErrorCode = "ZIP_OPEN_FAILED"
+	ErrCodeUnsafePath     ErrorCode = "ZIP_UNSAFE_PATH"
+	ErrCodeEntryRead      ErrorCode = "ZIP_ENTRY_READ_FAILED"
+	ErrCodeFileTooLarge   ErrorCode = "ZIP_FILE_TOO_LARGE"
+	ErrCodeTotalTooLarge  ErrorCode = "ZIP_TOTAL_TOO_LARGE"
+	ErrCodeTooManyFiles   ErrorCode = "ZIP_TOO_MANY_FILES"
+	ErrCodeEmpty          ErrorCode = "ZIP_EMPTY"
+	ErrCodeDuplicatePath  ErrorCode = "ZIP_DUPLICATE_PATH"
+	ErrCodeEntryMissing   ErrorCode = "ZIP_ENTRY_MISSING"
+	ErrCodeAmbiguousEntry ErrorCode = "ZIP_AMBIGUOUS_ENTRY"
 )
 
 type Limits struct {
@@ -46,6 +63,32 @@ type Result struct {
 	TreeJSON  string
 }
 
+// Error 是 ZIP/Bundle 入口识别阶段的结构化错误。
+type Error struct {
+	Code   ErrorCode
+	Stage  string
+	Detail string
+	Hint   string
+	Err    error
+}
+
+func (e *Error) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Err != nil {
+		return e.Detail + ": " + e.Err.Error()
+	}
+	return e.Detail
+}
+
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 type treeItem struct {
 	Path     string `json:"path"`
 	Size     int64  `json:"size"`
@@ -58,7 +101,12 @@ func AnalyzeZip(input Input) (Result, error) {
 	limits := normalizeLimits(input.Limits)
 	zr, err := zip.NewReader(bytes.NewReader(input.Data), int64(len(input.Data)))
 	if err != nil {
-		return Result{}, fmt.Errorf("ZIP file %q cannot be opened: %w", input.Name, err)
+		return Result{}, newError(
+			ErrCodeZipOpen,
+			fmt.Sprintf("ZIP file %q cannot be opened", input.Name),
+			"Upload a valid .zip archive.",
+			err,
+		)
 	}
 
 	raw := make([]File, 0, len(zr.File))
@@ -67,26 +115,41 @@ func AnalyzeZip(input Input) (Result, error) {
 			continue
 		}
 		if unsafeZipEntryName(zf.Name) {
-			return Result{}, fmt.Errorf("ZIP entry %q is not a safe relative path", zf.Name)
+			return Result{}, unsafePathError(zf.Name, nil)
 		}
 		path := normalizeZipEntryPath(zf.Name)
 		if shouldSkipArchivePath(path) {
 			continue
 		}
 		if err := validatePath(path); err != nil {
-			return Result{}, fmt.Errorf("ZIP entry %q is not a safe relative path: %w", zf.Name, err)
+			return Result{}, unsafePathError(zf.Name, err)
 		}
 		if zf.UncompressedSize64 > uint64(limits.MaxSingleFileBytes) {
-			return Result{}, fmt.Errorf("file %s exceeds max single-file size (%d bytes)", path, limits.MaxSingleFileBytes)
+			return Result{}, newError(
+				ErrCodeFileTooLarge,
+				fmt.Sprintf("file %s exceeds max single-file size (%d bytes)", path, limits.MaxSingleFileBytes),
+				"Split large assets or raise the single-file upload limit in admin settings.",
+				nil,
+			)
 		}
 		rc, err := zf.Open()
 		if err != nil {
-			return Result{}, fmt.Errorf("ZIP entry %q cannot be read: %w", path, err)
+			return Result{}, newError(
+				ErrCodeEntryRead,
+				fmt.Sprintf("ZIP entry %q cannot be read", path),
+				"Rebuild the archive and upload it again.",
+				err,
+			)
 		}
 		data, err := readLimited(rc, limits.MaxSingleFileBytes)
 		_ = rc.Close()
 		if err != nil {
-			return Result{}, fmt.Errorf("ZIP entry %s exceeds max single-file size (%d bytes)", path, limits.MaxSingleFileBytes)
+			return Result{}, newError(
+				ErrCodeFileTooLarge,
+				fmt.Sprintf("ZIP entry %s exceeds max single-file size (%d bytes)", path, limits.MaxSingleFileBytes),
+				"Split large assets or raise the single-file upload limit in admin settings.",
+				err,
+			)
 		}
 		raw = append(raw, File{
 			Path:     path,
@@ -96,7 +159,12 @@ func AnalyzeZip(input Input) (Result, error) {
 		})
 	}
 	if len(raw) == 0 {
-		return Result{}, fmt.Errorf("ZIP did not contain deployable files")
+		return Result{}, newError(
+			ErrCodeEmpty,
+			"ZIP did not contain deployable files",
+			"Upload a ZIP containing index.html, README.md, or a static site folder.",
+			nil,
+		)
 	}
 
 	entryHint := normalizeEntryHint(input.EntryHint)
@@ -158,22 +226,37 @@ func trimRoot(files []File, root string, limits Limits) ([]File, error) {
 			continue
 		}
 		if err := validatePath(rel); err != nil {
-			return nil, err
+			return nil, unsafePathError(rel, err)
 		}
 		if seen[rel] {
-			return nil, fmt.Errorf("duplicate file path after ZIP root detection: %s", rel)
+			return nil, newError(
+				ErrCodeDuplicatePath,
+				fmt.Sprintf("duplicate file path after ZIP root detection: %s", rel),
+				"Rename duplicate files that collapse to the same relative path after root detection.",
+				nil,
+			)
 		}
 		seen[rel] = true
 		totalSize += int64(len(f.Bytes))
 		if totalSize > limits.MaxSiteTotalBytes {
-			return nil, fmt.Errorf("total size exceeds site limit (%d bytes)", limits.MaxSiteTotalBytes)
+			return nil, newError(
+				ErrCodeTotalTooLarge,
+				fmt.Sprintf("total size exceeds site limit (%d bytes)", limits.MaxSiteTotalBytes),
+				"Remove unused assets or raise the whole-site upload limit in admin settings.",
+				nil,
+			)
 		}
 		f.Path = rel
 		f.SHA256 = sha256sum(f.Bytes)
 		trimmed = append(trimmed, f)
 	}
 	if len(trimmed) > limits.MaxFiles {
-		return nil, fmt.Errorf("too many files in ZIP (%d); max %d per site", len(trimmed), limits.MaxFiles)
+		return nil, newError(
+			ErrCodeTooManyFiles,
+			fmt.Sprintf("too many files in ZIP (%d); max %d per site", len(trimmed), limits.MaxFiles),
+			"Reduce generated artifacts or raise the file-count limit in admin settings.",
+			nil,
+		)
 	}
 	return trimmed, nil
 }
@@ -202,7 +285,7 @@ func chooseRoot(files []File, entryHint string) (string, error) {
 			if root, ok := commonSingleRoot(candidates); ok {
 				return root, nil
 			}
-			return "", fmt.Errorf("ZIP contains multiple possible %s entries; package one website root or pass an explicit entry", preferred)
+			return "", ambiguousEntryError(fmt.Sprintf("ZIP contains multiple possible %s entries; package one website root or pass an explicit entry", preferred))
 		}
 	}
 
@@ -212,7 +295,7 @@ func chooseRoot(files []File, entryHint string) (string, error) {
 		}
 	}
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("ZIP did not contain an HTML or Markdown entry")
+		return "", missingEntryError()
 	}
 	if len(candidates) == 1 {
 		return normalizeRoot(candidates[0]), nil
@@ -220,7 +303,7 @@ func chooseRoot(files []File, entryHint string) (string, error) {
 	if root, ok := commonSingleRoot(candidates); ok {
 		return root, nil
 	}
-	return "", fmt.Errorf("ZIP contains multiple possible page entries; package one website root or pass an explicit entry")
+	return "", ambiguousEntryError("ZIP contains multiple possible page entries; package one website root or pass an explicit entry")
 }
 
 func normalizeEntryHint(path string) string {
@@ -404,7 +487,7 @@ func ChooseMainEntry(files []File, filenameHint string) (string, error) {
 			return f.Path, nil
 		}
 	}
-	return "", fmt.Errorf("no HTML or Markdown entry was found")
+	return "", missingEntryError()
 }
 
 func looksTextPath(path string) bool {
@@ -420,4 +503,41 @@ func looksTextPath(path string) bool {
 func sha256sum(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
+}
+
+func newError(code ErrorCode, detail, hint string, err error) *Error {
+	return &Error{
+		Code:   code,
+		Stage:  StageZipBundle,
+		Detail: detail,
+		Hint:   hint,
+		Err:    err,
+	}
+}
+
+func unsafePathError(path string, err error) *Error {
+	return newError(
+		ErrCodeUnsafePath,
+		fmt.Sprintf("ZIP entry %q is not a safe relative path", path),
+		"ZIP entries must not contain '..', absolute paths, drive letters, UNC paths, or empty path segments.",
+		err,
+	)
+}
+
+func ambiguousEntryError(detail string) *Error {
+	return newError(
+		ErrCodeAmbiguousEntry,
+		detail,
+		"Package one deployable website root per ZIP, or publish each website separately.",
+		nil,
+	)
+}
+
+func missingEntryError() *Error {
+	return newError(
+		ErrCodeEntryMissing,
+		"ZIP did not contain an HTML or Markdown entry",
+		"Put index.html or README.md in the site folder, or pass an explicit entry file.",
+		nil,
+	)
 }

@@ -59,6 +59,10 @@ type DeployRequest struct {
 
 	// accessPassword 设置新站点访问密码。匿名会话和用户 Token 均可设置。
 	AccessPassword string `json:"accessPassword,omitempty"`
+
+	// templateSourceCode / templateSourceVersion 记录本次发布是否基于某个市场作品复用。
+	TemplateSourceCode    string `json:"templateSourceCode,omitempty"`
+	TemplateSourceVersion int64  `json:"templateSourceVersion,omitempty"`
 }
 
 // DeployFile 是多文件部署里的单条文件。
@@ -139,6 +143,10 @@ type DeployResponse struct {
 
 	// category 是创作市场分类 slug。
 	Category string `json:"category,omitempty"`
+
+	ReuseCount            int64  `json:"reuseCount,omitempty"`
+	TemplateSourceCode    string `json:"templateSourceCode,omitempty"`
+	TemplateSourceVersion int64  `json:"templateSourceVersion,omitempty"`
 
 	RequestID string `json:"requestId,omitempty"`
 

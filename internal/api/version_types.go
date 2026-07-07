@@ -4,16 +4,18 @@ import "time"
 
 // VersionItem 是 list versions 响应里的一项。
 type VersionItem struct {
-	VersionNumber int64     `json:"versionNumber"`
-	ID            string    `json:"id"`
-	Title         string    `json:"title,omitempty"`
-	Description   string    `json:"description"`
-	Size          int64     `json:"size"`
-	FileCount     int       `json:"fileCount"`
-	IsLocked      bool      `json:"isLocked"`
-	IsCurrent     bool      `json:"isCurrent"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"createdAt"`
+	VersionNumber         int64     `json:"versionNumber"`
+	ID                    string    `json:"id"`
+	Title                 string    `json:"title,omitempty"`
+	Description           string    `json:"description"`
+	Size                  int64     `json:"size"`
+	FileCount             int       `json:"fileCount"`
+	IsLocked              bool      `json:"isLocked"`
+	IsCurrent             bool      `json:"isCurrent"`
+	Status                string    `json:"status"`
+	CreatedAt             time.Time `json:"createdAt"`
+	TemplateSourceCode    string    `json:"templateSourceCode,omitempty"`
+	TemplateSourceVersion int64     `json:"templateSourceVersion,omitempty"`
 }
 
 // ListVersionsResponse 是 GET /api/deploys/{code}/versions 响应。

@@ -60,6 +60,14 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate sites marketplace: %w", err)
 	}
+	if err := migrateSitesEnsureIndexes(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate sites indexes: %w", err)
+	}
+	if err := migrateVersionsAddTemplateColumns(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate versions template: %w", err)
+	}
 	if err := migrateAdminUsersAddPolicyColumns(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate admin users policy: %w", err)
@@ -87,6 +95,14 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if err := migrateFavoritesTable(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate favorites: %w", err)
+	}
+	if err := migrateAuditLogsAddActorRole(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate audit logs actor role: %w", err)
+	}
+	if err := migrateAuditLogsAddResult(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate audit logs result: %w", err)
 	}
 
 	// 给老 site 补 public_id（NULL 的填上）
@@ -177,6 +193,24 @@ func migrateAdminUsersAddPolicyColumns(db *sql.DB) error {
 	return nil
 }
 
+func migrateAuditLogsAddActorRole(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE audit_logs ADD COLUMN actor_role TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
+		return fmt.Errorf("alter audit_logs add actor_role: %w", err)
+	}
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_logs_role ON audit_logs(actor_role, created_at)`)
+	return nil
+}
+
+func migrateAuditLogsAddResult(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE audit_logs ADD COLUMN result TEXT NOT NULL DEFAULT 'success'`)
+	if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
+		return fmt.Errorf("alter audit_logs add result: %w", err)
+	}
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_logs_result ON audit_logs(result, created_at)`)
+	return nil
+}
+
 // migrateSitesAddMarketplaceColumns 给老 sites 表补齐 marketplace 所需列。
 // 新建的库已经有这些列，会因 "duplicate column" 错误被忽略。
 func migrateSitesAddMarketplaceColumns(db *sql.DB) error {
@@ -188,8 +222,14 @@ func migrateSitesAddMarketplaceColumns(db *sql.DB) error {
 		{"public_id", "TEXT"},
 		{"view_count", "INTEGER NOT NULL DEFAULT 0"},
 		{"like_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"reuse_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"template_source_code", "TEXT NOT NULL DEFAULT ''"},
+		{"template_source_version", "INTEGER"},
 		{"status", "TEXT NOT NULL DEFAULT 'active'"},
 		{"visibility", "TEXT NOT NULL DEFAULT 'unlisted'"},
+		{"reuse_policy", "TEXT NOT NULL DEFAULT 'auto'"},
+		{"source_download_policy", "TEXT NOT NULL DEFAULT 'auto'"},
+		{"security_mode", "TEXT NOT NULL DEFAULT 'auto'"},
 		{"category", "TEXT NOT NULL DEFAULT ''"},
 		{"tags", "TEXT NOT NULL DEFAULT ''"},
 		{"access_password_hash", "TEXT NOT NULL DEFAULT ''"},
@@ -209,6 +249,54 @@ func migrateSitesAddMarketplaceColumns(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func migrateSitesEnsureIndexes(db *sql.DB) error {
+	stmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_sites_status ON sites(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_sites_public_id ON sites(public_id)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateVersionsAddTemplateColumns(db *sql.DB) error {
+	cols := []struct {
+		name string
+		ddl  string
+	}{
+		{"template_source_code", "TEXT NOT NULL DEFAULT ''"},
+		{"template_source_version", "INTEGER"},
+	}
+	for _, c := range cols {
+		_, err := db.Exec(fmt.Sprintf(`ALTER TABLE versions ADD COLUMN %s %s`, c.name, c.ddl))
+		if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
+			return fmt.Errorf("alter versions add %s: %w", c.name, err)
+		}
+	}
+	return nil
+}
+
+func normalizeSitePolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "allow", "deny":
+		return strings.ToLower(strings.TrimSpace(policy))
+	default:
+		return "auto"
+	}
+}
+
+func normalizeSiteSecurityMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "strict", "compatible", "trusted":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "auto"
+	}
 }
 
 func migrateScreensAddDeviceInfo(db *sql.DB) error {
@@ -353,8 +441,16 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	if visibility == "" {
 		visibility = "unlisted"
 	}
+	reusePolicy := normalizeSitePolicy(site.ReusePolicy)
+	sourceDownloadPolicy := normalizeSitePolicy(site.SourceDownloadPolicy)
+	securityMode := normalizeSiteSecurityMode(site.SecurityMode)
 	category := strings.TrimSpace(site.Category)
 	tags := strings.TrimSpace(site.Tags)
+	templateSourceCode := strings.TrimSpace(site.TemplateSourceCode)
+	var templateSourceVersion any
+	if site.TemplateSourceVersion != nil && *site.TemplateSourceVersion > 0 {
+		templateSourceVersion = *site.TemplateSourceVersion
+	}
 	var expiresAt any
 	if site.ExpiresAt != nil {
 		expiresAt = site.ExpiresAt.UTC()
@@ -370,9 +466,9 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sites (code, public_id, owner_token_id, current_version, primary_version_strategy,
-		                   visibility, category, tags, view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source)
-		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, site.Code, publicID, site.OwnerTokenID, strategy, visibility, category, tags, site.ViewCount, site.LikeCount, status, site.AccessPasswordHash, site.IsPinned, pinnedAt, expiresAt, site.CreatedAt.UTC(), updatedAt.UTC(), site.Source)
+		                   visibility, reuse_policy, source_download_policy, security_mode, category, tags, view_count, like_count, reuse_count, template_source_code, template_source_version, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source)
+		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, site.Code, publicID, site.OwnerTokenID, strategy, visibility, reusePolicy, sourceDownloadPolicy, securityMode, category, tags, site.ViewCount, site.LikeCount, site.ReuseCount, templateSourceCode, templateSourceVersion, status, site.AccessPasswordHash, site.IsPinned, pinnedAt, expiresAt, site.CreatedAt.UTC(), updatedAt.UTC(), site.Source)
 	if err != nil {
 		return fmt.Errorf("insert site: %w", err)
 	}
@@ -386,14 +482,15 @@ func (s *SQLiteStore) GetSite(ctx context.Context, code string) (Site, error) {
 	var expiresAt sql.NullString
 	var pinnedAt sql.NullString
 	var updatedAt sql.NullString
+	var templateSourceVersion sql.NullInt64
 	var isPinned int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT code, public_id, owner_token_id, current_version, primary_version_strategy,
-		       visibility, category, COALESCE(tags, ''), view_count, like_count, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source
+		       visibility, COALESCE(reuse_policy, 'auto'), COALESCE(source_download_policy, 'auto'), COALESCE(security_mode, 'auto'), category, COALESCE(tags, ''), view_count, like_count, COALESCE(reuse_count, 0), COALESCE(template_source_code, ''), template_source_version, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source
 		FROM sites WHERE code = ?
 	`, code).Scan(
 		&site.Code, &site.PublicID, &site.OwnerTokenID, &cur, &site.PrimaryVersionStrategy,
-		&site.Visibility, &site.Category, &site.Tags, &site.ViewCount, &site.LikeCount, &site.Status, &site.AccessPasswordHash, &isPinned, &pinnedAt, &expiresAt, &site.CreatedAt, &updatedAt, &site.Source,
+		&site.Visibility, &site.ReusePolicy, &site.SourceDownloadPolicy, &site.SecurityMode, &site.Category, &site.Tags, &site.ViewCount, &site.LikeCount, &site.ReuseCount, &site.TemplateSourceCode, &templateSourceVersion, &site.Status, &site.AccessPasswordHash, &isPinned, &pinnedAt, &expiresAt, &site.CreatedAt, &updatedAt, &site.Source,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Site{}, ErrNotFound
@@ -408,12 +505,19 @@ func (s *SQLiteStore) GetSite(ctx context.Context, code string) (Site, error) {
 	if site.PrimaryVersionStrategy == "" {
 		site.PrimaryVersionStrategy = "likes"
 	}
+	if templateSourceVersion.Valid {
+		v := templateSourceVersion.Int64
+		site.TemplateSourceVersion = &v
+	}
 	if site.Status == "" {
 		site.Status = "active"
 	}
 	if site.Visibility == "" {
 		site.Visibility = "public"
 	}
+	site.ReusePolicy = normalizeSitePolicy(site.ReusePolicy)
+	site.SourceDownloadPolicy = normalizeSitePolicy(site.SourceDownloadPolicy)
+	site.SecurityMode = normalizeSiteSecurityMode(site.SecurityMode)
 	site.IsPinned = isPinned != 0
 	if pinnedAt.Valid && pinnedAt.String != "" {
 		if t, perr := parseSQLiteTime(pinnedAt.String); perr == nil {
@@ -469,13 +573,17 @@ func (s *SQLiteStore) SiteExists(ctx context.Context, code string) (bool, error)
 
 // CreateVersion 写一条版本记录。
 func (s *SQLiteStore) CreateVersion(ctx context.Context, v Version) error {
+	var templateSourceVersion any
+	if v.TemplateSourceVersion != nil && *v.TemplateSourceVersion > 0 {
+		templateSourceVersion = *v.TemplateSourceVersion
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO versions
 		  (id, site_code, version_number, title, description, main_entry,
-		   total_size, file_count, content_sha256, is_locked, status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   total_size, file_count, content_sha256, template_source_code, template_source_version, is_locked, status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, v.ID, v.SiteCode, v.VersionNumber, nullString(v.Title), v.Description, v.MainEntry,
-		v.TotalSize, v.FileCount, v.ContentSha256, v.IsLocked, v.Status, v.CreatedAt.UTC())
+		v.TotalSize, v.FileCount, v.ContentSha256, strings.TrimSpace(v.TemplateSourceCode), templateSourceVersion, v.IsLocked, v.Status, v.CreatedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("insert version: %w", err)
 	}
@@ -500,7 +608,7 @@ func (s *SQLiteStore) MaxVersionNumber(ctx context.Context, code string) (int64,
 func (s *SQLiteStore) ListVersions(ctx context.Context, code string) ([]Version, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, site_code, version_number, title, description, main_entry,
-		       total_size, file_count, content_sha256, is_locked, status, created_at
+		       total_size, file_count, content_sha256, COALESCE(template_source_code, ''), template_source_version, is_locked, status, created_at
 		FROM versions WHERE site_code = ?
 		ORDER BY version_number ASC
 	`, code)
@@ -654,7 +762,7 @@ func (s *SQLiteStore) CreateFiles(ctx context.Context, files []FileMeta) error {
 func (s *SQLiteStore) GetVersion(ctx context.Context, code string, version int64) (Version, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, site_code, version_number, title, description, main_entry,
-		       total_size, file_count, content_sha256, is_locked, status, created_at
+		       total_size, file_count, content_sha256, COALESCE(template_source_code, ''), template_source_version, is_locked, status, created_at
 		FROM versions WHERE site_code = ? AND version_number = ?
 	`, code, version)
 	var v Version
@@ -671,7 +779,7 @@ func (s *SQLiteStore) GetVersion(ctx context.Context, code string, version int64
 func (s *SQLiteStore) GetVersionByUUID(ctx context.Context, id string) (Version, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, site_code, version_number, title, description, main_entry,
-		       total_size, file_count, content_sha256, is_locked, status, created_at
+		       total_size, file_count, content_sha256, COALESCE(template_source_code, ''), template_source_version, is_locked, status, created_at
 		FROM versions WHERE id = ?
 	`, id)
 	var v Version
@@ -883,9 +991,10 @@ type scanner interface {
 // title 在 schema 中可为 NULL（v.Title 是 string），用 NullString 中转。
 func scanVersion(sc scanner, v *Version) error {
 	var title sql.NullString
+	var templateSourceVersion sql.NullInt64
 	err := sc.Scan(
 		&v.ID, &v.SiteCode, &v.VersionNumber, &title, &v.Description, &v.MainEntry,
-		&v.TotalSize, &v.FileCount, &v.ContentSha256, &v.IsLocked, &v.Status, &v.CreatedAt,
+		&v.TotalSize, &v.FileCount, &v.ContentSha256, &v.TemplateSourceCode, &templateSourceVersion, &v.IsLocked, &v.Status, &v.CreatedAt,
 	)
 	if err != nil {
 		return err
@@ -894,6 +1003,10 @@ func scanVersion(sc scanner, v *Version) error {
 		v.Title = title.String
 	} else {
 		v.Title = ""
+	}
+	if templateSourceVersion.Valid {
+		version := templateSourceVersion.Int64
+		v.TemplateSourceVersion = &version
 	}
 	v.CreatedAt = v.CreatedAt.Local()
 	return nil
@@ -947,8 +1060,14 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 			s.source,
 			s.view_count,
 			s.like_count,
+			COALESCE(s.reuse_count, 0) AS reuse_count,
+			COALESCE(s.template_source_code, '') AS template_source_code,
+			s.template_source_version,
 			COALESCE(s.status, 'active') AS status,
 			COALESCE(s.visibility, 'unlisted') AS visibility,
+			COALESCE(s.reuse_policy, 'auto') AS reuse_policy,
+			COALESCE(s.source_download_policy, 'auto') AS source_download_policy,
+			COALESCE(s.security_mode, 'auto') AS security_mode,
 			COALESCE(s.category, '') AS category,
 			COALESCE(s.tags, '') AS tags,
 			COALESCE(cv.main_entry, '') AS main_entry,
@@ -977,16 +1096,21 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 		var accessProtected int
 		var isPinned int
 		var pinnedAt sql.NullString
+		var templateSourceVersion sql.NullInt64
 		var lastVStr sql.NullString // SQLite 的 MAX() 返回字符串，扫不进 *time.Time
 		if err := rows.Scan(
 			&item.Code, &item.PublicID, &item.OwnerTokenID, &cur, &item.CreatedAt, &updatedAt, &item.Source,
-			&item.ViewCount, &item.LikeCount, &item.Status,
-			&item.Visibility, &item.Category, &item.Tags, &item.MainEntry, &accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
+			&item.ViewCount, &item.LikeCount, &item.ReuseCount, &item.TemplateSourceCode, &templateSourceVersion, &item.Status,
+			&item.Visibility, &item.ReusePolicy, &item.SourceDownloadPolicy, &item.SecurityMode, &item.Category, &item.Tags, &item.MainEntry, &accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
 		); err != nil {
 			return nil, fmt.Errorf("scan site row: %w", err)
 		}
 		item.AccessProtected = accessProtected != 0
 		item.IsPinned = isPinned != 0
+		if templateSourceVersion.Valid {
+			v := templateSourceVersion.Int64
+			item.TemplateSourceVersion = &v
+		}
 		if cur.Valid {
 			v := cur.Int64
 			item.CurrentVersion = &v
@@ -1014,6 +1138,9 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 		if item.Visibility == "" {
 			item.Visibility = "public"
 		}
+		item.ReusePolicy = normalizeSitePolicy(item.ReusePolicy)
+		item.SourceDownloadPolicy = normalizeSitePolicy(item.SourceDownloadPolicy)
+		item.SecurityMode = normalizeSiteSecurityMode(item.SecurityMode)
 		if item.UpdatedAt.IsZero() {
 			item.UpdatedAt = item.CreatedAt
 		}
@@ -1096,10 +1223,16 @@ const marketplaceSelectCols = `
 	cv.total_size            AS file_size,
 	s.primary_version_strategy AS primary_version_strategy,
 	COALESCE(s.visibility, 'unlisted') AS visibility,
+	COALESCE(s.reuse_policy, 'auto') AS reuse_policy,
+	COALESCE(s.source_download_policy, 'auto') AS source_download_policy,
+	COALESCE(s.security_mode, 'auto') AS security_mode,
 	COALESCE(s.category, '') AS category,
 	COALESCE(s.tags, '') AS tags,
 	s.view_count             AS view_count,
 	s.like_count             AS like_count,
+	COALESCE(s.reuse_count, 0) AS reuse_count,
+	COALESCE(s.template_source_code, '') AS template_source_code,
+	s.template_source_version AS template_source_version,
 	(SELECT COUNT(*) FROM favorites fcnt WHERE fcnt.site_code = s.code) AS favorite_count,
 	CASE WHEN ? <> '' AND EXISTS (SELECT 1 FROM favorites fme WHERE fme.site_code = s.code AND fme.owner_id = ?) THEN 1 ELSE 0 END AS favorited,
 	s.status                 AS status,
@@ -1135,15 +1268,20 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	var strategy sql.NullString
 	var status sql.NullString
 	var visibility sql.NullString
+	var reusePolicy sql.NullString
+	var sourceDownloadPolicy sql.NullString
+	var securityMode sql.NullString
 	var category sql.NullString
 	var tags sql.NullString
+	var templateSourceCode sql.NullString
+	var templateSourceVersion sql.NullInt64
 	var accessProtected int
 	var isPinned int
 	var favorited int
 	var pinnedAt sql.NullString
 	if err := sc.Scan(
 		&d.ID, &d.Code, &d.OwnerTokenID, &curVer, &curVerID, &title, &desc, &mainEntry, &fileSize,
-		&strategy, &visibility, &category, &tags, &d.ViewCount, &d.LikeCount, &d.FavoriteCount, &favorited, &status, &accessProtected, &isPinned, &pinnedAt, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
+		&strategy, &visibility, &reusePolicy, &sourceDownloadPolicy, &securityMode, &category, &tags, &d.ViewCount, &d.LikeCount, &d.ReuseCount, &templateSourceCode, &templateSourceVersion, &d.FavoriteCount, &favorited, &status, &accessProtected, &isPinned, &pinnedAt, &expiresAt, &d.CreatedAt, &updatedAt, &d.VersionCount,
 	); err != nil {
 		return d, err
 	}
@@ -1179,11 +1317,27 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	if visibility.Valid {
 		d.Visibility = visibility.String
 	}
+	if reusePolicy.Valid {
+		d.ReusePolicy = normalizeSitePolicy(reusePolicy.String)
+	}
+	if sourceDownloadPolicy.Valid {
+		d.SourceDownloadPolicy = normalizeSitePolicy(sourceDownloadPolicy.String)
+	}
+	if securityMode.Valid {
+		d.SecurityMode = normalizeSiteSecurityMode(securityMode.String)
+	}
 	if category.Valid {
 		d.Category = category.String
 	}
 	if tags.Valid {
 		d.Tags = tags.String
+	}
+	if templateSourceCode.Valid {
+		d.TemplateSourceCode = templateSourceCode.String
+	}
+	if templateSourceVersion.Valid {
+		v := templateSourceVersion.Int64
+		d.TemplateSourceVersion = &v
 	}
 	if d.Status == "" {
 		d.Status = "active"
@@ -1191,6 +1345,9 @@ func scanMarketplaceRow(sc scanner) (MarketplaceDeploy, error) {
 	if d.Visibility == "" {
 		d.Visibility = "public"
 	}
+	d.ReusePolicy = normalizeSitePolicy(d.ReusePolicy)
+	d.SourceDownloadPolicy = normalizeSitePolicy(d.SourceDownloadPolicy)
+	d.SecurityMode = normalizeSiteSecurityMode(d.SecurityMode)
 	if d.PrimaryVersionStrategy == "" {
 		d.PrimaryVersionStrategy = "likes"
 	}
@@ -1359,6 +1516,20 @@ func (s *SQLiteStore) IncrementViewCount(ctx context.Context, code string) error
 	return nil
 }
 
+func (s *SQLiteStore) IncrementSiteReuseCount(ctx context.Context, code string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sites SET reuse_count = COALESCE(reuse_count, 0) + 1, updated_at = ? WHERE code = ?`,
+		time.Now().UTC(), code)
+	if err != nil {
+		return fmt.Errorf("increment reuse_count: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // AddLike 给 site 加一次点赞；user_fingerprint 已存在则忽略。
 // 返回加完后的 like_count。
 func (s *SQLiteStore) AddLike(ctx context.Context, code, userFingerprint string) (int64, error) {
@@ -1514,6 +1685,38 @@ func (s *SQLiteStore) SetSitePinned(ctx context.Context, code string, pinned boo
 	return s.syncSearchIndex(ctx, code)
 }
 
+func (s *SQLiteStore) SetSiteReusePolicy(ctx context.Context, code, reusePolicy, sourceDownloadPolicy string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sites
+		 SET reuse_policy = ?, source_download_policy = ?, updated_at = ?
+		 WHERE code = ?`,
+		normalizeSitePolicy(reusePolicy), normalizeSitePolicy(sourceDownloadPolicy), time.Now().UTC(), code)
+	if err != nil {
+		return fmt.Errorf("set site reuse policy: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLiteStore) SetSiteSecurityMode(ctx context.Context, code, securityMode string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sites
+		 SET security_mode = ?, updated_at = ?
+		 WHERE code = ?`,
+		normalizeSiteSecurityMode(securityMode), time.Now().UTC(), code)
+	if err != nil {
+		return fmt.Errorf("set site security mode: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // TouchSiteUpdated 把 updated_at 更新为当前时间。
 func (s *SQLiteStore) TouchSiteUpdated(ctx context.Context, code string) error {
 	_, err := s.db.ExecContext(ctx,
@@ -1650,11 +1853,14 @@ func (s *SQLiteStore) RecordAuditLog(ctx context.Context, log AuditLog) error {
 	if strings.TrimSpace(log.DetailJSON) == "" {
 		log.DetailJSON = "{}"
 	}
+	if strings.TrimSpace(log.Result) == "" {
+		log.Result = "success"
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO audit_logs
-			(actor_type, actor_id, action, site_code, target_type, target_id, ip, user_agent, detail_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, log.ActorType, log.ActorID, log.Action, log.SiteCode, log.TargetType, log.TargetID,
+			(actor_type, actor_id, actor_role, action, result, site_code, target_type, target_id, ip, user_agent, detail_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, log.ActorType, log.ActorID, log.ActorRole, log.Action, log.Result, log.SiteCode, log.TargetType, log.TargetID,
 		log.IP, log.UserAgent, log.DetailJSON, log.CreatedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("record audit log: %w", err)
@@ -1673,9 +1879,17 @@ func (s *SQLiteStore) ListAuditLogs(ctx context.Context, filter AuditLogFilter) 
 		where = append(where, "actor_id = ?")
 		args = append(args, filter.ActorID)
 	}
+	if filter.ActorRole != "" {
+		where = append(where, "actor_role = ?")
+		args = append(args, filter.ActorRole)
+	}
 	if filter.Action != "" {
 		where = append(where, "action = ?")
 		args = append(args, filter.Action)
+	}
+	if filter.Result != "" {
+		where = append(where, "result = ?")
+		args = append(args, filter.Result)
 	}
 	if filter.SiteCode != "" {
 		where = append(where, "site_code = ?")
@@ -1684,6 +1898,23 @@ func (s *SQLiteStore) ListAuditLogs(ctx context.Context, filter AuditLogFilter) 
 	if filter.TargetType != "" {
 		where = append(where, "target_type = ?")
 		args = append(args, filter.TargetType)
+	}
+	if filter.TargetID != "" {
+		where = append(where, "target_id = ?")
+		args = append(args, filter.TargetID)
+	}
+	if strings.TrimSpace(filter.Query) != "" {
+		q := "%" + strings.TrimSpace(filter.Query) + "%"
+		where = append(where, "(actor_type LIKE ? OR actor_id LIKE ? OR actor_role LIKE ? OR action LIKE ? OR result LIKE ? OR site_code LIKE ? OR target_type LIKE ? OR target_id LIKE ? OR ip LIKE ? OR user_agent LIKE ? OR detail_json LIKE ?)")
+		args = append(args, q, q, q, q, q, q, q, q, q, q, q)
+	}
+	if filter.Since != nil {
+		where = append(where, "created_at >= ?")
+		args = append(args, filter.Since.UTC())
+	}
+	if filter.Until != nil {
+		where = append(where, "created_at <= ?")
+		args = append(args, filter.Until.UTC())
 	}
 	whereSQL := ""
 	if len(where) > 0 {
@@ -1706,7 +1937,7 @@ func (s *SQLiteStore) ListAuditLogs(ctx context.Context, filter AuditLogFilter) 
 	listArgs := append([]any{}, args...)
 	listArgs = append(listArgs, limit, offset)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, actor_type, actor_id, action, site_code, target_type, target_id,
+		SELECT id, actor_type, actor_id, actor_role, action, result, site_code, target_type, target_id,
 		       ip, user_agent, detail_json, created_at
 		FROM audit_logs `+whereSQL+`
 		ORDER BY created_at DESC, id DESC
@@ -1720,7 +1951,7 @@ func (s *SQLiteStore) ListAuditLogs(ctx context.Context, filter AuditLogFilter) 
 	out := []AuditLog{}
 	for rows.Next() {
 		var log AuditLog
-		if err := rows.Scan(&log.ID, &log.ActorType, &log.ActorID, &log.Action, &log.SiteCode,
+		if err := rows.Scan(&log.ID, &log.ActorType, &log.ActorID, &log.ActorRole, &log.Action, &log.Result, &log.SiteCode,
 			&log.TargetType, &log.TargetID, &log.IP, &log.UserAgent, &log.DetailJSON, &log.CreatedAt); err != nil {
 			return nil, 0, fmt.Errorf("scan audit log: %w", err)
 		}

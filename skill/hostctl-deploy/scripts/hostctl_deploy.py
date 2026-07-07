@@ -228,6 +228,45 @@ def print_result(status: int, data: dict) -> int:
     return 0 if 200 <= status < 300 and data.get("success", True) is not False else 1
 
 
+def print_deploy_summary(data: dict, stream=sys.stdout) -> None:
+    if not isinstance(data, dict):
+        return
+    if data.get("success", True) is False:
+        return
+    has_url = any(data.get(key) for key in ("url", "detailUrl", "versionUrl"))
+    if not has_url and not data.get("code"):
+        return
+
+    print("PagePilot 发布成功", file=stream)
+    for label, key in (
+        ("访问 URL", "url"),
+        ("详情 URL", "detailUrl"),
+        ("版本 URL", "versionUrl"),
+    ):
+        value = str(data.get(key) or "").strip()
+        if value:
+            print(f"  {label}: {value}", file=stream)
+    code = str(data.get("code") or "").strip()
+    if code:
+        print(f"  code: {code}", file=stream)
+    version = data.get("versionNumber")
+    if version:
+        print(f"  版本: v{version}", file=stream)
+
+    source_code = str(data.get("templateSourceCode") or "").strip()
+    source_version = data.get("templateSourceVersion")
+    if source_code:
+        suffix = f" v{source_version}" if source_version else ""
+        print(f"  复用来源: {source_code}{suffix}", file=stream)
+    if data.get("reuseCount") is not None:
+        print(f"  复用计数: {data['reuseCount']}", file=stream)
+    if data.get("preserveHint"):
+        print(f"  提示: {data['preserveHint']}", file=stream)
+    if has_url:
+        print("  请直接使用服务端返回的链接，不要按本机地址或域名规则自行拼接。", file=stream)
+    print("", file=stream)
+
+
 def request_write(args, path: str, method: str, payload: dict | None = None) -> tuple[int, dict]:
     base = server_url(args)
     token = auth_token(args)
@@ -499,6 +538,10 @@ def add_deploy_options(payload: dict, args) -> None:
         payload["category"] = args.category
     if getattr(args, "access_password", ""):
         payload["accessPassword"] = args.access_password
+    if getattr(args, "template_source_code", ""):
+        payload["templateSourceCode"] = args.template_source_code
+    if getattr(args, "template_source_version", None):
+        payload["templateSourceVersion"] = int(args.template_source_version)
 
 
 def apply_access_password_after_deploy(args, base: str, token: str, code: str) -> None:
@@ -591,6 +634,7 @@ def cmd_deploy(args) -> int:
     if 200 <= status < 300 and data.get("code"):
         remember_project(base, args.source, data["code"])
         apply_access_password_after_deploy(args, base, token, str(data["code"]))
+        print_deploy_summary(data)
     return print_result(status, data)
 
 
@@ -612,6 +656,7 @@ def cmd_append(args) -> int:
     if 200 <= status < 300 and data.get("code"):
         remember_project(base, args.source, data["code"])
         apply_access_password_after_deploy(args, base, token, str(data["code"]))
+        print_deploy_summary(data)
     return print_result(status, data)
 
 
@@ -805,6 +850,12 @@ def cmd_admin_delete_site(args) -> int:
     return print_result(status, data)
 
 
+def cmd_admin_site_detail(args) -> int:
+    code = urllib.parse.quote(args.code, safe="")
+    status, data = request_json(server_url(args), auth_token(args), f"/api/admin/sites/{code}")
+    return print_result(status, data)
+
+
 def cmd_admin_pin_site(args) -> int:
     code = urllib.parse.quote(args.code, safe="")
     payload = {"pinned": not args.unpin}
@@ -812,6 +863,57 @@ def cmd_admin_pin_site(args) -> int:
         server_url(args),
         auth_token(args),
         f"/api/admin/sites/{code}/pin",
+        "PATCH",
+        payload,
+    )
+    return print_result(status, data)
+
+
+def cmd_admin_audit_logs(args) -> int:
+    params = {
+        "actorType": args.actor_type,
+        "actorId": args.actor_id,
+        "actorRole": args.actor_role,
+        "action": args.action,
+        "result": args.result,
+        "siteCode": args.site_code,
+        "targetType": args.target_type,
+        "targetId": args.target_id,
+        "q": args.query,
+        "since": args.since,
+        "until": args.until,
+        "page": args.page,
+        "pageSize": args.page_size,
+    }
+    query = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
+    path = "/api/admin/audit-logs" + (f"?{query}" if query else "")
+    status, data = request_json(server_url(args), auth_token(args), path)
+    return print_result(status, data)
+
+
+def cmd_admin_reuse_policy(args) -> int:
+    code = urllib.parse.quote(args.code, safe="")
+    payload = {
+        "reusePolicy": args.reuse,
+        "sourceDownloadPolicy": args.source_download,
+    }
+    status, data = request_json(
+        server_url(args),
+        auth_token(args),
+        f"/api/admin/sites/{code}/reuse-policy",
+        "PATCH",
+        payload,
+    )
+    return print_result(status, data)
+
+
+def cmd_admin_security_mode(args) -> int:
+    code = urllib.parse.quote(args.code, safe="")
+    payload = {"securityMode": args.mode}
+    status, data = request_json(
+        server_url(args),
+        auth_token(args),
+        f"/api/admin/sites/{code}/security-mode",
         "PATCH",
         payload,
     )
@@ -1050,6 +1152,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--visibility", choices=["public", "unlisted"], default="", help="public 进入 PagePilot 创作市场；unlisted 仅链接访问")
         p.add_argument("--category", default="", help="新站点的创作市场分类 slug，例如 landing/dashboard/docs/tool/game/screen")
         p.add_argument("--access-password", help="Optional visit password. Existing codes are updated after deploy.")
+        p.add_argument("--template-source-code", default="", help="复用创作市场作品时传入原作品 code，用于记录来源和复用计数")
+        p.add_argument("--template-source-version", type=int, help="复用创作市场作品时传入原作品版本号")
 
     p = sub.add_parser("deploy", help="Deploy a new site from a file or directory")
     add_common_deploy_flags(p, with_code=True, with_create_version=True)
@@ -1148,6 +1252,24 @@ def build_parser() -> argparse.ArgumentParser:
     admin_sub = p_admin.add_subparsers(dest="admin_cmd", required=True)
     pa = admin_sub.add_parser("sites", help="List all sites")
     pa.set_defaults(func=cmd_admin_sites)
+    pa = admin_sub.add_parser("site-detail", help="查看站点详情、Bundle、文件树和复用参数")
+    pa.add_argument("code")
+    pa.set_defaults(func=cmd_admin_site_detail)
+    pa = admin_sub.add_parser("audit-logs", help="查询管理员审计日志")
+    pa.add_argument("--actor-type", default="")
+    pa.add_argument("--actor-id", default="")
+    pa.add_argument("--actor-role", default="")
+    pa.add_argument("--action", default="")
+    pa.add_argument("--result", default="")
+    pa.add_argument("--site-code", default="")
+    pa.add_argument("--target-type", default="")
+    pa.add_argument("--target-id", default="")
+    pa.add_argument("--query", "-q", default="")
+    pa.add_argument("--since", default="", help="RFC3339 起始时间")
+    pa.add_argument("--until", default="", help="RFC3339 截止时间")
+    pa.add_argument("--page", type=int, default=1)
+    pa.add_argument("--page-size", type=int, default=50)
+    pa.set_defaults(func=cmd_admin_audit_logs)
     pa = admin_sub.add_parser("delete-site", help="Delete a whole site")
     pa.add_argument("code")
     pa.set_defaults(func=cmd_admin_delete_site)
@@ -1155,6 +1277,15 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("code")
     pa.add_argument("--unpin", action="store_true", help="取消创作市场置顶")
     pa.set_defaults(func=cmd_admin_pin_site)
+    pa = admin_sub.add_parser("reuse-policy", help="设置源码下载和模板复用策略")
+    pa.add_argument("code")
+    pa.add_argument("--reuse", choices=["auto", "allow", "deny"], default="auto", help="模板复用策略")
+    pa.add_argument("--source-download", choices=["auto", "allow", "deny"], default="auto", help="源码下载策略")
+    pa.set_defaults(func=cmd_admin_reuse_policy)
+    pa = admin_sub.add_parser("security-mode", help="设置站点运行安全模式")
+    pa.add_argument("code")
+    pa.add_argument("--mode", choices=["auto", "strict", "compatible", "trusted"], default="auto", help="运行安全模式")
+    pa.set_defaults(func=cmd_admin_security_mode)
 
     p_config = sub.add_parser("config", help="Read or update runtime config")
     config_sub = p_config.add_subparsers(dest="config_cmd", required=True)

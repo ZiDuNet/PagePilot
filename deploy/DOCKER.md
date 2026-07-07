@@ -62,7 +62,13 @@ HOSTCTL_ADMIN_PASSWORD: "123456"
 
 本轮运行时重构新增了 `site_search_fts`、`audit_logs`、`render_cache` 和 `version_bundles` 等表，并会在服务启动时自动补齐老数据库结构、回填市场搜索索引。只要继续挂载上表中的 `./data/docker/hostctl` 和 `./data/docker/hosted`，迁移设计不会主动清空旧版本数据；不要为了“重新构建”删除 `data/docker`。
 
-发布前仍需要拿真实旧版本 SQLite 数据库和 hosted 文件目录跑一次 Docker 升级验证，确认站点、版本、用户、Token、访问密码、分类、屏幕绑定、文件资源、FTS 回填和新增表迁移都正常。当前完整待办见 [../docs/CURRENT_STATUS_AND_TODO.md](../docs/CURRENT_STATUS_AND_TODO.md)。
+发布前仍需要拿真实旧版本 SQLite 数据库和 hosted 文件目录跑一次 Docker 升级验证，确认站点、版本、用户、Token、访问密码、分类、屏幕绑定、文件资源、FTS 回填和新增表迁移都正常。仓库提供了可复现的容器升级演练脚本：
+
+```bash
+node scripts/docker-upgrade-qa.mjs
+```
+
+该脚本会在临时目录构造旧 SQLite + hosted 数据，生成临时 compose override，执行真实 `docker compose up -d --build`，再通过容器 HTTP 接口和直接 SQLite 校验确认升级结果。它需要服务器已安装 Docker Compose 和 Go；需要保留现场排查时可加 `--keep`。当前完整待办见 [../docs/CURRENT_STATUS_AND_TODO.md](../docs/CURRENT_STATUS_AND_TODO.md)。
 
 ## 注册、邮箱验证与 OSS
 
@@ -125,6 +131,9 @@ server {
 # 构建并启动
 docker compose up -d --build
 
+# 用临时旧库和 hosted 目录跑一次真实容器升级演练
+node scripts/docker-upgrade-qa.mjs
+
 # 查看日志
 docker compose logs -f hostctl
 
@@ -158,6 +167,7 @@ docker compose logs -f hostctl
 升级后建议检查：
 
 ```bash
+node scripts/docker-upgrade-qa.mjs
 curl -fsS http://127.0.0.1:8787/api/health
 curl -fsS http://127.0.0.1:8787/deploy >/dev/null
 curl -fsSI http://127.0.0.1:8787/api-docs.html | grep -i 'location: /admin?tab=apiDocs'

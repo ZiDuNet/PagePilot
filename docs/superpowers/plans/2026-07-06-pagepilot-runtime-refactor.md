@@ -4,7 +4,7 @@
 
 **目标：** 把 PagePilot 的 HTML/Markdown/ZIP 发布链路重构为可维护、可审计、可搜索、CLI/MCP/Skill 对齐的应用运行时。
 
-**架构目标：** 后端逐步拆出 `internal/bundle`、`internal/render`、`internal/hosted`、`internal/audit` 等边界清晰的模块，原有 `internal/deploy`、`internal/api`、`internal/store` 只保留编排职责。当前已经落地 `internal/bundle` 和 `internal/render`；`internal/hosted`、`internal/audit` 尚未拆出，后台审计、文件树、Bundle 展示和模板复用仍待产品化。
+**架构目标：** 后端逐步拆出 `internal/bundle`、`internal/render`、`internal/hosted`、`internal/audit` 等边界清晰的模块，原有 `internal/deploy`、`internal/api`、`internal/store` 只保留编排职责。当前已经落地 `internal/bundle` 和 `internal/render`；`internal/hosted`、`internal/audit` 尚未拆出，后台审计、文件树、Bundle 展示和模板复用已有基础产品化，仍待继续做交互打磨、视觉 QA 和真实数据验证。
 
 **技术栈：** Go 1.22、SQLite/FTS5、React 18、Vite、PagePilot CLI、MCP stdio server、PagePilot Skill。
 
@@ -23,8 +23,9 @@
 仍未落地：
 
 - 独立 `internal/hosted`、`internal/audit` 模块尚未拆出，相关能力仍在现有 API/Store 层中。
-- 后台审计日志 API/UI、站点文件树和更完整的 Bundle/安全模式展示仍待实现。
-- Markdown 目前是安全语义渲染，不是 jpage 那种服务端 Markdown / highlight.js / KaTeX 渲染加内置 Mermaid 前端运行时的完整链路。
+- 后台审计日志 API/UI、站点详情最近审计摘要、站点文件树和 Bundle/安全模式展示已有基础实现，托管页 CSP 违规也会进入 `security.csp_report` 审计日志；后续重点是低频失败路径覆盖、目录交互打磨、真实数据分页筛选和视觉 QA。
+- 后台 `/admin` 入口和 `/admin/assets/*` 静态资源已接入独立严格 CSP、`frame-ancestors 'none'`、`X-Frame-Options: DENY`、`nosniff` 和 CSP report-uri，后台不依赖 `unsafe-inline` / `unsafe-eval`。
+- Markdown 已接入 GFM、Chroma 高亮、同源 KaTeX / Mermaid runtime、内置 KaTeX 字体、内置样式和初始化脚本 nonce、严格脚本 CSP 和 CSP report-uri，并覆盖行内公式、单行 / 多行块级公式；Markdown 脚本策略使用 nonce-only `script-src`，不依赖 `script-src 'self'`，也不允许 `script-src 'unsafe-inline'` / `unsafe-eval`，KaTeX / Mermaid 需要的运行时样式通过 `style-src-elem` / `style-src-attr` 受控放行。后续重点是视觉 QA、更多公式 / Mermaid 回归和安全专项复查。
 - 前台模板复用体验还不是完整 jpage 式闭环。
 - 还没有完成运行时视觉 QA，也没有用真实旧数据库跑 Docker 升级验证。
 - 汇总清单见 `docs/CURRENT_STATUS_AND_TODO.md`。
@@ -45,15 +46,15 @@
 - 修改 `internal/store/schema.sql`：增加 `site_search_fts`、`audit_logs`、`render_cache`、`version_bundles`。
 - 修改 `internal/store/store.go`：增加 FTS、审计、渲染缓存、bundle 元数据接口。
 - 修改 `internal/store/sqlite.go`：增加迁移、FTS 同步、审计写入、缓存读写、文件树查询。
-- 修改 `internal/api/types.go`、`internal/api/admin_types.go`：增加 bundle、搜索、审计、multipart 返回字段类型。当前 multipart 已落地，审计和完整 Bundle 展示字段仍待 API 产品化。
-- 修改 `internal/api/server.go`：接入新渲染/CSP/审计模块，新增 multipart 上传接口和审计日志 API。当前 multipart 与渲染缓存已落地，审计日志 API 未落地。
+- 修改 `internal/api/types.go`、`internal/api/admin_types.go`：增加 bundle、搜索、审计、multipart 返回字段类型。当前 multipart、审计查询、站点详情和 Bundle 展示字段已落地；后续重点是 UI 视觉 QA 和更多边界测试。
+- 修改 `internal/api/server.go`：接入新渲染/CSP/审计模块，新增 multipart 上传接口和审计日志 API。当前 multipart、渲染缓存、审计日志 API 和 CSP 违规审计入口已落地。
 - 修改 `internal/api/openapi.go`：补齐新接口和 schema。
 - 修改 `cmd/hostctl/main.go`：目录/ZIP 优先走 multipart，保留 JSON/base64 fallback。
-- 修改 `cmd/hostctl-mcp/main.go`：工具描述与参数同步，补模板复用、文件树、审计可见能力。当前发布和屏幕工具已对齐 multipart，文件树、审计可见能力仍待补齐。
+- 修改 `cmd/hostctl-mcp/main.go`：工具描述与参数同步，补模板复用、文件树、审计可见能力。当前发布和屏幕工具已对齐 multipart，文件树、审计和安全模式查询已有工具入口，后续继续做端到端验证。
 - 修改 `skill/hostctl-deploy/SKILL.md`：重写 Agent 操作规约。
 - 修改 `skill/hostctl-deploy/scripts/hostctl_deploy.py`：优先 multipart，保留 JSON 兼容。
-- 修改 `frontend/user/src/App.tsx`、`frontend/user/src/types.ts`、`frontend/user/src/styles.css`：市场搜索、复用抽屉、详情页展示 bundle/渲染信息。当前已有基础复用抽屉，完整文件树/Bundle/安全模式/复用参数展示仍待补齐。
-- 修改 `frontend/admin/src/App.tsx`、`frontend/admin/src/styles.css`：站点文件树、安全模式、审计日志、运行设置和 Skill/MCP 文案。当前运行设置和 Skill/MCP 文案已更新，站点文件树、安全模式、审计日志 UI 仍待补齐。
+- 修改 `frontend/user/src/App.tsx`、`frontend/user/src/types.ts`、`frontend/user/src/styles.css`：市场搜索、复用抽屉、详情页展示 bundle/渲染信息。当前已有基础复用抽屉和 Bundle/文件树/安全模式展示，后续继续做目录交互、复制路径和视觉 QA。
+- 修改 `frontend/admin/src/App.tsx`、`frontend/admin/src/styles.css`：站点文件树、安全模式、审计日志、运行设置和 Skill/MCP 文案。当前运行设置、Skill/MCP 文案、站点文件树、安全模式、全局审计日志和站点详情最近审计摘要已有基础实现，后续继续做真实数据 QA 和体验打磨。
 - 修改 `README.md`、`deploy/DOCKER.md`、`deploy/APP_URL_MODE.md`、`docs/PAGEPILOT_REMEDIATION_PLAN.md`、`docs/CODEX_HANDOFF.md`：同步新能力和部署注意事项。
 - 重新生成 `internal/web/skill/hostctl-deploy.zip`。
 
@@ -465,19 +466,7 @@ CLI 对文件/目录/ZIP 优先 multipart；遇到旧服务 404/405 时 fallback
 ```bash
 python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py skill/hostctl-deploy/scripts/pagep.py
 python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
-@'
-from pathlib import Path
-import zipfile
-root = Path('skill/hostctl-deploy')
-out = Path('internal/web/skill/hostctl-deploy.zip')
-with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
-    for path in sorted(root.rglob('*')):
-        if path.is_file():
-            rel = path.relative_to(root)
-            if '__pycache__' in rel.parts or path.suffix in {'.pyc', '.pyo'}:
-                continue
-            z.write(path, Path('pagep') / rel)
-'@ | python -
+python scripts/build_skill_zip.py
 ```
 
 - [x] **步骤 6：运行验证**
@@ -497,7 +486,7 @@ git commit -m "feat: 增加 multipart 发布并对齐 Skill MCP"
 
 ## 任务 6：创作市场复用、后台文件树和审计日志 UI
 
-> 当前状态：本任务尚未完成。底层 Bundle 元数据、部分复用抽屉和发布链路已经具备基础，但后台审计 API/UI、文件树展示和安全模式展示仍待实现。
+> 当前状态：本任务尚未完成。Bundle 元数据、复用抽屉、发布链路、后台审计 API/UI、站点详情最近审计摘要、文件树展示和安全模式展示已有基础实现，但仍需要交互打磨、视觉 QA、安全复查和旧数据升级验证。
 
 **文件：**
 - 修改：`frontend/user/src/types.ts`
@@ -527,7 +516,7 @@ npm run typecheck --prefix frontend/admin
 
 - [ ] **步骤 4：后台改造**
 
-应用管理显示文件树、入口、Bundle 类型、安全模式；新增审计日志 tab，支持按 action、code、actor 搜索。
+应用管理显示文件树、入口、Bundle 类型、安全模式和当前站点最近审计；新增审计日志 tab，支持按 action、code、actor 搜索。
 
 - [ ] **步骤 5：运行验证**
 

@@ -1,4 +1,4 @@
-.PHONY: all build build-linux frontend frontend-user frontend-admin run test skill-test clean fmt vet tidy deps docker
+.PHONY: all build build-linux frontend frontend-user frontend-admin skill-zip run test runtime-qa visual-qa legacy-upgrade-qa docker-upgrade-qa skill-test clean fmt vet tidy deps docker
 
 BIN_DIR := bin
 SERVER_BIN := $(BIN_DIR)/hostctl-server
@@ -26,8 +26,12 @@ frontend-user:
 frontend-admin:
 	cd frontend/admin && npm install && npm run build
 
+# Build the embedded Skill ZIP.
+skill-zip:
+	python scripts/build_skill_zip.py
+
 # Build all binaries for the local platform.
-build: frontend $(SERVER_BIN) $(CLI_BIN) $(MCP_BIN)
+build: skill-zip frontend $(SERVER_BIN) $(CLI_BIN) $(MCP_BIN)
 
 $(SERVER_BIN):
 	@mkdir -p $(BIN_DIR)
@@ -44,7 +48,7 @@ $(MCP_BIN):
 	@cp $(MCP_BIN) $(LEGACY_MCP_BIN)
 
 # Build Linux amd64 binaries for deployment.
-build-linux: frontend
+build-linux: skill-zip frontend
 	@mkdir -p $(BIN_DIR)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(SERVER_BIN)-linux-amd64 ./cmd/hostctl-server
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(CLI_BIN)-linux-amd64 ./cmd/hostctl
@@ -58,7 +62,23 @@ run: build
 
 # Run Go tests.
 test:
-	go test ./...
+	go test ./cmd/... ./internal/...
+
+# Run production-like runtime QA on a temporary server and database.
+runtime-qa:
+	node scripts/runtime-qa.mjs
+
+# Run browser visual QA on a temporary server and database.
+visual-qa:
+	node scripts/visual-qa.mjs
+
+# Run a legacy SQLite + hosted directory upgrade rehearsal on a temporary server.
+legacy-upgrade-qa:
+	node scripts/legacy-upgrade-qa.mjs
+
+# Run a real Docker Compose upgrade rehearsal with a seeded old database and hosted dir.
+docker-upgrade-qa:
+	node scripts/docker-upgrade-qa.mjs
 
 # Skill smoke test. Requires a local dev server on 127.0.0.1:8787.
 skill-test:
@@ -72,7 +92,7 @@ vet:
 	go vet ./...
 
 # Build Docker image.
-docker:
+docker: skill-zip
 	docker build -t hostctl:latest .
 
 # Remove generated local artifacts.

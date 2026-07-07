@@ -28,9 +28,9 @@ RUN cd frontend/admin && npm run build && \
 # ===== Go Build =====
 FROM ${GO_IMAGE} AS builder
 
-# git is needed by go mod for VCS-backed modules.
+# git is needed by go mod for VCS-backed modules; python3 rebuilds the embedded Skill ZIP.
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
-    apk add --no-cache git ca-certificates
+    apk add --no-cache git ca-certificates python3
 
 WORKDIR /src
 
@@ -49,7 +49,8 @@ COPY --from=frontend-builder /src/internal/web/user/app ./internal/web/user/app
 
 # modernc.org/sqlite is pure Go, so CGO can stay disabled.
 ENV CGO_ENABLED=0 GOOS=linux
-RUN go build -trimpath -ldflags="-s -w" -o /out/hostctl-server ./cmd/hostctl-server && \
+RUN python3 scripts/build_skill_zip.py && \
+    go build -trimpath -ldflags="-s -w" -o /out/hostctl-server ./cmd/hostctl-server && \
     go build -trimpath -ldflags="-s -w" -o /out/pagep          ./cmd/hostctl && \
     go build -trimpath -ldflags="-s -w" -o /out/pagep-mcp      ./cmd/hostctl-mcp
 

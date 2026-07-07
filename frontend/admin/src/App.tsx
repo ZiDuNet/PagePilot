@@ -1,10 +1,12 @@
 import {
+  AlertTriangle,
   Bot,
   ClipboardList,
   Code2,
   Copy,
   Download,
   Eye,
+  FileArchive,
   FileText,
   FileUp,
   Heart,
@@ -16,6 +18,7 @@ import {
   Pin,
   RefreshCw,
   Save,
+  ScrollText,
   Search,
   Settings,
   ShieldCheck,
@@ -44,6 +47,7 @@ type Tab =
   | "tokens"
   | "users"
   | "anonymous"
+  | "audit"
   | "config"
   | "skill"
   | "apiDocs";
@@ -52,6 +56,11 @@ type DeployMode = "single" | "multi";
 type SkillTab = "skill" | "mcp";
 type ScreenPickTab = "mine" | "market";
 type SiteViewMode = "list" | "render";
+type ReusePolicyValue = "auto" | "allow" | "deny";
+type SecurityModeValue = "auto" | "strict" | "compatible" | "trusted";
+
+const PREVIEW_IFRAME_SANDBOX =
+  "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-top-navigation-by-user-activation";
 
 interface SessionInfo {
   success?: boolean;
@@ -115,9 +124,15 @@ interface SiteItem {
   totalSize?: number;
   viewCount?: number;
   likeCount?: number;
+  reuseCount?: number;
+  templateSourceCode?: string;
+  templateSourceVersion?: number;
   favoriteCount?: number;
   status?: string;
   visibility?: string;
+  reusePolicy?: ReusePolicyValue;
+  sourceDownloadPolicy?: ReusePolicyValue;
+  securityMode?: SecurityModeValue;
   category?: string;
   tags?: string[];
   filename?: string;
@@ -125,6 +140,49 @@ interface SiteItem {
   isPinned?: boolean;
   createdAt?: string;
   lastVersionAt?: string;
+}
+
+interface BundleDetail {
+  kind?: string;
+  kindLabel?: string;
+  root?: string;
+  mainEntry?: string;
+  securityMode?: string;
+  siteSecurityMode?: SecurityModeValue;
+  effectiveSecurityMode?: string;
+  fileCount?: number;
+  totalSize?: number;
+  tree?: ContentFile[];
+  entryNote?: string;
+}
+
+interface ContentFile {
+  path: string;
+  size?: number;
+  sha256?: string;
+  isBinary?: boolean;
+}
+
+interface ReuseDetail {
+  downloadUrl?: string;
+  detailUrl?: string;
+  cli?: string;
+  agentPrompt?: string;
+  mcp?: Record<string, unknown>;
+  allowReuse?: boolean;
+  allowDownload?: boolean;
+  policyNote?: string;
+  templateSourceCode?: string;
+  templateSourceVersion?: number;
+}
+
+interface SiteDetailResponse {
+  success?: boolean;
+  site: SiteItem;
+  versions?: any[];
+  bundle?: BundleDetail;
+  files?: ContentFile[];
+  reuse?: ReuseDetail;
 }
 
 interface MarketplaceItem {
@@ -227,6 +285,30 @@ interface AnonymousSession {
   lastUsedAt?: string;
 }
 
+interface AuditLogItem {
+  id: number;
+  actorType?: string;
+  actorId?: string;
+  actorRole?: string;
+  action?: string;
+  result?: string;
+  siteCode?: string;
+  targetType?: string;
+  targetId?: string;
+  ip?: string;
+  userAgent?: string;
+  detail?: unknown;
+  createdAt?: string;
+}
+
+interface AuditLogResponse {
+  success?: boolean;
+  logs?: AuditLogItem[];
+  total?: number;
+  page?: number;
+  pageSize?: number;
+}
+
 interface DeployFile {
   path: string;
   content: string;
@@ -246,6 +328,16 @@ class APIError extends Error {
   body?: unknown;
 }
 
+interface StructuredAPIErrorPayload {
+  errorCode?: string;
+  detail?: string;
+  stage?: string;
+  hint?: string;
+  requestId?: string;
+  retryAfter?: number;
+  [key: string]: unknown;
+}
+
 const navItems: Array<{ tab: Tab; label: string; icon: React.ReactNode; adminOnly?: boolean }> = [
   { tab: "overview", label: "总览", icon: <LayoutDashboard size={18} /> },
   { tab: "deploy", label: "发布应用", icon: <Upload size={18} /> },
@@ -256,6 +348,7 @@ const navItems: Array<{ tab: Tab; label: string; icon: React.ReactNode; adminOnl
   { tab: "account", label: "账号设置", icon: <ShieldCheck size={18} /> },
   { tab: "users", label: "用户管理", icon: <Users size={18} />, adminOnly: true },
   { tab: "anonymous", label: "匿名 Agent", icon: <Bot size={18} />, adminOnly: true },
+  { tab: "audit", label: "审计日志", icon: <ScrollText size={18} />, adminOnly: true },
   { tab: "config", label: "运行设置", icon: <Settings size={18} />, adminOnly: true },
   { tab: "skill", label: "Skill & MCP", icon: <Workflow size={18} />, adminOnly: true },
   { tab: "apiDocs", label: "API 文档", icon: <Code2 size={18} /> }
@@ -311,6 +404,175 @@ function formatSize(value?: number) {
   return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
 
+function fileDirectory(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx > 0 ? path.slice(0, idx) : "根目录";
+}
+
+function FileTreeExplorer({
+  files,
+  totalSize,
+  onCopy
+}: {
+  files: ContentFile[];
+  totalSize?: number;
+  onCopy: (value?: string) => void | Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const folders = new Set<string>();
+  let computedSize = 0;
+  for (const file of files) {
+    computedSize += Number(file.size || 0);
+    const parts = file.path.split("/").filter(Boolean);
+    for (let i = 1; i < parts.length; i += 1) {
+      folders.add(parts.slice(0, i).join("/"));
+    }
+  }
+  const filtered = normalizedQuery
+    ? files.filter((file) => `${file.path} ${file.sha256 || ""}`.toLowerCase().includes(normalizedQuery))
+    : files;
+  const visible = filtered.slice(0, 160);
+
+  return (
+    <div className="file-tree-panel">
+      <div className="file-tree-toolbar">
+        <label className="file-tree-search">
+          <Search size={13} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索路径、文件名或 SHA" />
+        </label>
+        <div className="file-tree-stats" aria-label="文件树统计">
+          <span>{files.length} 文件</span>
+          <span>{folders.size} 目录</span>
+          <span>{formatSize(totalSize || computedSize)}</span>
+        </div>
+      </div>
+      <div className="detail-file-tree enhanced">
+        {visible.map((file) => (
+          <div className={`file-tree-row ${file.isBinary ? "is-binary" : ""}`} key={file.path}>
+            <button className="file-tree-path-button" type="button" title="复制文件路径" onClick={() => void onCopy(file.path)}>
+              <code>{file.path}</code>
+              <small>{fileDirectory(file.path)} · {file.isBinary ? "二进制" : "文本"}</small>
+            </button>
+            <div className="file-tree-meta">
+              <em>{formatSize(file.size || 0)}</em>
+              {file.sha256 && (
+                <button type="button" title="复制 SHA-256" onClick={() => void onCopy(file.sha256)}>
+                  <Copy size={11} />SHA
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+        {!visible.length && <span className="file-tree-empty">没有匹配的文件</span>}
+      </div>
+      {filtered.length > visible.length && (
+        <p className="file-tree-more">已显示前 {visible.length} 个文件，可继续搜索缩小范围。</p>
+      )}
+    </div>
+  );
+}
+
+function structuredAPIError(err: unknown): StructuredAPIErrorPayload | null {
+  if (!(err instanceof APIError)) return null;
+  if (!err.body || typeof err.body !== "object" || Array.isArray(err.body)) return null;
+  return err.body as StructuredAPIErrorPayload;
+}
+
+function plainErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function errorStageLabel(stage?: string): string {
+  const normalized = String(stage || "").toLowerCase();
+  const labels: Record<string, string> = {
+    zip_bundle: "ZIP / Bundle 识别",
+    validate: "发布参数校验",
+    file_path: "文件路径校验",
+    content: "内容校验",
+    load_site: "站点读取",
+    source_download: "源码下载"
+  };
+  return labels[normalized] || stage || "发布处理";
+}
+
+function deployErrorTitle(payload: StructuredAPIErrorPayload | null): string {
+  const code = String(payload?.errorCode || "").toUpperCase();
+  const stage = String(payload?.stage || "").toLowerCase();
+  if (code.startsWith("ZIP_") || stage === "zip_bundle") return "ZIP / 多文件包需要调整";
+  if (code === "CONTENT_TOO_LARGE") return "上传内容超过限制";
+  if (code === "INVALID_FILE_PATH") return "文件路径不符合要求";
+  if (code === "INVALID_CUSTOM_CODE") return "自定义 code 不可用";
+  if (code === "RATE_LIMITED") return "发布过于频繁";
+  return "发布失败";
+}
+
+function deployErrorHints(payload: StructuredAPIErrorPayload | null): string[] {
+  const hints = new Set<string>();
+  const code = String(payload?.errorCode || "").toUpperCase();
+  const stage = String(payload?.stage || "").toLowerCase();
+  if (payload?.hint) hints.add(String(payload.hint));
+  if (stage === "zip_bundle" || code.startsWith("ZIP_")) {
+    hints.add("请确认 ZIP 里只有一个可发布的网站根目录，优先放置 index.html 或 README.md。");
+    hints.add("如果入口文件不在根目录，可以在入口文件名里填写真实相对路径后再发布。");
+  }
+  if (code === "ZIP_AMBIGUOUS_ENTRY") {
+    hints.add("检测到多个候选入口，请把每个网站拆成独立 ZIP，或只保留一个入口。");
+  }
+  if (code === "ZIP_ENTRY_MISSING") {
+    hints.add("没有找到 HTML 或 Markdown 入口，请添加 index.html、README.md 或明确填写入口文件名。");
+  }
+  if (code === "ZIP_UNSAFE_PATH" || code === "INVALID_FILE_PATH") {
+    hints.add("文件路径只能使用相对路径，不能包含 ..、盘符、反斜杠开头或空路径段。");
+  }
+  if (code === "ZIP_FILE_TOO_LARGE" || code === "ZIP_TOTAL_TOO_LARGE" || code === "ZIP_TOO_MANY_FILES" || code === "CONTENT_TOO_LARGE") {
+    hints.add("请压缩资源、删除无关文件，或调整单文件、文件数和整站大小上限。");
+  }
+  if (!hints.size) {
+    hints.add("请检查标题、描述、code、入口文件和上传内容是否完整，再重新发布。");
+  }
+  return Array.from(hints);
+}
+
+function DeployErrorPanel({ message, error }: { message: string; error: StructuredAPIErrorPayload | null }) {
+  const [copied, setCopied] = useState(false);
+  const hints = deployErrorHints(error);
+  const diagnostics = JSON.stringify({ message, ...(error || {}) }, null, 2);
+  const copyDiagnostics = async () => {
+    await navigator.clipboard.writeText(diagnostics);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  return (
+    <div className="deploy-error-card" role="alert">
+      <div className="deploy-error-head">
+        <span className="deploy-error-icon"><AlertTriangle size={18} /></span>
+        <div>
+          <strong>{deployErrorTitle(error)}</strong>
+          <p>{error?.detail || message}</p>
+        </div>
+      </div>
+      {error && (
+        <div className="deploy-error-badges">
+          {error.errorCode && <code>{error.errorCode}</code>}
+          {error.stage && <span>{errorStageLabel(error.stage)}</span>}
+          {error.retryAfter && <span>{error.retryAfter}s 后重试</span>}
+          {error.requestId && <span>请求 {error.requestId}</span>}
+        </div>
+      )}
+      <ul className="deploy-error-hints">
+        {hints.map((hint) => <li key={hint}>{hint}</li>)}
+      </ul>
+      {error && (
+        <button className="deploy-error-copy" type="button" onClick={() => void copyDiagnostics()}>
+          <Copy size={13} />{copied ? "已复制诊断信息" : "复制诊断信息"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function formatDate(value?: string) {
   if (!value) return "-";
   const d = new Date(value);
@@ -339,6 +601,27 @@ function parseAdminTagInput(value: string): string[] {
 
 function isTextFile(name: string) {
   return /\.(html?|css|js|mjs|json|txt|md|svg|xml|csv|webmanifest|map)$/i.test(name);
+}
+
+function isZipFile(name: string) {
+  return /\.zip$/i.test(name);
+}
+
+function isDeployEntrypointFile(name: string) {
+  return /\.(html?|md|markdown)$/i.test(name);
+}
+
+function preferredDeployEntryPath(files: DeployFile[], hint = "") {
+  const cleanHint = hint.trim();
+  if (cleanHint && isDeployEntrypointFile(cleanHint) && files.some((file) => file.path === cleanHint)) {
+    return cleanHint;
+  }
+  const preferred = ["index.html", "index.htm", "README.md", "readme.md", "README.markdown", "readme.markdown"];
+  for (const want of preferred) {
+    const hit = files.find((file) => file.path.toLowerCase() === want.toLowerCase());
+    if (hit) return hit.path;
+  }
+  return files.find((file) => isDeployEntrypointFile(file.path))?.path || "";
 }
 
 function toBase64(buffer: ArrayBuffer) {
@@ -384,10 +667,22 @@ function siteURL(code: string) {
   return `/agent/${encodeURIComponent(code)}/`;
 }
 
+function securityModeLabel(mode?: string) {
+  if (mode === "strict") return "严格";
+  if (mode === "trusted") return "受信任";
+  if (mode === "compatible") return "兼容";
+  if (mode === "standard") return "标准";
+  return mode || "标准";
+}
+
 export default function App() {
   const [authChecking, setAuthChecking] = useState(true);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
+  const [requestedAuthMode] = useState<"login" | "register">(() => {
+    if (typeof window === "undefined") return "login";
+    return new URLSearchParams(window.location.search).get("mode") === "register" ? "register" : "login";
+  });
   const [activeTab, setActiveTab] = useState<Tab>(() => initialAdminTab());
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
@@ -486,6 +781,7 @@ export default function App() {
       <LoginScreen
         config={config}
         needsSetup={!!session?.needsSetup}
+        requestedMode={requestedAuthMode}
         onAuthed={(next) => setSession(next)}
         onConfig={setConfig}
       />
@@ -542,6 +838,7 @@ export default function App() {
         {activeTab === "tokens" && <TokensPanel isAdmin={isAdmin} showToast={showToast} setError={setError} />}
         {activeTab === "users" && isAdmin && <UsersPanel showToast={showToast} setError={setError} />}
         {activeTab === "anonymous" && isAdmin && <AnonymousPanel setError={setError} />}
+        {activeTab === "audit" && isAdmin && <AuditPanel setError={setError} />}
         {activeTab === "config" && isAdmin && <ConfigPanel config={config} onConfig={setConfig} showToast={showToast} setError={setError} />}
         {activeTab === "skill" && isAdmin && <SkillMCPPanel config={config} showToast={showToast} setError={setError} />}
         {activeTab === "apiDocs" && <ApiDocsPanel config={config} />}
@@ -562,6 +859,7 @@ function tabTitle(tab: Tab, isAdmin: boolean) {
     tokens: "API 令牌",
     users: "用户管理",
     anonymous: "匿名管理",
+    audit: "审计日志",
     config: "运行设置",
     skill: "Skill / MCP / CLI",
     apiDocs: "API 文档"
@@ -580,6 +878,7 @@ function tabSubtitle(tab: Tab, isAdmin: boolean) {
     tokens: "创建永久或临时 API Token，供 Skill、MCP、CLI 和 Agent 调用。",
     users: "创建账号、调整额度、停用或删除用户。",
     anonymous: "查看未登录发布产生的网页匿名和 Agent 匿名 session。",
+    audit: "追踪发布、站点、Token、屏幕、用户和运行设置的关键操作。",
     config: "调整应用泛域名、上传额度、CORS 和匿名额度。",
     skill: "维护 Skill 下载包，并查看 MCP/CLI 接入说明。",
     apiDocs: "查看 PagePilot HTTP API、认证方式和 OpenAPI 入口。"
@@ -590,15 +889,17 @@ function tabSubtitle(tab: Tab, isAdmin: boolean) {
 function LoginScreen({
   config,
   needsSetup,
+  requestedMode,
   onAuthed,
   onConfig
 }: {
   config: RuntimeConfig | null;
   needsSetup: boolean;
+  requestedMode: "login" | "register";
   onAuthed: (session: SessionInfo) => void;
   onConfig: (cfg: RuntimeConfig) => void;
 }) {
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authMode, setAuthModeState] = useState<"login" | "register">(requestedMode);
   const [captcha, setCaptcha] = useState<Captcha>({});
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -611,6 +912,18 @@ function LoginScreen({
   const registrationAllowed = needsSetup || config?.registrationAllowed !== false;
   const emailVerificationEnabled = !!config?.email?.verificationEnabled;
   const smtpReady = !!config?.email?.smtpConfigured;
+
+  const setAuthMode = useCallback((next: "login" | "register") => {
+    setAuthModeState(next);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (next === "register") {
+      url.searchParams.set("mode", "register");
+    } else {
+      url.searchParams.delete("mode");
+    }
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
 
   const loadCaptcha = useCallback(async () => {
     const data = await api<Captcha>("/api/auth/captcha");
@@ -627,7 +940,13 @@ function LoginScreen({
     if (!registrationAllowed && authMode === "register") {
       setAuthMode("login");
     }
-  }, [authMode, registrationAllowed]);
+  }, [authMode, registrationAllowed, setAuthMode]);
+
+  useEffect(() => {
+    if (registrationAllowed && requestedMode === "register") {
+      setAuthModeState("register");
+    }
+  }, [registrationAllowed, requestedMode]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -887,7 +1206,7 @@ function AccountPanel({ session, showToast }: { session: SessionInfo; showToast:
   );
 }
 
-function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | null; showToast: (msg: string) => void; setError: (msg: string) => void }) {
+function DeployPanel({ config, showToast, setError: setGlobalError }: { config: RuntimeConfig | null; showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [mode, setMode] = useState<DeployMode>("single");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -902,11 +1221,18 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
   const [entry, setEntry] = useState("index.html");
   const [files, setFiles] = useState<DeployFile[]>([]);
   const [result, setResult] = useState<any>(null);
+  const [deployError, setDeployError] = useState("");
+  const [deployErrorDetail, setDeployErrorDetail] = useState<StructuredAPIErrorPayload | null>(null);
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const dirInput = useRef<HTMLInputElement | null>(null);
 
   const totalSize = mode === "single" ? textSize(content) : files.reduce((sum, file) => sum + file.size, 0);
+  const setError = (message: string) => {
+    setDeployError(message);
+    setDeployErrorDetail(null);
+    setGlobalError("");
+  };
 
   useEffect(() => {
     api<MarketCategoriesResponse>("/api/market/categories")
@@ -918,6 +1244,18 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
     if (!list?.length) return;
     if (mode === "single") {
       const file = list[0];
+      if (isZipFile(file.name)) {
+        setMode("multi");
+        setEntry("");
+        setFiles([{
+          path: file.name || "site.zip",
+          content: "",
+          contentBase64: toBase64(await file.arrayBuffer()),
+          isText: false,
+          size: file.size
+        }]);
+        return;
+      }
       setEntry(file.name || "index.html");
       setContent(await file.text());
       return;
@@ -941,7 +1279,8 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
 
   function payload() {
     const valid = files.filter((file) => file.path.trim());
-    const main = valid.find((file) => file.path.toLowerCase().endsWith("index.html")) || valid.find((file) => /\.html?$/i.test(file.path));
+    const mainEntry = preferredDeployEntryPath(valid, entry);
+    const isSingleZip = valid.length === 1 && isZipFile(valid[0].path);
     const body: any = {
       title: title.trim() || undefined,
       description: description.trim(),
@@ -957,7 +1296,12 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
       body.filename = entry.trim() || "index.html";
       body.content = content;
     } else {
-      body.filename = main?.path || (entry.trim() && /\.html?$/i.test(entry.trim()) ? entry.trim() : "index.html");
+      if (isSingleZip) {
+        const zipEntryHint = entry.trim();
+        if (zipEntryHint && isDeployEntrypointFile(zipEntryHint)) body.filename = zipEntryHint;
+      } else {
+        body.filename = mainEntry || "index.html";
+      }
       body.files = valid.map((file) => file.contentBase64
         ? { path: file.path.trim(), contentBase64: file.contentBase64 }
         : { path: file.path.trim(), content: file.content });
@@ -971,7 +1315,10 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
     if (append && !code.trim()) return setError("更新现有发布必须填写已有 code");
     if (mode === "single" && !content.trim()) return setError("请粘贴或上传 HTML 内容");
     if (mode === "multi" && !files.length) return setError("请上传多文件项目");
-    if (mode === "multi" && !files.some((file) => /\.html?$/i.test(file.path))) return setError("多文件项目需要至少包含一个 HTML 入口文件");
+    const isSingleZipUpload = mode === "multi" && files.length === 1 && isZipFile(files[0].path);
+    if (mode === "multi" && !files.some((file) => isDeployEntrypointFile(file.path)) && !isSingleZipUpload) {
+      return setError("多文件项目需要至少包含一个 HTML/Markdown 入口文件，或上传单个 ZIP 包");
+    }
     setBusy(true);
     try {
       const data = await api<any>("/api/deploy", {
@@ -982,7 +1329,10 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
       setResult(data);
       showToast("部署成功");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = plainErrorMessage(err);
+      setDeployError(message);
+      setDeployErrorDetail(structuredAPIError(err));
+      setGlobalError("");
     } finally {
       setBusy(false);
     }
@@ -991,9 +1341,9 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
   return (
     <section className="two-col deploy-layout">
       <div className="panel">
-        <div className="panel-head"><div><h2>{append ? "更新现有发布" : "发布新应用"}</h2><p>支持单 HTML、多文件目录、公开/未公开、访问密码和追加版本。</p></div></div>
+        <div className="panel-head"><div><h2>{append ? "更新现有发布" : "发布新应用"}</h2><p>支持 HTML、Markdown、ZIP、多文件目录、公开/未公开、访问密码和追加版本。</p></div></div>
         <div className="segmented">
-          <button className={mode === "single" ? "active" : ""} type="button" onClick={() => setMode("single")}>单 HTML</button>
+          <button className={mode === "single" ? "active" : ""} type="button" onClick={() => setMode("single")}>单文件</button>
           <button className={mode === "multi" ? "active" : ""} type="button" onClick={() => setMode("multi")}>多文件项目</button>
         </div>
         <label className="field"><span>标题</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="有意义的中文名字" /></label>
@@ -1021,10 +1371,10 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
 
         {mode === "single" ? (
           <>
-            <label className="field"><span>入口文件名</span><input value={entry} onChange={(event) => setEntry(event.target.value)} placeholder="index.html" /></label>
+            <label className="field"><span>入口文件名</span><input value={entry} onChange={(event) => setEntry(event.target.value)} placeholder="index.html 或 README.md" /></label>
             <label className="upload-zone">
-              <input type="file" accept=".html,.htm" onChange={(event) => void readFiles(event.target.files)} />
-              <FileUp size={18} />上传 HTML
+              <input type="file" accept=".html,.htm,.md,.markdown,.zip" onChange={(event) => void readFiles(event.target.files)} />
+              <FileUp size={18} />上传 HTML / Markdown / ZIP
             </label>
             <textarea className="code-input" value={content} onChange={(event) => setContent(event.target.value)} placeholder="<!doctype html>..." />
           </>
@@ -1034,7 +1384,7 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
             <input ref={dirInput} className="hidden" type="file" multiple webkitdirectory="" onChange={(event) => void readFiles(event.target.files)} />
             <div className="upload-box" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void readFiles(event.dataTransfer.files); }}>
               <strong>上传多文件静态站点</strong>
-              <span>保留 CSS、JS、图片、字体等相对路径，优先使用 index.html 作为入口。</span>
+              <span>保留 CSS、JS、图片、字体等相对路径，优先使用 index.html 或 README.md 作为入口；单 ZIP 会交给服务端识别。</span>
               <div className="actions">
                 <button className="button" type="button" onClick={() => fileInput.current?.click()}>选择多个文件</button>
                 <button className="button" type="button" onClick={() => dirInput.current?.click()}>选择目录</button>
@@ -1054,6 +1404,7 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
         )}
         <div className="summary-line"><span>大小 {formatSize(totalSize)}</span><span>上限 {formatSize(config?.limits?.maxSiteTotalBytes)}</span></div>
         <button className="button primary full" type="button" disabled={busy} onClick={submit}><Upload size={16} />{busy ? "部署中..." : "立即部署"}</button>
+        {deployError && <DeployErrorPanel message={deployError} error={deployErrorDetail} />}
       </div>
       <div className="panel">
         <div className="panel-head"><div><h2>结果与预览</h2><p>部署成功后可复制链接和进入版本管理。</p></div></div>
@@ -1072,7 +1423,7 @@ function DeployPanel({ config, showToast, setError }: { config: RuntimeConfig | 
               <button className="button" type="button" onClick={() => navigator.clipboard.writeText(appURL)}><Copy size={16} />复制</button>
               <a className="button" href={`/deploy/${encodeURIComponent(result.id || result.code)}`} target="_blank" rel="noreferrer">详情</a>
             </div>
-            <iframe title="部署预览" src={appURL} sandbox="allow-scripts allow-forms allow-popups allow-downloads" />
+            <iframe title="部署预览" src={appURL} sandbox={PREVIEW_IFRAME_SANDBOX} />
                 </>
               );
             })()}
@@ -1099,6 +1450,8 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
   const [versions, setVersions] = useState<any[] | null>(null);
   const [versionCode, setVersionCode] = useState("");
   const [tagEditor, setTagEditor] = useState<{ site: SiteItem; value: string } | null>(null);
+  const [detail, setDetail] = useState<SiteDetailResponse | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -1193,6 +1546,30 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
     await load();
   }
 
+  async function updateReusePolicy(site: SiteItem, reusePolicy: ReusePolicyValue, sourceDownloadPolicy: ReusePolicyValue) {
+    const data = await api<{ site: SiteItem }>(`/api/admin/sites/${encodeURIComponent(site.code)}/reuse-policy`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reusePolicy, sourceDownloadPolicy })
+    });
+    showToast("源码下载和复用策略已更新");
+    setSites((current) => current.map((item) => item.code === site.code ? { ...item, ...data.site } : item));
+    await openSiteDetail(data.site || site);
+    await load();
+  }
+
+  async function updateSecurityMode(site: SiteItem, securityMode: SecurityModeValue) {
+    const data = await api<{ site: SiteItem }>(`/api/admin/sites/${encodeURIComponent(site.code)}/security-mode`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ securityMode })
+    });
+    showToast("运行安全模式已更新");
+    setSites((current) => current.map((item) => item.code === site.code ? { ...item, ...data.site } : item));
+    await openSiteDetail(data.site || site);
+    await load();
+  }
+
   async function updateCategory(site: SiteItem, nextCategory: string) {
     await api(`/api/admin/sites/${encodeURIComponent(site.code)}/category`, {
       method: "PATCH",
@@ -1226,6 +1603,18 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
     setVersionCode(site.code);
     const data = await api<any>(`/api/deploys/${encodeURIComponent(site.code)}/versions`);
     setVersions((data.versions || []).slice().sort((a: any, b: any) => Number(b.versionNumber) - Number(a.versionNumber)));
+  }
+
+  async function openSiteDetail(site: SiteItem) {
+    setDetailLoading(true);
+    try {
+      const data = await api<SiteDetailResponse>(`/api/admin/sites/${encodeURIComponent(site.code)}`);
+      setDetail(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDetailLoading(false);
+    }
   }
 
   async function versionAction(action: string, version: number, locked?: boolean) {
@@ -1304,7 +1693,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                 </td>
                 <td><div className="badge-stack">{site.isPinned && <span className="badge amber">置顶</span>}{statusBadge(site.status || "active", site.accessProtected)}<span className="badge slate">{site.visibility === "unlisted" ? "未公开" : "公开"}</span></div></td>
                 <td>v{site.currentVersion || "-"} · {site.versionCount || 0}</td>
-                <td>{site.viewCount || 0} 访 · {site.likeCount || 0} 赞 · {site.favoriteCount || 0} 藏</td>
+                <td>{site.viewCount || 0} 访 · {site.likeCount || 0} 赞 · {site.favoriteCount || 0} 藏 · {site.reuseCount || 0} 复用</td>
                 <td>{formatSize(site.totalSize)}</td>
                 <td>{formatDate(site.lastVersionAt || site.createdAt)}</td>
                 <td>
@@ -1312,6 +1701,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                     <a className="button compact" href={siteURL(site.code)} target="_blank" rel="noreferrer">打开</a>
                     <button className="button compact" type="button" onClick={() => void setPassword(site)}><Lock size={14} />加密</button>
                     <button className="button compact" type="button" onClick={() => void toggleVisibility(site)}>{site.visibility === "unlisted" ? "公开" : "未公开"}</button>
+                    <button className="button compact" type="button" onClick={() => void openSiteDetail(site)}>详情</button>
                     <button className="button compact" type="button" onClick={() => void openVersions(site)}>版本</button>
                     {isAdmin && <button className="icon-button" type="button" title="置顶" onClick={() => void togglePin(site)}><Pin size={14} /></button>}
                     <button className="icon-button danger" type="button" title="删除" onClick={() => void deleteSite(site)}><Trash2 size={14} /></button>
@@ -1327,7 +1717,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
         <div className="site-render-grid">
           {filtered.map((site) => (
             <article className="site-render-card" key={site.code}>
-              <div className="site-thumb"><iframe title={`${site.code} 预览`} src={`${siteURL(site.code)}?preview=1`} sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals" /></div>
+              <div className="site-thumb"><iframe title={`${site.code} 预览`} src={`${siteURL(site.code)}?preview=1`} sandbox={PREVIEW_IFRAME_SANDBOX} /></div>
               <div className="site-render-body">
                 <div><strong>{site.code}</strong><span>{site.ownerUsername || site.ownerTokenId || "-"}</span></div>
                 <p>{categories.find((item) => item.slug === site.category)?.label || site.category || "未分类"} · {site.viewCount || 0} 访 · {site.likeCount || 0} 赞 · {site.favoriteCount || 0} 藏</p>
@@ -1341,6 +1731,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                 </select>
                 <div className="actions tight">
                   <a className="button compact" href={siteURL(site.code)} target="_blank" rel="noreferrer">打开</a>
+                  <button className="button compact" type="button" onClick={() => void openSiteDetail(site)}>详情</button>
                   <button className="button compact" type="button" onClick={() => void openVersions(site)}>版本</button>
                   {isAdmin && <button className="button compact" type="button" onClick={() => void togglePin(site)}>{site.isPinned ? "取消精选" : "精选"}</button>}
                   <button className="button compact danger" type="button" onClick={() => void deleteSite(site)}><Trash2 size={14} />删除</button>
@@ -1350,6 +1741,15 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
           ))}
           {!filtered.length && <div className="empty tall">暂无应用。</div>}
         </div>
+      )}
+      {(detail || detailLoading) && (
+        <Modal title={`站点详情 ${detail?.site?.code || ""}`} onClose={() => setDetail(null)}>
+          {detailLoading && !detail ? (
+            <div className="empty">正在加载站点详情...</div>
+          ) : detail ? (
+            <SiteDetailModal detail={detail} isAdmin={isAdmin} onSavePolicy={updateReusePolicy} onSaveSecurityMode={updateSecurityMode} />
+          ) : null}
+        </Modal>
       )}
       {versions && (
         <Modal title={`版本管理 ${versionCode}`} onClose={() => setVersions(null)}>
@@ -1388,6 +1788,250 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
           </div>
         </Modal>
       )}
+    </section>
+  );
+}
+
+function normalizeReusePolicyValue(value?: string): ReusePolicyValue {
+  return value === "allow" || value === "deny" ? value : "auto";
+}
+
+function normalizeSecurityModeValue(value?: string): SecurityModeValue {
+  return value === "strict" || value === "compatible" || value === "trusted" ? value : "auto";
+}
+
+function SiteDetailModal({
+  detail,
+  isAdmin,
+  onSavePolicy,
+  onSaveSecurityMode
+}: {
+  detail: SiteDetailResponse;
+  isAdmin: boolean;
+  onSavePolicy: (site: SiteItem, reusePolicy: ReusePolicyValue, sourceDownloadPolicy: ReusePolicyValue) => Promise<void>;
+  onSaveSecurityMode: (site: SiteItem, securityMode: SecurityModeValue) => Promise<void>;
+}) {
+  const files = detail.files || [];
+  const tree = detail.bundle?.tree || files;
+  const mcpText = detail.reuse?.mcp ? JSON.stringify(detail.reuse.mcp, null, 2) : "";
+  const [reusePolicy, setReusePolicy] = useState<ReusePolicyValue>(normalizeReusePolicyValue(detail.site.reusePolicy));
+  const [sourceDownloadPolicy, setSourceDownloadPolicy] = useState<ReusePolicyValue>(normalizeReusePolicyValue(detail.site.sourceDownloadPolicy));
+  const [securityMode, setSecurityMode] = useState<SecurityModeValue>(normalizeSecurityModeValue(detail.site.securityMode));
+  const [savingPolicy, setSavingPolicy] = useState(false);
+  const [savingSecurity, setSavingSecurity] = useState(false);
+  const savedReusePolicy = normalizeReusePolicyValue(detail.site.reusePolicy);
+  const savedSourceDownloadPolicy = normalizeReusePolicyValue(detail.site.sourceDownloadPolicy);
+  const savedSecurityMode = normalizeSecurityModeValue(detail.site.securityMode);
+  const policyChanged = reusePolicy !== savedReusePolicy || sourceDownloadPolicy !== savedSourceDownloadPolicy;
+  const securityChanged = securityMode !== savedSecurityMode;
+
+  useEffect(() => {
+    setReusePolicy(normalizeReusePolicyValue(detail.site.reusePolicy));
+    setSourceDownloadPolicy(normalizeReusePolicyValue(detail.site.sourceDownloadPolicy));
+    setSecurityMode(normalizeSecurityModeValue(detail.site.securityMode));
+  }, [detail.site.code, detail.site.reusePolicy, detail.site.sourceDownloadPolicy, detail.site.securityMode]);
+
+  const copy = async (value?: string) => {
+    if (!value) return;
+    await navigator.clipboard.writeText(value);
+  };
+  const savePolicy = async () => {
+    setSavingPolicy(true);
+    try {
+      await onSavePolicy(detail.site, reusePolicy, sourceDownloadPolicy);
+    } finally {
+      setSavingPolicy(false);
+    }
+  };
+  const saveSecurityMode = async () => {
+    setSavingSecurity(true);
+    try {
+      await onSaveSecurityMode(detail.site, securityMode);
+    } finally {
+      setSavingSecurity(false);
+    }
+  };
+  return (
+    <div className="site-detail-modal">
+      <div className="detail-info-grid admin-detail-grid">
+        <span><em>Code</em><strong>{detail.site.code}</strong></span>
+        <span><em>归属</em><strong>{detail.site.ownerUsername || detail.site.ownerTokenId || "-"}</strong></span>
+        <span><em>状态</em><strong>{detail.site.status || "active"} · {detail.site.visibility || "unlisted"}</strong></span>
+        <span><em>访问</em><strong>{detail.site.accessProtected ? "已加密" : "未加密"}</strong></span>
+        <span><em>复用</em><strong>{detail.site.reuseCount || 0} 次</strong></span>
+        <span><em>来源</em><strong>{detail.site.templateSourceCode ? `${detail.site.templateSourceCode} v${detail.site.templateSourceVersion || "-"}` : "原始发布"}</strong></span>
+      </div>
+      {isAdmin && (
+        <section className="admin-detail-section policy-editor">
+          <div className="detail-info-head"><ShieldCheck size={15} /><strong>源码下载与模板复用</strong></div>
+          <p className="muted">默认自动策略：公开且未加密的作品可下载和复用；加密、不公开或下架作品默认禁止。加密作品即使策略为允许，也不会提供源码下载，需先清除访问密码。</p>
+          <div className="policy-editor-grid">
+            <label>
+              <span>源码下载</span>
+              <select value={sourceDownloadPolicy} onChange={(event) => setSourceDownloadPolicy(event.target.value as ReusePolicyValue)}>
+                <option value="auto">自动：加密默认禁止</option>
+                <option value="allow">显式允许</option>
+                <option value="deny">显式禁止</option>
+              </select>
+            </label>
+            <label>
+              <span>模板复用</span>
+              <select value={reusePolicy} onChange={(event) => setReusePolicy(event.target.value as ReusePolicyValue)}>
+                <option value="auto">自动：跟随源码下载</option>
+                <option value="allow">显式允许</option>
+                <option value="deny">显式禁止</option>
+              </select>
+            </label>
+          </div>
+          <div className="actions right">
+            <button className="button primary compact" type="button" disabled={!policyChanged || savingPolicy} onClick={() => void savePolicy()}>
+              <Save size={13} />{savingPolicy ? "保存中" : "保存策略"}
+            </button>
+          </div>
+        </section>
+      )}
+      {isAdmin && (
+        <section className="admin-detail-section policy-editor">
+          <div className="detail-info-head"><ShieldCheck size={15} /><strong>运行安全模式</strong></div>
+          <p className="muted">自动模式使用发布包识别结果；严格更安全，兼容适合需要更多浏览器能力的站点，受信任仅用于已审查内容。</p>
+          <div className="policy-editor-grid">
+            <label>
+              <span>站点策略</span>
+              <select value={securityMode} onChange={(event) => setSecurityMode(event.target.value as SecurityModeValue)}>
+                <option value="auto">自动：跟随 Bundle 识别</option>
+                <option value="strict">严格：优先隔离</option>
+                <option value="compatible">兼容：放宽运行能力</option>
+                <option value="trusted">受信任：仅限可信内容</option>
+              </select>
+            </label>
+            <span className="policy-hint">
+              生效：{securityModeLabel(detail.bundle?.effectiveSecurityMode || detail.bundle?.securityMode)}
+            </span>
+          </div>
+          <div className="actions right">
+            <button className="button primary compact" type="button" disabled={!securityChanged || savingSecurity} onClick={() => void saveSecurityMode()}>
+              <Save size={13} />{savingSecurity ? "保存中" : "保存安全模式"}
+            </button>
+          </div>
+        </section>
+      )}
+      {detail.bundle && (
+        <section className="admin-detail-section">
+          <div className="detail-info-head"><FileArchive size={15} /><strong>Bundle / 安全</strong></div>
+          <div className="detail-info-grid admin-detail-grid">
+            <span><em>类型</em><strong>{detail.bundle.kindLabel || detail.bundle.kind || "-"}</strong></span>
+            <span><em>入口</em><strong>{detail.bundle.mainEntry || detail.site.filename || "-"}</strong></span>
+            {detail.bundle.root && <span><em>根目录</em><strong>{detail.bundle.root}</strong></span>}
+            <span><em>Bundle 识别</em><strong>{securityModeLabel(detail.bundle.securityMode)}</strong></span>
+            <span><em>站点策略</em><strong>{securityModeLabel(detail.bundle.siteSecurityMode || detail.site.securityMode)}</strong></span>
+            <span><em>生效模式</em><strong>{securityModeLabel(detail.bundle.effectiveSecurityMode || detail.bundle.securityMode)}</strong></span>
+            <span><em>文件</em><strong>{detail.bundle.fileCount || files.length || 0} 个 · {formatSize(detail.bundle.totalSize || detail.site.totalSize || 0)}</strong></span>
+          </div>
+          {detail.bundle.entryNote && <p className="muted">{detail.bundle.entryNote}</p>}
+        </section>
+      )}
+      {!!tree.length && (
+        <section className="admin-detail-section">
+          <div className="detail-info-head"><FileText size={15} /><strong>完整文件树</strong></div>
+          <FileTreeExplorer
+            files={tree}
+            totalSize={detail.bundle?.totalSize || detail.site.totalSize}
+            onCopy={copy}
+          />
+        </section>
+      )}
+      {detail.reuse && (
+        <section className="admin-detail-section">
+          <div className="detail-info-head"><Workflow size={15} /><strong>复用参数</strong></div>
+          {detail.site.templateSourceCode && (
+            <p className="muted">这个站点基于 {detail.site.templateSourceCode} v{detail.site.templateSourceVersion || "-"} 二次创作。</p>
+          )}
+          {detail.reuse.policyNote && <p className="muted">{detail.reuse.policyNote}</p>}
+          <div className="detail-copy-stack">
+            {detail.reuse.agentPrompt && <button className="button compact" type="button" onClick={() => void copy(detail.reuse?.agentPrompt)}><Copy size={13} />复制 Agent 提示词</button>}
+            {detail.reuse.cli && <button className="button compact" type="button" onClick={() => void copy(detail.reuse?.cli)}><Code2 size={13} />复制 CLI 命令</button>}
+            {mcpText && <button className="button compact" type="button" onClick={() => void copy(mcpText)}><Copy size={13} />复制 MCP 参数</button>}
+            {detail.reuse.downloadUrl && <a className="button compact" href={detail.reuse.downloadUrl}><Download size={13} />下载源文件</a>}
+            {!detail.reuse.allowReuse && <span className="muted-line">当前策略不开放复用。</span>}
+          </div>
+        </section>
+      )}
+      <section className="admin-detail-section">
+        <div className="detail-info-head"><ScrollText size={15} /><strong>版本</strong></div>
+        <div className="version-list compact">
+          {(detail.versions || []).slice(0, 8).map((version) => (
+            <div className="version-card compact" key={version.versionNumber}>
+              <div><strong>v{version.versionNumber}</strong><span>{version.isCurrent && <span className="badge green">当前</span>} {version.isLocked && <span className="badge amber">锁定</span>}</span></div>
+              <p>{formatDate(version.createdAt)} · {formatSize(version.size || version.fileSize || 0)}</p>
+            </div>
+          ))}
+          {!detail.versions?.length && <span className="muted-line">暂无版本记录</span>}
+        </div>
+      </section>
+      {isAdmin && <SiteAuditTrail siteCode={detail.site.code} />}
+    </div>
+  );
+}
+
+function SiteAuditTrail({ siteCode }: { siteCode: string }) {
+  const [logs, setLogs] = useState<AuditLogItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [localError, setLocalError] = useState("");
+
+  const load = useCallback(async () => {
+    if (!siteCode) return;
+    setLoading(true);
+    setLocalError("");
+    try {
+      const params = new URLSearchParams({
+        siteCode,
+        page: "1",
+        pageSize: "6"
+      });
+      const data = await api<AuditLogResponse>(`/api/admin/audit-logs?${params.toString()}`);
+      setLogs(data.logs || []);
+      setTotal(Number(data.total || 0));
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [siteCode]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  return (
+    <section className="admin-detail-section site-audit-trail">
+      <div className="detail-section-head">
+        <div className="detail-info-head"><ScrollText size={15} /><strong>最近审计</strong></div>
+        <button className="button compact" type="button" onClick={() => void load()} disabled={loading}>
+          <RefreshCw size={13} />{loading ? "刷新中" : "刷新"}
+        </button>
+      </div>
+      <p className="muted">按当前站点 code 过滤最近操作，便于快速追踪发布、加密、可见性、复用和安全策略变化。</p>
+      {localError && <div className="alert error compact-alert">{localError}</div>}
+      <div className="site-audit-list">
+        {logs.map((log) => (
+          <article className="site-audit-item" key={log.id}>
+            <div className="site-audit-main">
+              <span className={`badge ${log.result === "success" ? "green" : "amber"}`}>{auditResultLabel(log.result)}</span>
+              <strong>{auditActionLabel(log.action)}</strong>
+              <code>{log.action || "-"}</code>
+              <time>{formatDate(log.createdAt)}</time>
+            </div>
+            <div className="site-audit-meta">
+              <span>{actorRoleLabel(log.actorRole)} · {log.actorId || "-"}</span>
+              <span>{log.targetType || "-"} · {log.targetId || "-"}</span>
+              <span>{log.ip || "-"}</span>
+            </div>
+            <pre className="site-audit-detail">{formatAuditDetail(log.detail)}</pre>
+          </article>
+        ))}
+        {!logs.length && !loading && <span className="muted-line">暂无这个站点的审计记录。</span>}
+        {loading && !logs.length && <span className="muted-line">正在加载审计记录...</span>}
+      </div>
+      {!!total && <span className="muted-line">共匹配 {total} 条，当前显示最近 {Math.min(logs.length, 6)} 条；完整筛选请进入审计日志页。</span>}
     </section>
   );
 }
@@ -2037,6 +2681,225 @@ function AnonymousPanel({ setError }: { setError: (msg: string) => void }) {
   );
 }
 
+const auditActorTypeOptions = [
+  { value: "user", label: "注册用户" },
+  { value: "token", label: "Token / Skill / MCP" },
+  { value: "anonymous", label: "匿名 Agent" },
+  { value: "browser", label: "浏览器上报" },
+  { value: "unknown", label: "未知来源" }
+];
+
+const auditActionOptions = [
+  { value: "account.password", label: "修改账号密码" },
+  { value: "anonymous.claim", label: "匿名绑定用户" },
+  { value: "auth.login", label: "账号登录" },
+  { value: "auth.logout", label: "账号登出" },
+  { value: "auth.register", label: "账号注册" },
+  { value: "config.market_categories", label: "更新应用分类" },
+  { value: "config.update", label: "更新运行配置" },
+  { value: "deploy.create", label: "新建发布" },
+  { value: "deploy.version.create", label: "追加版本" },
+  { value: "screen.bind", label: "绑定屏幕" },
+  { value: "screen.command.request", label: "下发屏幕指令" },
+  { value: "screen.publish", label: "屏幕投放" },
+  { value: "screen.screenshot.request", label: "请求屏幕截图" },
+  { value: "screen.unbind", label: "解绑屏幕" },
+  { value: "security.csp_report", label: "CSP 安全上报" },
+  { value: "site.access_login", label: "访问密码验证" },
+  { value: "site.access_password", label: "设置访问密码" },
+  { value: "site.category", label: "应用分类" },
+  { value: "site.delete", label: "删除站点" },
+  { value: "site.pin", label: "置顶状态" },
+  { value: "site.primary_strategy", label: "主版本策略" },
+  { value: "site.reuse_policy", label: "复用策略" },
+  { value: "site.security_mode", label: "安全模式" },
+  { value: "site.tags", label: "标签分类" },
+  { value: "site.visibility", label: "可见性" },
+  { value: "skill.package_upload", label: "上传 Skill 包" },
+  { value: "token.create", label: "创建 Token" },
+  { value: "token.revoke", label: "吊销 Token" },
+  { value: "user.create", label: "创建用户" },
+  { value: "user.update", label: "更新用户" },
+  { value: "user.delete", label: "删除用户" },
+  { value: "version.current", label: "切换当前版本" },
+  { value: "version.delete", label: "删除版本" },
+  { value: "version.lock", label: "版本锁定" },
+  { value: "version.overwrite", label: "覆盖版本" },
+  { value: "version.status", label: "版本状态" }
+];
+
+const legacyAuditActionLabels: Record<string, string> = {
+  "site.append": "追加版本（旧版）",
+  "site.create": "新建发布（旧版）",
+  "skill.upload": "上传 Skill 包（旧版）",
+  "token.delete": "吊销 Token（旧版）",
+  "version.rollback": "版本回滚（旧版）"
+};
+
+const auditActionLabels: Record<string, string> = {
+  ...Object.fromEntries(auditActionOptions.map((option) => [option.value, option.label])),
+  ...legacyAuditActionLabels
+};
+
+function AuditPanel({ setError }: { setError: (msg: string) => void }) {
+  const [logs, setLogs] = useState<AuditLogItem[]>([]);
+  const [auditUsers, setAuditUsers] = useState<UserItem[]>([]);
+  const [auditSites, setAuditSites] = useState<SiteItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(30);
+  const [filters, setFilters] = useState({
+    q: "",
+    actorType: "",
+    action: "",
+    siteCode: "",
+    actorId: "",
+    actorRole: "",
+    result: "",
+    targetType: "",
+    since: "",
+    until: ""
+  });
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    async function loadFilterOptions() {
+      try {
+        const [userData, siteData] = await Promise.all([
+          api<{ users?: UserItem[] }>("/api/admin/users"),
+          api<{ sites?: SiteItem[] }>("/api/admin/sites")
+        ]);
+        setAuditUsers(userData.users || []);
+        setAuditSites(siteData.sites || []);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    }
+    void loadFilterOptions();
+  }, [setError]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("page", String(page));
+      params.set("pageSize", String(pageSize));
+      for (const [key, value] of Object.entries(filters)) {
+        const trimmed = String(value || "").trim();
+        if (!trimmed) continue;
+        if (key === "since" || key === "until") {
+          params.set(key, new Date(trimmed).toISOString());
+        } else {
+          params.set(key, trimmed);
+        }
+      }
+      const data = await api<AuditLogResponse>(`/api/admin/audit-logs?${params.toString()}`);
+      setLogs(data.logs || []);
+      setTotal(Number(data.total || 0));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [filters, page, pageSize, setError]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const updateFilter = (key: keyof typeof filters, value: string) => {
+    setFilters((prev) => ({ ...prev, [key]: value }));
+    setPage(1);
+  };
+
+  return (
+    <section className="panel audit-panel">
+      <div className="panel-head">
+        <div>
+          <h2>审计日志</h2>
+          <p>记录关键操作的时间、操作者、来源 IP、目标对象和结构化详情。</p>
+        </div>
+        <button className="button" type="button" onClick={() => void load()} disabled={loading}>
+          <RefreshCw size={16} />{loading ? "刷新中" : "刷新"}
+        </button>
+      </div>
+      <div className="filter-row audit-filter-row">
+        <label className="field"><span>关键词</span><input value={filters.q} onChange={(event) => updateFilter("q", event.target.value)} placeholder="动作、站点、对象或详情" /></label>
+        <label className="field"><span>操作者类型</span><select value={filters.actorType} onChange={(event) => updateFilter("actorType", event.target.value)}><option value="">全部来源</option>{auditActorTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label className="field"><span>用户</span><select value={filters.actorType === "user" ? filters.actorId : ""} onChange={(event) => { updateFilter("actorType", event.target.value ? "user" : ""); updateFilter("actorId", event.target.value); }}><option value="">全部用户</option>{auditUsers.map((user) => <option value={user.id} key={user.id}>{user.username}{user.isAdmin ? " · 管理员" : ""}</option>)}</select></label>
+        <label className="field"><span>动作</span><select value={filters.action} onChange={(event) => updateFilter("action", event.target.value)}><option value="">全部动作</option>{auditActionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label className="field"><span>站点</span><select value={filters.siteCode} onChange={(event) => updateFilter("siteCode", event.target.value)}><option value="">全部站点</option>{auditSites.map((site) => <option value={site.code} key={site.code}>{site.code}{site.ownerUsername ? ` · ${site.ownerUsername}` : ""}</option>)}</select></label>
+        <label className="field"><span>操作者 ID</span><input value={filters.actorId} onChange={(event) => updateFilter("actorId", event.target.value)} placeholder="用户 ID / token ID / 匿名 session" /></label>
+        <label className="field"><span>角色</span><select value={filters.actorRole} onChange={(event) => updateFilter("actorRole", event.target.value)}><option value="">全部</option><option value="admin">管理员</option><option value="user">用户</option><option value="anonymous">匿名</option></select></label>
+        <label className="field"><span>结果</span><select value={filters.result} onChange={(event) => updateFilter("result", event.target.value)}><option value="">全部</option><option value="success">成功</option><option value="failed">失败</option></select></label>
+        <label className="field"><span>对象类型</span><select value={filters.targetType} onChange={(event) => updateFilter("targetType", event.target.value)}><option value="">全部</option><option value="site">站点</option><option value="version">版本</option><option value="token">Token</option><option value="screen">屏幕</option><option value="user">用户</option><option value="config">配置</option></select></label>
+      </div>
+      <div className="filter-row audit-time-row">
+        <label className="field"><span>开始时间</span><input type="datetime-local" value={filters.since} onChange={(event) => updateFilter("since", event.target.value)} /></label>
+        <label className="field"><span>结束时间</span><input type="datetime-local" value={filters.until} onChange={(event) => updateFilter("until", event.target.value)} /></label>
+        <label className="field"><span>每页</span><select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}><option value={20}>20 条</option><option value={30}>30 条</option><option value={50}>50 条</option><option value={100}>100 条</option></select></label>
+        <div className="toolbar-tail audit-pager">
+          <button className="button compact" type="button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button>
+          <span>{page} / {totalPages}</span>
+          <button className="button compact" type="button" disabled={page >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>下一页</button>
+        </div>
+      </div>
+      <div className="summary-line"><span>共 {total} 条记录</span><span>{loading ? "正在加载..." : "已加载"}</span></div>
+      <div className="table-wrap">
+        <table className="audit-table">
+          <thead><tr><th>时间</th><th>动作</th><th>结果</th><th>操作者</th><th>目标</th><th>来源</th><th>详情</th></tr></thead>
+          <tbody>
+            {logs.map((log) => (
+              <tr key={log.id}>
+                <td>{formatDate(log.createdAt)}</td>
+                <td>
+                  <strong>{auditActionLabel(log.action)}</strong>
+                  <br /><code>{log.action || "-"}</code>
+                </td>
+                <td><span className={`badge ${log.result === "success" ? "green" : "amber"}`}>{auditResultLabel(log.result)}</span></td>
+                <td>
+                  <span className={`badge ${log.actorRole === "admin" ? "green" : log.actorRole === "anonymous" ? "amber" : "slate"}`}>{actorRoleLabel(log.actorRole)}</span>
+                  <br /><small>{log.actorType || "-"} · {log.actorId || "-"}</small>
+                </td>
+                <td>{log.siteCode && <code>{log.siteCode}</code>}<br /><small>{log.targetType || "-"} · {log.targetId || "-"}</small></td>
+                <td>{log.ip || "-"}<br /><small>{log.userAgent || "-"}</small></td>
+                <td><pre className="audit-detail">{formatAuditDetail(log.detail)}</pre></td>
+              </tr>
+            ))}
+            {!logs.length && <tr><td colSpan={7}>暂无审计记录。</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function actorRoleLabel(role?: string) {
+  if (role === "admin") return "管理员";
+  if (role === "anonymous") return "匿名";
+  if (role === "user") return "用户";
+  return "未知";
+}
+
+function auditResultLabel(result?: string) {
+  if (result === "success") return "成功";
+  if (result === "failed") return "失败";
+  return result || "未知";
+}
+
+function auditActionLabel(action?: string) {
+  return auditActionLabels[action || ""] || action || "-";
+}
+
+function formatAuditDetail(detail: unknown) {
+  if (detail == null) return "{}";
+  if (typeof detail === "string") return detail;
+  try {
+    return JSON.stringify(detail, null, 2);
+  } catch {
+    return String(detail);
+  }
+}
+
 function ConfigPanel({ config, onConfig, showToast, setError }: { config: RuntimeConfig | null; onConfig: (cfg: RuntimeConfig) => void; showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [draft, setDraft] = useState({
     appURLMode: "path",
@@ -2385,6 +3248,7 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
             <ul>
               <li>内置默认包用于新部署兜底，避免下载 404。</li>
               <li>上传覆盖包后，下载地址保持 <code>/skill/pagep.zip</code>，旧的 <code>/skill/hostctl-deploy.zip</code> 兼容可用。</li>
+              <li>复用创作市场作品时传 templateSourceCode / template_source_code，服务端会记录来源并增加复用次数。</li>
               <li>发布后的应用 URL 以后端接口返回为准，Skill/MCP 不自行拼接。</li>
             </ul>
           </div>
@@ -2392,7 +3256,7 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
       ) : (
         <div className="doc-grid">
           <DocBlock title="启动方式" lines={[`pagep-mcp --server ${base} --token YOUR_TOKEN`, "私有服务器请替换 --server；屏幕能力必须使用注册用户 Token。"]} />
-          <DocBlock title="发布工具" lines={["deploy_site: 新建发布或追加版本，支持多文件和访问密码。", "get_site_content: 读取站点源码和文件清单。", "set_site_access_password: 设置或清除访问密码。", "claim_anonymous_session: 将匿名发布归属到注册用户。"]} />
+        <DocBlock title="发布工具" lines={["deploy_site: 新建发布或追加版本，支持多文件、访问密码和 template_source_code 模板来源记录。", "get_site_content: 读取站点源码和文件清单。", "set_site_access_password: 设置或清除访问密码。", "claim_anonymous_session: 将匿名发布归属到注册用户。"]} />
           <DocBlock title="屏幕工具" lines={["list_screens: 查询用户屏幕。", "publish_screen: 从自己的站点或创作市场选择投放。", "request_screen_screenshot: 下发一次截图指令。", "send_screen_command: refresh、sleep、wake、shutdown。"]} />
           <DocBlock title="匿名身份" lines={["Agent 匿名以 X-Hostctl-Session 为所有权依据。", "X-Hostctl-Agent-Id、Agent-Label、IP、UA 只用于后台展示和排查。", "网页匿名使用浏览器 HttpOnly cookie，同样计入匿名发布。"]} />
         </div>
@@ -2457,7 +3321,7 @@ function ApiDocsPanel({ config }: { config: RuntimeConfig | null }) {
           <DocBlock title="当前限制" lines={[`Base URL: ${base}`, `单文件上限: ${formatSize(config?.limits?.maxSingleFileBytes)}`, `整站上限: ${formatSize(config?.limits?.maxSiteTotalBytes)}`, `文件数上限: ${config?.limits?.maxFilesPerSite ?? "-"}`]} />
         </section>
         <section id="market" className="panel">
-          <div className="panel-head"><div><h2>创作市场</h2><p>公开内容可被搜索、筛选、收藏、点赞和下载源文件。</p></div></div>
+          <div className="panel-head"><div><h2>创作市场</h2><p>公开内容可被搜索、筛选、收藏和点赞；公开未加密内容可按策略下载源文件。</p></div></div>
           <div className="endpoint-list admin-endpoints">
             {endpoints.slice(1, 3).map(([method, path, desc]) => (
               <div className="endpoint-row" key={`${method}-${path}`}><span className={`method ${method}`}>{method}</span><code>{path}</code><p>{desc}</p></div>

@@ -21,10 +21,16 @@ CREATE TABLE IF NOT EXISTS sites (
     current_version            INTEGER,                          -- 当前对外服务的版本号；NULL = 已下线
     primary_version_strategy   TEXT NOT NULL DEFAULT 'likes',    -- 'likes' | 'latest'
     visibility                 TEXT NOT NULL DEFAULT 'unlisted', -- 'public' | 'unlisted'
+    reuse_policy               TEXT NOT NULL DEFAULT 'auto',     -- 'auto' | 'allow' | 'deny'
+    source_download_policy     TEXT NOT NULL DEFAULT 'auto',     -- 'auto' | 'allow' | 'deny'
+    security_mode              TEXT NOT NULL DEFAULT 'auto',     -- 'auto' | 'strict' | 'compatible' | 'trusted'
     category                   TEXT NOT NULL DEFAULT '',         -- 创作市场分类 slug
     tags                       TEXT NOT NULL DEFAULT '',         -- 创作市场标签，逗号分隔
     view_count                 INTEGER NOT NULL DEFAULT 0,       -- 访问数（页面 GET）
     like_count                 INTEGER NOT NULL DEFAULT 0,       -- 点赞数
+    reuse_count                INTEGER NOT NULL DEFAULT 0,       -- 被作为模板复用次数
+    template_source_code       TEXT NOT NULL DEFAULT '',         -- 如果本站点首次由模板创建，记录来源 code
+    template_source_version    INTEGER,                          -- 来源版本；NULL 表示未知/未指定
     status                     TEXT NOT NULL DEFAULT 'active',   -- 'active' | 'inactive'
     access_password_hash       TEXT NOT NULL DEFAULT '',         -- 为空表示公开访问
     is_pinned                  BOOLEAN NOT NULL DEFAULT 0,       -- 管理员是否置顶
@@ -34,9 +40,6 @@ CREATE TABLE IF NOT EXISTS sites (
     updated_at                 DATETIME NOT NULL,                -- 最后修改时间
     source                     TEXT NOT NULL                     -- 'api' | 'cli' | 'mcp'
 );
-
-CREATE INDEX IF NOT EXISTS idx_sites_status ON sites(status);
-CREATE INDEX IF NOT EXISTS idx_sites_public_id ON sites(public_id);
 
 -- 一个 site 的一个版本
 CREATE TABLE IF NOT EXISTS versions (
@@ -49,6 +52,8 @@ CREATE TABLE IF NOT EXISTS versions (
     total_size        INTEGER NOT NULL,
     file_count        INTEGER NOT NULL,
     content_sha256    TEXT NOT NULL,            -- 全部文件的聚合 hash（按 path 排序拼接 hash）
+    template_source_code    TEXT NOT NULL DEFAULT '',
+    template_source_version INTEGER,
     is_locked         BOOLEAN NOT NULL DEFAULT 0,
     status            TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'inactive'
     created_at        DATETIME NOT NULL,
@@ -113,7 +118,9 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_type   TEXT NOT NULL,
     actor_id     TEXT NOT NULL DEFAULT '',
+    actor_role   TEXT NOT NULL DEFAULT '',
     action       TEXT NOT NULL,
+    result       TEXT NOT NULL DEFAULT 'success',
     site_code    TEXT NOT NULL DEFAULT '',
     target_type  TEXT NOT NULL DEFAULT '',
     target_id    TEXT NOT NULL DEFAULT '',

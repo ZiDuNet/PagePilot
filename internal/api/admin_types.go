@@ -1,6 +1,9 @@
 package api
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ===== 设置（GET/PUT /api/config） =====
 
@@ -88,26 +91,32 @@ type ConfigUpdateResponse struct {
 
 // SiteListItem 是 admin 站点列表的一项。
 type SiteListItem struct {
-	Code            string     `json:"code"`
-	PublicID        string     `json:"publicId"`
-	OwnerTokenID    string     `json:"ownerTokenId"`
-	OwnerUsername   string     `json:"ownerUsername,omitempty"`
-	CurrentVersion  *int64     `json:"currentVersion,omitempty"`
-	VersionCount    int        `json:"versionCount"`
-	TotalSize       int64      `json:"totalSize"`
-	ViewCount       int64      `json:"viewCount"`
-	LikeCount       int64      `json:"likeCount"`
-	Status          string     `json:"status"`
-	Visibility      string     `json:"visibility"`
-	Category        string     `json:"category,omitempty"`
-	Tags            []string   `json:"tags,omitempty"`
-	Filename        string     `json:"filename,omitempty"`
-	AccessProtected bool       `json:"accessProtected"`
-	IsPinned        bool       `json:"isPinned"`
-	PinnedAt        *time.Time `json:"pinnedAt,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	Source          string     `json:"source"`
-	LastVersionAt   *time.Time `json:"lastVersionAt,omitempty"`
+	Code                  string     `json:"code"`
+	PublicID              string     `json:"publicId"`
+	OwnerTokenID          string     `json:"ownerTokenId"`
+	OwnerUsername         string     `json:"ownerUsername,omitempty"`
+	CurrentVersion        *int64     `json:"currentVersion,omitempty"`
+	VersionCount          int        `json:"versionCount"`
+	TotalSize             int64      `json:"totalSize"`
+	ViewCount             int64      `json:"viewCount"`
+	LikeCount             int64      `json:"likeCount"`
+	ReuseCount            int64      `json:"reuseCount"`
+	Status                string     `json:"status"`
+	Visibility            string     `json:"visibility"`
+	ReusePolicy           string     `json:"reusePolicy"`
+	SourceDownloadPolicy  string     `json:"sourceDownloadPolicy"`
+	SecurityMode          string     `json:"securityMode"`
+	TemplateSourceCode    string     `json:"templateSourceCode,omitempty"`
+	TemplateSourceVersion *int64     `json:"templateSourceVersion,omitempty"`
+	Category              string     `json:"category,omitempty"`
+	Tags                  []string   `json:"tags,omitempty"`
+	Filename              string     `json:"filename,omitempty"`
+	AccessProtected       bool       `json:"accessProtected"`
+	IsPinned              bool       `json:"isPinned"`
+	PinnedAt              *time.Time `json:"pinnedAt,omitempty"`
+	CreatedAt             time.Time  `json:"createdAt"`
+	Source                string     `json:"source"`
+	LastVersionAt         *time.Time `json:"lastVersionAt,omitempty"`
 }
 
 type UserListItem struct {
@@ -168,6 +177,42 @@ type SiteListResponse struct {
 	Sites   []SiteListItem `json:"sites"`
 }
 
+type BundleDetail struct {
+	Kind                  string          `json:"kind"`
+	KindLabel             string          `json:"kindLabel"`
+	Root                  string          `json:"root,omitempty"`
+	MainEntry             string          `json:"mainEntry"`
+	SecurityMode          string          `json:"securityMode"`
+	SiteSecurityMode      string          `json:"siteSecurityMode"`
+	EffectiveSecurityMode string          `json:"effectiveSecurityMode"`
+	FileCount             int             `json:"fileCount"`
+	TotalSize             int64           `json:"totalSize"`
+	Tree                  json.RawMessage `json:"tree,omitempty"`
+	EntryNote             string          `json:"entryNote"`
+}
+
+type ReuseDetail struct {
+	DownloadURL           string         `json:"downloadUrl,omitempty"`
+	DetailURL             string         `json:"detailUrl,omitempty"`
+	CLI                   string         `json:"cli"`
+	AgentPrompt           string         `json:"agentPrompt"`
+	MCP                   map[string]any `json:"mcp"`
+	AllowReuse            bool           `json:"allowReuse"`
+	AllowDownload         bool           `json:"allowDownload"`
+	PolicyNote            string         `json:"policyNote,omitempty"`
+	TemplateSourceCode    string         `json:"templateSourceCode,omitempty"`
+	TemplateSourceVersion int64          `json:"templateSourceVersion,omitempty"`
+}
+
+type SiteDetailResponse struct {
+	Success  bool          `json:"success"`
+	Site     SiteListItem  `json:"site"`
+	Versions []VersionItem `json:"versions"`
+	Bundle   *BundleDetail `json:"bundle,omitempty"`
+	Files    []ContentFile `json:"files,omitempty"`
+	Reuse    *ReuseDetail  `json:"reuse,omitempty"`
+}
+
 // SiteDeleteResponse 是 DELETE /api/admin/sites/{code} 响应。
 type SiteDeleteResponse struct {
 	Success bool   `json:"success"`
@@ -183,6 +228,25 @@ type SitePinResponse struct {
 	Code     string  `json:"code"`
 	IsPinned bool    `json:"isPinned"`
 	PinnedAt *string `json:"pinnedAt,omitempty"`
+}
+
+type SiteReusePolicyRequest struct {
+	ReusePolicy          string `json:"reusePolicy"`
+	SourceDownloadPolicy string `json:"sourceDownloadPolicy"`
+}
+
+type SiteReusePolicyResponse struct {
+	Success bool         `json:"success"`
+	Site    SiteListItem `json:"site"`
+}
+
+type SiteSecurityModeRequest struct {
+	SecurityMode string `json:"securityMode"`
+}
+
+type SiteSecurityModeResponse struct {
+	Success bool         `json:"success"`
+	Site    SiteListItem `json:"site"`
 }
 
 type SiteVisibilityRequest struct {
@@ -223,4 +287,28 @@ type AnonymousSessionListResponse struct {
 	Success     bool                       `json:"success"`
 	DeployLimit int                        `json:"deployLimit"`
 	Sessions    []AnonymousSessionListItem `json:"sessions"`
+}
+
+type AuditLogListItem struct {
+	ID         int64           `json:"id"`
+	ActorType  string          `json:"actorType"`
+	ActorID    string          `json:"actorId"`
+	ActorRole  string          `json:"actorRole,omitempty"`
+	Action     string          `json:"action"`
+	Result     string          `json:"result"`
+	SiteCode   string          `json:"siteCode,omitempty"`
+	TargetType string          `json:"targetType,omitempty"`
+	TargetID   string          `json:"targetId,omitempty"`
+	IP         string          `json:"ip,omitempty"`
+	UserAgent  string          `json:"userAgent,omitempty"`
+	Detail     json.RawMessage `json:"detail"`
+	CreatedAt  time.Time       `json:"createdAt"`
+}
+
+type AuditLogListResponse struct {
+	Success  bool               `json:"success"`
+	Logs     []AuditLogListItem `json:"logs"`
+	Total    int                `json:"total"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"pageSize"`
 }

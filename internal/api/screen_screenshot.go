@@ -87,6 +87,7 @@ func (s *Server) handleRequestScreenScreenshot(w http.ResponseWriter, r *http.Re
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+userID, isAdmin)
 	screenID := strings.TrimSpace(r.PathValue("screenId"))
 	if screenID == "" {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "screen", "screen id is required"), reqID))
@@ -95,24 +96,35 @@ func (s *Server) handleRequestScreenScreenshot(w http.ResponseWriter, r *http.Re
 	screen, err := s.deployer.GetScreen(r.Context(), screenID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "screen", "screen not found"), reqID))
+			apiErr := NewError(CodeNotFound, "screen", "screen not found")
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.screenshot.request", "", "screen", screenID, nil, apiErr)
+			writeError(w, apiErrWithReqID(apiErr, reqID))
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen", err.Error()), reqID))
+		apiErr := NewError(CodeInternal, "screen", err.Error())
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.screenshot.request", "", "screen", screenID, nil, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 	if !isAdmin && screen.OwnerUserID != userID {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "screen", "you can only request screenshots for your own screens"), reqID))
+		apiErr := NewError(CodeForbidden, "screen", "you can only request screenshots for your own screens")
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.screenshot.request", "", "screen", screenID, nil, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 	requestID := "shot_" + randomHex(12)
+	detail := map[string]any{"requestId": requestID}
 	updated, err := s.deployer.RequestScreenScreenshot(r.Context(), screenID, requestID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "screen", "screen not found"), reqID))
+			apiErr := NewError(CodeNotFound, "screen", "screen not found")
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.screenshot.request", "", "screen", screenID, detail, apiErr)
+			writeError(w, apiErrWithReqID(apiErr, reqID))
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screenshot", err.Error()), reqID))
+		apiErr := NewError(CodeInternal, "screenshot", err.Error())
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.screenshot.request", "", "screen", screenID, detail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 	item := s.toScreenItem(r.Context(), updated)
@@ -124,6 +136,7 @@ func (s *Server) handleRequestScreenScreenshot(w http.ResponseWriter, r *http.Re
 		}
 	}
 	s.sendScreenWSScreenshot(screenID, resp.Screenshot)
+	s.recordAuditLog(r, actorType, actorID, actorRole, "screen.screenshot.request", "", "screen", screenID, detail)
 	writeJSON(w, http.StatusOK, resp)
 }
 

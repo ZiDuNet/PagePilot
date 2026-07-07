@@ -18,6 +18,9 @@ var userFS embed.FS
 //go:embed skill/hostctl-deploy.zip
 var skillPackageFS embed.FS
 
+//go:embed markdown/vendor
+var markdownAssetFS embed.FS
+
 var (
 	adminHTMLOnce  sync.Once
 	adminHTMLBytes []byte
@@ -65,4 +68,13 @@ func AdminAppFS() fs.FS {
 // SkillPackage returns the built-in pagep Skill ZIP.
 func SkillPackage() ([]byte, error) {
 	return skillPackageFS.ReadFile("skill/hostctl-deploy.zip")
+}
+
+// MarkdownAssetsFS returns platform-owned Markdown runtime assets.
+func MarkdownAssetsFS() fs.FS {
+	sub, err := fs.Sub(markdownAssetFS, "markdown/vendor")
+	if err != nil {
+		panic(err)
+	}
+	return sub
 }

@@ -40,6 +40,7 @@ python scripts/pagep.py doctor --server https://pagepilot.example.com
 3. 不能执行本地命令、只能使用 MCP 时，再调用 `pagep-mcp` 工具。
 4. Skill、CLI、MCP 必须使用同一个 PagePilot 服务器地址和同一个用户 Token。
 5. 所有入口都只展示服务端返回的链接，不按本地 host、端口或域名规则自行拼接。
+6. 发布或追加版本成功后，优先把命令输出里的「访问 URL」「详情 URL」「版本 URL」交给用户；这些链接来自服务端返回，同时保留 JSON 供自动化解析。
 
 ## 身份和权限
 
@@ -64,10 +65,10 @@ pagep claim-session
 - 必须提供 `--description`，控制在 240 字以内。
 - 新建稳定项目建议使用可读的 `--code`。code 只能使用小写字母、数字和连字符。
 - 首次发布前分别确认：是否进入创作市场、分类和标签、是否设置访问密码。
-- `--visibility public` 表示进入 PagePilot 创作市场，可搜索、可点赞、可复用；`--visibility unlisted` 表示不进市场，只能通过链接访问。
+- `--visibility public` 表示进入 PagePilot 创作市场，可搜索、可点赞；是否可下载源码和复用以详情接口返回的 `allowDownload`、`allowReuse`、`policyNote` 为准。`--visibility unlisted` 表示不进市场，只能通过链接访问。
 - 匿名发布默认且只能使用 `unlisted`。
 - 新公开作品发布前，先调用 `market categories` 获取服务端分类 slug，不要按文件后缀臆造分类。
-- 访问密码只保护浏览器查看。匿名访客也可以输入密码访问；校验成功后获得 5 分钟访问授权。
+- 访问密码只保护浏览器查看。匿名访客也可以输入密码访问；校验成功后获得 5 分钟、绑定目标版本的访问授权。站点改密码或切换当前版本后，旧授权需要重新验证。
 - 追加版本或 `--update` 沿用原站点公开性和访问密码，除非用户明确要求修改。
 
 ## 内容生成规范
@@ -131,11 +132,38 @@ site/
 
 多页面 HTML 使用相对链接，例如 `settings.html` 或 `./settings.html`。不要在路径模式下写 `/settings.html` 这类根路径。
 
+PagePilot 会在发布或覆盖版本时记录 Bundle 元数据，详情接口、CLI 和 MCP 会返回：
+
+- `single_html`：单个 HTML 文件。
+- `markdown`：Markdown 文档或以 Markdown 为入口的站点，使用平台 Markdown 渲染链路。
+- `zip_site`：ZIP 解包后识别出的 HTML 静态站点。
+- `static_site`：普通多文件静态站点。
+
+Agent 不需要自行判断最终访问根目录；上传目录或 ZIP 后，以服务端返回的 URL、入口说明和文件树为准。
+
+ZIP / Bundle 失败时，先读取接口返回的 `stage`、`errorCode` 和 `hint`。`stage=zip_bundle` 表示服务端已经完成 ZIP 安全检查或入口识别，Agent 应直接把 `hint` 翻译成下一步操作，不要继续盲目重试同一个包。
+
+常见 Bundle 错误：
+
+- `ZIP_UNSAFE_PATH`：ZIP 中存在绝对路径、盘符、`..`、空路径段或路径穿越；重新打包，只保留干净相对路径。
+- `ZIP_AMBIGUOUS_ENTRY`：包里像是多个独立网站；让用户选择其中一个站点目录，或拆成多个 ZIP 分别发布。
+- `ZIP_ENTRY_MISSING`：没有发现 HTML 或 Markdown 入口；补充 `index.html`、`README.md`，或显式指定入口文件。
+- `ZIP_FILE_TOO_LARGE` / `ZIP_TOTAL_TOO_LARGE` / `ZIP_TOO_MANY_FILES`：超过后台上传限制；压缩资源、删除无用构建产物，或请管理员调整限制。
+
 ### Markdown 边界
 
-PagePilot 支持 Markdown 发布和安全渲染缓存，适合普通文档、说明书、报告正文和 README。
+PagePilot 支持 Markdown 作为一等入口发布，适合文档、教程、报告、README 和轻量知识页。Agent 可以直接上传 `.md`，不需要先转换成 HTML。
 
-如果用户明确需要公式、Mermaid 图表、复杂代码高亮或交互组件，优先生成 HTML 或多文件静态站点，并把 KaTeX、Mermaid、highlight.js 等运行时资源随站点一起打包。不要假设 PagePilot 会自动完整注入这些库。
+PagePilot Markdown 渲染链路内置以下能力：
+
+- GFM：表格、任务列表、删除线、自动链接、代码块、相对图片。
+- 代码高亮：服务端生成 Chroma / highlight.js 风格的高亮 HTML，明暗主题跟随页面。
+- 数学公式：行内 `$...$`、单行块级 `$$E=mc^2$$`、多行块级 `$$ ... $$`，页面自动加载同源 KaTeX runtime 渲染。
+- Mermaid：识别 `mermaid` 代码块，页面自动加载同源 Mermaid runtime，并用 CSP nonce 初始化。
+- 安全策略：Markdown 页使用 nonce-only 脚本 CSP；同源 KaTeX、auto-render、Mermaid runtime 和平台初始化脚本都由 nonce 放行，不依赖 `script-src 'self'`，不允许 `script-src 'unsafe-inline'` / `unsafe-eval`。KaTeX / Mermaid 需要的运行时样式由 `style-src-elem` / `style-src-attr` 受控放行，不扩大脚本执行面。
+- 主题：Markdown 页面默认 `theme=auto`，也支持访问 URL 追加 `?theme=light` 或 `?theme=dark`；PagePilot 的渲染缓存会按主题、入口、版本、内容 hash 和 renderer version 区分。
+
+只有在用户需要复杂交互组件、第三方可视化库、完整前端状态管理或高度定制脚本时，才改用 HTML / ZIP / 多文件静态站点，并把额外运行时资源随站点一起打包。
 
 ## Reveal.js 幻灯片规范
 
@@ -260,13 +288,43 @@ pagep deploy ./deck \
 
 ## 创作市场复用
 
-用户要求「参考这个作品」「用这个模板」「按这个风格再做一个」时，先查创作市场或读取作品详情，再下载源文件作为参考。
+用户要求「参考这个作品」「用这个模板」「按这个风格再做一个」时，先查创作市场或读取作品详情，读取 `reuse.allowDownload`、`reuse.allowReuse` 和 `reuse.policyNote`。只有服务端明确允许时，才下载源文件作为参考。
 
 ```bash
 pagep market search "报告" --sort hot --page-size 5
 pagep market show project-home
 pagep get project-home --download --output ./pagepilot-downloads
+pagep deploy ./pagepilot-downloads/project-home \
+  --title "参考项目官网的新作品" \
+  --description "基于 project-home 的结构和风格二次创作。" \
+  --template-source-code project-home \
+  --template-source-version 1
 ```
+
+如果用户明确要“更新我已有的发布”，必须先确认用户拥有的目标 code，再追加版本，不要创建新 code，也不要覆盖来源作品：
+
+```bash
+pagep get project-home --download --output ./pagepilot-downloads
+pagep append existing-code ./pagepilot-downloads/project-home \
+  --description "基于 project-home 的结构和风格更新已有发布。" \
+  --template-source-code project-home \
+  --template-source-version 1
+```
+
+管理员需要显式调整策略时使用：
+
+```bash
+pagep admin reuse-policy project-home --source-download deny --reuse deny
+pagep admin reuse-policy project-home --source-download allow --reuse allow
+pagep admin security-mode project-home --mode strict
+```
+
+安全模式可选：
+
+- `auto`：使用 PagePilot 对 Bundle 的自动识别结果。
+- `strict`：更严格的 CSP/sandbox，优先安全隔离，可能影响部分复杂交互。
+- `compatible`：兼容模式，适合普通 HTML 应用。
+- `trusted`：仅用于已审查可信内容，会放宽运行限制。
 
 学习维度按优先级：
 
@@ -276,7 +334,9 @@ pagep get project-home --download --output ./pagepilot-downloads
 4. 组件样式：按钮、卡片、表格、图表容器、标签。
 5. 交互效果：动效、筛选、悬停、响应式。
 
-只学习风格和结构，不复制原作品的具体文字、业务数据、密钥或私人内容。复用后默认发布为新 code；只有用户明确说要更新自己已有 code 时才追加版本。
+只学习风格和结构，不复制原作品的具体文字、业务数据、密钥或私人内容。复用后默认发布为新 code，并在发布命令里带上 `--template-source-code` 和可用时的 `--template-source-version`，让 PagePilot 记录来源和复用计数；只有用户明确说要更新自己已有 code，并且已经确认目标 code 时才追加版本。
+
+知道访问密码的用户可以浏览加密作品页面，但访问密码不等于源码下载权限。公开且未加密作品默认可下载源码；加密、不公开、下架或策略受限的作品默认不能下载源码。加密作品即使策略设置为 `allow`，也不会提供源码下载；如需公开源码，应先清除访问密码，再由管理员调整策略。不要绕过 PagePilot 下载源码；应向用户说明 `policyNote`，请作品所有者或管理员先清除访问密码或调整策略。
 
 PagePilot 当前是创作市场复用能力，不要调用不存在的内容模板实例化工具。
 
@@ -314,6 +374,18 @@ pagep append project-home ./site-v2 \
   --title "项目官网首页升级版" \
   --description "更新页面结构和文案。"
 ```
+
+后台诊断：
+
+```bash
+pagep admin site-detail project-home
+pagep admin audit-logs --site-code project-home --action site.visibility --page-size 20
+pagep admin audit-logs --action auth.login --actor-id USER_ID --page-size 20
+pagep admin audit-logs --action account.password --actor-id USER_ID --page-size 20
+pagep admin security-mode project-home --mode compatible
+```
+
+`pagep admin audit-logs` 的普通输出会先给摘要表，再给每条日志的 `User-Agent` 和 `Detail` JSON；排查注册、登录、访问密码、源码下载、账号密码、CSP、投屏、版本或用户管理问题时，优先按 `--site-code`、`--action`、`--actor-id`、`--since` / `--until` 缩小范围。注册、登录、登出对应 `auth.register` / `auth.login` / `auth.logout`；账号密码修改对应 `account.password`；源码下载尝试对应 `source_download`。这些认证与权限审计只记录操作者、目标对象、结果和失败阶段，不记录明文密码或 Token。
 
 访问密码：
 
@@ -378,6 +450,10 @@ pagep screen unbind screen_xxx
 | 认领匿名发布 | `claim_anonymous_session` |
 | 设置访问密码 | `set_site_access_password` |
 | 管理员置顶 | `set_site_pin` |
+| 管理源码下载 / 复用策略 | `set_site_reuse_policy` |
+| 管理站点运行安全模式 | `set_site_security_mode` |
+| 查看后台站点详情 / 文件树 / 复用参数 | `get_admin_site_detail` |
+| 查询审计日志 | `query_audit_logs` |
 | 查看文件清单和入口 | `get_site_content` |
 | 版本列表、锁定、切换、删除 | `list_versions`、`lock_version`、`set_current_version`、`delete_version` |
 | 搜索市场、分类、详情、点赞 | `search_marketplace`、`list_market_categories`、`get_deploy_detail`、`like_deploy` |
@@ -391,13 +467,15 @@ MCP 返回里的 URL 同样以服务端 API 返回值为准。
 | 问题 | 原因 | 处理方式 |
 |---|---|---|
 | 发布后 URL 404 | 服务端未部署最新版本、版本入口识别失败或反向代理未转发 | 检查接口返回的 `url`、`versionUrl`、`mainEntry` 和当前版本 |
+| ZIP 发布失败 | `stage=zip_bundle`，目录结构不安全、入口缺失、多个网站根或超限 | 优先展示接口 `hint`，按 `errorCode` 重新打包或指定入口 |
 | 样式或脚本丢失 | 多文件站点使用了根路径资源 | 改成相对路径，例如 `assets/app.css` |
 | 更新变成新建 | 没有明确已有 code | 先列出自己的站点，再用 `--update` 或 `append` |
 | 幻灯片空白 | Reveal.js 资源未打包或路径错误 | 确保 `assets/reveal.js`、`reveal-base.css`、`theme.css` 都存在 |
 | 幻灯片翻页键不响应 | iframe 焦点问题 | 设置 `embedded: true`，提示用户点击页面区域聚焦 |
 | 幻灯片文字被裁切 | 单页内容过多 | 拆页，每页只放一个核心观点 |
 | 屏幕投放失败 | 未使用注册用户 Token 或屏幕不属于该用户 | 先 `screen list`，确认 Token 和屏幕归属 |
-| 加密作品无法预览 | 需要访问密码授权 | 打开应用输入密码；授权有效期为 5 分钟 |
+| 加密作品无法预览 | 需要访问密码授权 | 打开应用输入密码；授权有效期为 5 分钟，且绑定目标版本 |
+| 页面脚本或资源被拦截 | CSP / sandbox 安全策略生效 | 管理员查询审计日志 `security.csp_report`，按站点 code、IP、UA 或 blockedUri 定位 |
 | 匿名额度耗尽 | 当前匿名 session 达到限制 | 注册登录，创建 Token，再执行 `claim-session` |
 
 ## 安全红线
@@ -406,4 +484,5 @@ MCP 返回里的 URL 同样以服务端 API 返回值为准。
 - 不要把用户私有内容公开进创作市场，除非用户明确确认。
 - 不要绕过访问密码读取加密作品源码。
 - 不要把未知第三方脚本注入公开作品；必须使用时说明来源和风险。
+- 不要为了兼容用户脚本直接建议关闭 CSP；先让管理员查看 `security.csp_report` 审计日志，再决定是否调整站点安全模式。
 - 不要在总结中暴露源码、密码、Token 或敏感配置。

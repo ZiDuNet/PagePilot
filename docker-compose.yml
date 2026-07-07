@@ -23,7 +23,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Docker 构建会先编译前端，再把产物 embed 进 Go 二进制。
+        # Docker 构建会先编译前端、刷新内置 Skill ZIP，再把产物 embed 进 Go 二进制。
         NODE_IMAGE: node:22-alpine
         GO_IMAGE: golang:1.22-alpine
         ALPINE_IMAGE: alpine:3.20

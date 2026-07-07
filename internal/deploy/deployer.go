@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,15 @@ type resolvedFile struct {
 	Sha256   string
 }
 
+type resolvedContent struct {
+	Files              []resolvedFile
+	MainEntry          string
+	BundleKind         string
+	BundleRoot         string
+	BundleTreeJSON     string
+	BundleSecurityMode string
+}
+
 // Deploy 执行一次部署。
 // 支持两种模式：
 //   - 单文件：req.Content（filename 支持 .html/.htm/.md/.markdown）
@@ -114,11 +124,17 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	tags := normalizeTags(req.Tags)
 
 	// 3. 解析 + 校验内容（content、files 或单 ZIP）
-	rfiles, mainEntry, apiErr := d.resolveContent(req, filenameHint)
+	resolved, apiErr := d.resolveContentWithBundle(req, filenameHint)
 	if apiErr != nil {
 		return nil, apiErr
 	}
+	rfiles := resolved.Files
+	mainEntry := resolved.MainEntry
 	if apiErr := validateEntrypoint(rfiles, mainEntry); apiErr != nil {
+		return nil, apiErr
+	}
+	templateSourceCode, templateSourceVersion, apiErr := d.resolveTemplateSource(ctx, req)
+	if apiErr != nil {
 		return nil, apiErr
 	}
 
@@ -189,6 +205,8 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			Visibility:             visibility,
 			Category:               category,
 			Tags:                   tags,
+			TemplateSourceCode:     templateSourceCode,
+			TemplateSourceVersion:  int64PtrIfPositive(templateSourceVersion),
 			AccessPasswordHash:     accessHash,
 			CreatedAt:              now,
 			Source:                 normalizeSource(req.Source),
@@ -206,18 +224,20 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	}
 
 	if err := d.store.CreateVersion(ctx, store.Version{
-		ID:            versionID,
-		SiteCode:      code,
-		VersionNumber: versionNumber,
-		Title:         sanitizeSiteTitle(req.Title),
-		Description:   desc,
-		MainEntry:     mainEntry,
-		TotalSize:     totalSize,
-		FileCount:     len(rfiles),
-		ContentSha256: aggregateSha,
-		IsLocked:      false,
-		Status:        "active",
-		CreatedAt:     now,
+		ID:                    versionID,
+		SiteCode:              code,
+		VersionNumber:         versionNumber,
+		Title:                 sanitizeSiteTitle(req.Title),
+		Description:           desc,
+		MainEntry:             mainEntry,
+		TotalSize:             totalSize,
+		FileCount:             len(rfiles),
+		ContentSha256:         aggregateSha,
+		TemplateSourceCode:    templateSourceCode,
+		TemplateSourceVersion: int64PtrIfPositive(templateSourceVersion),
+		IsLocked:              false,
+		Status:                "active",
+		CreatedAt:             now,
 	}); err != nil {
 		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
 		return nil, api.NewError(api.CodeInternal, "create_version",
@@ -241,6 +261,11 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		return nil, api.NewError(api.CodeInternal, "create_files",
 			fmt.Sprintf("failed to create files: %v", err))
 	}
+	if err := d.store.UpsertVersionBundle(ctx, resolved.toVersionBundle(code, versionNumber, now)); err != nil {
+		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
+		return nil, api.NewError(api.CodeInternal, "version_bundle",
+			fmt.Sprintf("failed to record bundle metadata: %v", err))
+	}
 
 	// 9. 切 current_version + symlink
 	if err := d.store.SetCurrentVersion(ctx, code, &versionNumber); err != nil {
@@ -250,6 +275,12 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	if err := d.swapCurrentSymlink(code, versionNumber); err != nil {
 		return nil, api.NewError(api.CodeInternal, "swap_symlink",
 			fmt.Sprintf("failed to swap current symlink: %v", err))
+	}
+	if templateSourceCode != "" {
+		if err := d.store.IncrementSiteReuseCount(ctx, templateSourceCode); err != nil {
+			return nil, api.NewError(api.CodeInternal, "template_reuse",
+				fmt.Sprintf("failed to update template reuse count: %v", err))
+		}
 	}
 
 	// 10. 部署成功，消耗冷却
@@ -287,6 +318,9 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		PrimaryVersionStrategy: strategy,
 		Visibility:             site.Visibility,
 		Category:               site.Category,
+		ReuseCount:             site.ReuseCount,
+		TemplateSourceCode:     site.TemplateSourceCode,
+		TemplateSourceVersion:  int64Value(site.TemplateSourceVersion),
 		CooldownSeconds:        d.cfg.CooldownSeconds,
 		NextAvailableAt:        time.Now().UTC().Add(retryAfter),
 		VersionCount:           len(allVersions),
@@ -298,15 +332,23 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 // resolveContent 把请求里的 content 或 files 解析成统一的 resolvedFile 列表。
 // 同时做所有大小、路径、数量校验，并返回最终入口文件。
 func (d *Deployer) resolveContent(req api.DeployRequest, filenameHint string) ([]resolvedFile, string, *api.APIError) {
+	resolved, apiErr := d.resolveContentWithBundle(req, filenameHint)
+	if apiErr != nil {
+		return nil, "", apiErr
+	}
+	return resolved.Files, resolved.MainEntry, nil
+}
+
+func (d *Deployer) resolveContentWithBundle(req api.DeployRequest, filenameHint string) (resolvedContent, *api.APIError) {
 	hasContent := req.Content != ""
 	hasFiles := len(req.Files) > 0
 
 	if !hasContent && !hasFiles {
-		return nil, "", api.NewError(api.CodeInvalidInput, "validate",
+		return resolvedContent{}, api.NewError(api.CodeInvalidInput, "validate",
 			"either 'content' or 'files' must be provided").WithHint("Single HTML uses 'content'; multiple files use 'files' array.")
 	}
 	if hasContent && hasFiles {
-		return nil, "", api.NewError(api.CodeInvalidInput, "validate",
+		return resolvedContent{}, api.NewError(api.CodeInvalidInput, "validate",
 			"provide 'content' or 'files', not both")
 	}
 
@@ -317,30 +359,31 @@ func (d *Deployer) resolveContent(req api.DeployRequest, filenameHint string) ([
 			mainEntry = defaultMainEntry
 		}
 		if !isPageEntrypoint(mainEntry) {
-			return nil, "", api.NewError(api.CodeInvalidInput, "validate",
+			return resolvedContent{}, api.NewError(api.CodeInvalidInput, "validate",
 				fmt.Sprintf("filename %q must end with .html, .htm, .md, or .markdown", mainEntry))
 		}
 		if int64(len(req.Content)) > d.cfg.MaxSingleFileBytes {
-			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
+			return resolvedContent{}, api.NewError(api.CodeContentTooLarge, "validate",
 				fmt.Sprintf("content exceeds max single-file size (%d bytes)", d.cfg.MaxSingleFileBytes))
 		}
 		// 校验 mainEntry 合法
 		if apiErr := validateFilePath(mainEntry); apiErr != nil {
-			return nil, "", apiErr
+			return resolvedContent{}, apiErr
 		}
 		bytes := []byte(req.Content)
 		sha := sha256sum(bytes)
-		return []resolvedFile{{
+		files := []resolvedFile{{
 			Path:     mainEntry,
 			Bytes:    bytes,
 			IsBinary: false,
 			Sha256:   sha,
-		}}, mainEntry, nil
+		}}
+		return resolvedContentForFiles(files, mainEntry, "", ""), nil
 	}
 
 	// 多文件模式
 	if len(req.Files) > d.cfg.MaxFilesPerSite {
-		return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
+		return resolvedContent{}, api.NewError(api.CodeContentTooLarge, "validate",
 			fmt.Sprintf("too many files (%d); max %d per site", len(req.Files), d.cfg.MaxFilesPerSite))
 	}
 
@@ -352,11 +395,11 @@ func (d *Deployer) resolveContent(req api.DeployRequest, filenameHint string) ([
 	for _, f := range req.Files {
 		// path 校验
 		if apiErr := validateFilePath(f.Path); apiErr != nil {
-			return nil, "", apiErr
+			return resolvedContent{}, apiErr
 		}
 		// 大小写敏感去重
 		if seen[f.Path] {
-			return nil, "", api.NewError(api.CodeInvalidInput, "validate",
+			return resolvedContent{}, api.NewError(api.CodeInvalidInput, "validate",
 				fmt.Sprintf("duplicate file path: %s", f.Path))
 		}
 		seen[f.Path] = true
@@ -364,18 +407,18 @@ func (d *Deployer) resolveContent(req api.DeployRequest, filenameHint string) ([
 		// 解码内容
 		bytes, isBinary, apiErr := resolveFileContent(f)
 		if apiErr != nil {
-			return nil, "", apiErr
+			return resolvedContent{}, apiErr
 		}
 
 		// 单文件大小校验
 		if int64(len(bytes)) > d.cfg.MaxSingleFileBytes {
-			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
+			return resolvedContent{}, api.NewError(api.CodeContentTooLarge, "validate",
 				fmt.Sprintf("file %s exceeds max single-file size (%d bytes)", f.Path, d.cfg.MaxSingleFileBytes))
 		}
 
 		totalSize += int64(len(bytes))
 		if totalSize > d.cfg.MaxSiteTotalBytes {
-			return nil, "", api.NewError(api.CodeContentTooLarge, "validate",
+			return resolvedContent{}, api.NewError(api.CodeContentTooLarge, "validate",
 				fmt.Sprintf("total size exceeds site limit (%d bytes)", d.cfg.MaxSiteTotalBytes))
 		}
 
@@ -388,13 +431,71 @@ func (d *Deployer) resolveContent(req api.DeployRequest, filenameHint string) ([
 	}
 
 	if len(out) == 1 && isZipPath(out[0].Path) {
-		return d.expandZipContent(out[0], filenameHint)
+		return d.expandZipContentWithBundle(out[0], filenameHint)
 	}
 	mainEntry, apiErr := chooseMainEntry(out, filenameHint)
 	if apiErr != nil {
-		return nil, "", apiErr
+		return resolvedContent{}, apiErr
 	}
-	return out, mainEntry, nil
+	return resolvedContentForFiles(out, mainEntry, "", ""), nil
+}
+
+func (d *Deployer) resolveTemplateSource(ctx context.Context, req api.DeployRequest) (string, int64, *api.APIError) {
+	code := strings.TrimSpace(req.TemplateSourceCode)
+	if code == "" {
+		return "", 0, nil
+	}
+	if !customCodeRe.MatchString(code) {
+		return "", 0, api.NewError(api.CodeInvalidInput, "template_source",
+			"templateSourceCode must be a valid site code")
+	}
+	site, err := d.store.GetSite(ctx, code)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", 0, api.NewError(api.CodeInvalidInput, "template_source",
+				"template source site not found")
+		}
+		return "", 0, api.NewError(api.CodeInternal, "template_source", err.Error())
+	}
+	version := req.TemplateSourceVersion
+	if version <= 0 {
+		if site.CurrentVersion != nil {
+			version = *site.CurrentVersion
+		} else {
+			maxVersion, err := d.store.MaxVersionNumber(ctx, code)
+			if err != nil {
+				return "", 0, api.NewError(api.CodeInternal, "template_source", err.Error())
+			}
+			version = maxVersion
+		}
+	}
+	if version <= 0 {
+		return "", 0, api.NewError(api.CodeInvalidInput, "template_source",
+			"template source version is required when source site has no current version")
+	}
+	if _, err := d.store.GetVersion(ctx, code, version); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", 0, api.NewError(api.CodeInvalidInput, "template_source",
+				"template source version not found")
+		}
+		return "", 0, api.NewError(api.CodeInternal, "template_source", err.Error())
+	}
+	return code, version, nil
+}
+
+func int64PtrIfPositive(value int64) *int64 {
+	if value <= 0 {
+		return nil
+	}
+	out := value
+	return &out
+}
+
+func int64Value(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func validateEntrypoint(files []resolvedFile, mainEntry string) *api.APIError {
@@ -485,7 +586,90 @@ func chooseMainEntry(files []resolvedFile, filenameHint string) (string, *api.AP
 		"no HTML or Markdown entry was found").WithHint("Upload index.html, README.md, or a ZIP/directory containing one of them.")
 }
 
+func resolvedContentForFiles(files []resolvedFile, mainEntry, source, root string) resolvedContent {
+	kind := inferBundleKind(files, mainEntry, source)
+	return resolvedContent{
+		Files:              files,
+		MainEntry:          mainEntry,
+		BundleKind:         kind,
+		BundleRoot:         root,
+		BundleTreeJSON:     bundleTreeJSONFromResolvedFiles(files),
+		BundleSecurityMode: bundleSecurityModeForKind(kind),
+	}
+}
+
+func inferBundleKind(files []resolvedFile, mainEntry, source string) string {
+	if isMarkdownPath(mainEntry) {
+		return "markdown"
+	}
+	if source == "zip" {
+		return "zip_site"
+	}
+	if len(files) <= 1 {
+		return "single_html"
+	}
+	return "static_site"
+}
+
+func bundleSecurityModeForKind(kind string) string {
+	if kind == "markdown" {
+		return "strict"
+	}
+	return "standard"
+}
+
+func bundleTreeJSONFromResolvedFiles(files []resolvedFile) string {
+	type treeFile struct {
+		Path     string `json:"path"`
+		Size     int64  `json:"size"`
+		IsBinary bool   `json:"isBinary"`
+		SHA256   string `json:"sha256,omitempty"`
+	}
+	out := make([]treeFile, 0, len(files))
+	for _, file := range files {
+		out = append(out, treeFile{
+			Path:     file.Path,
+			Size:     int64(len(file.Bytes)),
+			IsBinary: file.IsBinary,
+			SHA256:   file.Sha256,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Path < out[j].Path
+	})
+	data, err := json.Marshal(out)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func (r resolvedContent) toVersionBundle(code string, version int64, createdAt time.Time) store.VersionBundle {
+	treeJSON := strings.TrimSpace(r.BundleTreeJSON)
+	if treeJSON == "" {
+		treeJSON = "[]"
+	}
+	return store.VersionBundle{
+		SiteCode:      code,
+		VersionNumber: version,
+		Kind:          r.BundleKind,
+		Root:          strings.TrimSpace(r.BundleRoot),
+		MainEntry:     r.MainEntry,
+		TreeJSON:      treeJSON,
+		SecurityMode:  r.BundleSecurityMode,
+		CreatedAt:     createdAt,
+	}
+}
+
 func (d *Deployer) expandZipContent(file resolvedFile, filenameHint string) ([]resolvedFile, string, *api.APIError) {
+	resolved, apiErr := d.expandZipContentWithBundle(file, filenameHint)
+	if apiErr != nil {
+		return nil, "", apiErr
+	}
+	return resolved.Files, resolved.MainEntry, nil
+}
+
+func (d *Deployer) expandZipContentWithBundle(file resolvedFile, filenameHint string) (resolvedContent, *api.APIError) {
 	result, err := bundle.AnalyzeZip(bundle.Input{
 		Name:      file.Path,
 		Data:      file.Bytes,
@@ -497,7 +681,7 @@ func (d *Deployer) expandZipContent(file resolvedFile, filenameHint string) ([]r
 		},
 	})
 	if err != nil {
-		return nil, "", zipBundleAPIError(err)
+		return resolvedContent{}, zipBundleAPIError(err)
 	}
 	files := make([]resolvedFile, 0, len(result.Files))
 	for _, f := range result.Files {
@@ -508,26 +692,38 @@ func (d *Deployer) expandZipContent(file resolvedFile, filenameHint string) ([]r
 			Sha256:   f.SHA256,
 		})
 	}
-	return files, result.MainEntry, nil
+	resolved := resolvedContentForFiles(files, result.MainEntry, "zip", result.Root)
+	if strings.TrimSpace(result.TreeJSON) != "" {
+		resolved.BundleTreeJSON = result.TreeJSON
+	}
+	return resolved, nil
 }
 
 func zipBundleAPIError(err error) *api.APIError {
+	var bundleErr *bundle.Error
+	if errors.As(err, &bundleErr) {
+		apiErr := api.NewError(api.ErrorCode(bundleErr.Code), bundleErr.Stage, bundleErr.Detail)
+		if strings.TrimSpace(bundleErr.Hint) != "" {
+			apiErr.WithHint(bundleErr.Hint)
+		}
+		return apiErr
+	}
 	detail := err.Error()
 	lower := strings.ToLower(detail)
 	switch {
 	case strings.Contains(lower, "safe relative path"):
-		return api.NewError(api.CodeInvalidFilePath, "validate", detail).
+		return api.NewError(api.CodeZipUnsafePath, bundle.StageZipBundle, detail).
 			WithHint("ZIP entries must not contain '..', absolute paths, drive letters, UNC paths, or empty path segments.")
 	case strings.Contains(lower, "exceeds") || strings.Contains(lower, "too many files"):
-		return api.NewError(api.CodeContentTooLarge, "validate", detail)
+		return api.NewError(api.CodeContentTooLarge, bundle.StageZipBundle, detail)
 	case strings.Contains(lower, "multiple possible"):
-		return api.NewError(api.CodeInvalidInput, "validate", detail).
+		return api.NewError(api.CodeZipAmbiguousEntry, bundle.StageZipBundle, detail).
 			WithHint("Package one deployable website root per ZIP, or publish each website separately.")
 	case strings.Contains(lower, "html or markdown entry"):
-		return api.NewError(api.CodeInvalidInput, "validate", detail).
+		return api.NewError(api.CodeZipEntryMissing, bundle.StageZipBundle, detail).
 			WithHint("Put index.html or README.md in the site folder.")
 	default:
-		return api.NewError(api.CodeInvalidInput, "validate", detail)
+		return api.NewError(api.CodeInvalidInput, bundle.StageZipBundle, detail)
 	}
 }
 
@@ -1133,6 +1329,18 @@ func (d *Deployer) ListAnonymousSessions(ctx context.Context, limit int) ([]stor
 	return d.store.ListAnonymousSessions(ctx, limit)
 }
 
+func (d *Deployer) RecordAuditLog(ctx context.Context, log store.AuditLog) error {
+	return d.store.RecordAuditLog(ctx, log)
+}
+
+func (d *Deployer) ListAuditLogs(ctx context.Context, filter store.AuditLogFilter) ([]store.AuditLog, int, error) {
+	return d.store.ListAuditLogs(ctx, filter)
+}
+
+func (d *Deployer) GetVersionBundle(ctx context.Context, code string, version int64) (store.VersionBundle, error) {
+	return d.store.GetVersionBundle(ctx, code, version)
+}
+
 // ===== Marketplace（公开创作市场） =====
 
 func (d *Deployer) ListMarketplaceDeploys(ctx context.Context, q, status, sort, category, kind, ownerTokenID, favoriteOwnerID string, page, pageSize int) ([]store.MarketplaceDeploy, int, error) {
@@ -1177,6 +1385,14 @@ func (d *Deployer) SetSiteVisibility(ctx context.Context, code, visibility strin
 		return errors.New(apiErr.Detail)
 	}
 	return d.store.SetSiteVisibility(ctx, code, value)
+}
+
+func (d *Deployer) SetSiteReusePolicy(ctx context.Context, code, reusePolicy, sourceDownloadPolicy string) error {
+	return d.store.SetSiteReusePolicy(ctx, code, reusePolicy, sourceDownloadPolicy)
+}
+
+func (d *Deployer) SetSiteSecurityMode(ctx context.Context, code, securityMode string) error {
+	return d.store.SetSiteSecurityMode(ctx, code, securityMode)
 }
 
 func (d *Deployer) SetSiteCategory(ctx context.Context, code, category string) error {

@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -67,6 +68,8 @@ type DeployerPort interface {
 	ListSites(ctx context.Context) ([]store.SiteWithMeta, error)
 	SetSitePinned(ctx context.Context, code string, pinned bool) error
 	SetSiteVisibility(ctx context.Context, code, visibility string) error
+	SetSiteReusePolicy(ctx context.Context, code, reusePolicy, sourceDownloadPolicy string) error
+	SetSiteSecurityMode(ctx context.Context, code, securityMode string) error
 	SetAnonymousDeployLimit(ctx context.Context, n int) error
 	SetCooldownSeconds(ctx context.Context, n int) error
 	SetUploadLimits(ctx context.Context, singleFileBytes, siteTotalBytes int64, filesPerSite int) error
@@ -123,6 +126,18 @@ type appURLConfigSetter interface {
 type markdownRenderCache interface {
 	GetRenderCache(ctx context.Context, cacheKey string) (store.RenderCacheEntry, bool, error)
 	PutRenderCache(ctx context.Context, entry store.RenderCacheEntry) error
+}
+
+type auditLogReader interface {
+	ListAuditLogs(ctx context.Context, filter store.AuditLogFilter) ([]store.AuditLog, int, error)
+}
+
+type auditLogWriter interface {
+	RecordAuditLog(ctx context.Context, log store.AuditLog) error
+}
+
+type bundleMetadataReader interface {
+	GetVersionBundle(ctx context.Context, code string, version int64) (store.VersionBundle, error)
 }
 
 type Server struct {
@@ -310,6 +325,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/session", s.handleAnonymousSession)
 	s.mux.HandleFunc("POST /api/session/claim", s.handleClaimAnonymousSession)
+	s.mux.HandleFunc("POST /api/security/csp-report", s.handleCSPReport)
 	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 
 	// 创作市场（公开 API：/api/deploys）
@@ -368,6 +384,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/auth/email-code", s.handleEmailVerificationCode)
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("PATCH /api/account/password", s.handleAccountPassword)
+	s.mux.HandleFunc("GET /api/admin/audit-logs", s.handleAdminAuditLogs)
 	s.mux.HandleFunc("GET /api/admin/anonymous-sessions", s.handleAdminAnonymousSessions)
 	s.mux.HandleFunc("GET /api/admin/skill", s.handleAdminGetSkill)
 	s.mux.HandleFunc("POST /api/admin/skill/package", s.handleAdminUploadSkillPackage)
@@ -379,7 +396,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("PUT /api/config", s.handlePutConfig)
 	s.mux.HandleFunc("GET /api/admin/sites", s.handleAdminListSites)
+	s.mux.HandleFunc("GET /api/admin/sites/{code}", s.handleAdminGetSiteDetail)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/pin", s.handleAdminSetSitePin)
+	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/reuse-policy", s.handleAdminSetSiteReusePolicy)
+	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/security-mode", s.handleAdminSetSiteSecurityMode)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/category", s.handleAdminSetSiteCategory)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/tags", s.handleAdminSetSiteTags)
 	s.mux.HandleFunc("DELETE /api/admin/sites/{code}", s.handleAdminDeleteSite)
@@ -387,7 +407,7 @@ func (s *Server) routes() {
 	// admin 后台单页
 	s.mux.HandleFunc("GET /admin", s.handleAdminUI)
 	s.mux.HandleFunc("GET /admin/", s.handleAdminUI)
-	s.mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/", http.FileServer(http.FS(web.AdminAppFS()))))
+	s.mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/", adminAssetFileServer(web.AdminAppFS())))
 	s.mux.Handle("GET /app/assets/", http.StripPrefix("/app/", http.FileServer(http.FS(web.UserSubFS()))))
 	s.mux.HandleFunc("GET /index.html", s.handleUserAppUI)
 	s.mux.HandleFunc("GET /deploy", s.handleUserAppUI)
@@ -398,10 +418,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /screens/", s.handleScreenGuideUI)
 	s.mux.HandleFunc("GET /market", s.handleUserAppUI)
 	s.mux.HandleFunc("GET /market/", s.handleUserAppUI)
+	s.mux.Handle("GET /markdown-assets/", http.StripPrefix("/markdown-assets/", markdownAssetFileServer(web.MarkdownAssetsFS())))
 	s.mux.HandleFunc("GET /skill/hostctl-deploy.zip", s.handleSkillDownload)
 	s.mux.HandleFunc("GET /skill/pagep.zip", s.handleSkillDownload)
 	// admin 子资源（admin.css / admin.js 等）从 embed 子树取
-	s.mux.Handle("GET /admin/static/", http.StripPrefix("/admin/static/", http.FileServer(http.FS(web.AdminSubFS()))))
+	s.mux.Handle("GET /admin/static/", http.StripPrefix("/admin/static/", adminAssetFileServer(web.AdminSubFS())))
 
 	// dev 模式：把已部署站点 serve 起来（生产由 Caddy 做）。
 	// 路径模式优先级：/api/*、/admin、/admin/* 已被前面注册占用。
@@ -443,8 +464,11 @@ func (s *Server) withMiddleware(h http.Handler) http.Handler {
 		// 把 reqID 放进 context，handler 可以取出加到错误响应里
 		r = r.WithContext(withRequestID(r.Context(), reqID))
 
-		s.applyCORS(w, r)
-		if r.Method == http.MethodOptions {
+		corsManaged := isCORSManagedPath(r.URL.Path)
+		if corsManaged {
+			s.applyCORS(w, r)
+		}
+		if corsManaged && r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -458,6 +482,10 @@ func (s *Server) withMiddleware(h http.Handler) http.Handler {
 
 		s.logger.Printf("%s %s %s %dms", r.Method, r.URL.Path, reqID, time.Since(start).Milliseconds())
 	})
+}
+
+func isCORSManagedPath(path string) bool {
+	return strings.HasPrefix(path, "/api/") || path == "/openapi.json"
 }
 
 func (s *Server) tryServeDomainApp(w http.ResponseWriter, r *http.Request) bool {
@@ -540,89 +568,105 @@ func (s *Server) maxRequestBodyBytes() int64 {
 // handleDeploy 处理 POST /api/deploy。
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	var req DeployRequest
+	var ownerTokenID string
+	var anonymousSessionID string
+	var userID string
+	actorIsAdmin := false
+	writeDeployError := func(apiErr *APIError) {
+		actorType, actorID, actorRole := s.auditActorFromRequest(r)
+		if ownerTokenID != "" {
+			actorType, actorID, actorRole = auditActorFromOwner(ownerTokenID, actorIsAdmin)
+		}
+		action := "deploy.create"
+		if req.CreateVersion {
+			action = "deploy.version.create"
+		}
+		siteCode := strings.TrimSpace(req.CustomCode)
+		s.recordAuditLogWithResult(r, actorType, actorID, actorRole, action, siteCode, "site", siteCode, "failed", deployFailureAuditDetail(req, apiErr))
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 
 	if r.Method != http.MethodPost {
-		writeError(w, apiErrWithReqID(NewError(CodeMethodNotAllowed, "method",
-			fmt.Sprintf("method %s not allowed; use POST", r.Method)), reqID))
+		writeDeployError(NewError(CodeMethodNotAllowed, "method",
+			fmt.Sprintf("method %s not allowed; use POST", r.Method)))
 		return
 	}
 
 	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxRequestBodyBytes())
 
-	var req DeployRequest
 	if strings.HasPrefix(ct, "application/json") {
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json",
-				fmt.Sprintf("invalid JSON body: %v", err)), reqID))
+			writeDeployError(NewError(CodeInvalidInput, "parse_json",
+				fmt.Sprintf("invalid JSON body: %v", err)))
 			return
 		}
 	} else if strings.HasPrefix(ct, "multipart/form-data") {
 		parsed, apiErr := s.decodeDeployMultipart(r)
 		if apiErr != nil {
-			writeError(w, apiErrWithReqID(apiErr, reqID))
+			writeDeployError(apiErr)
 			return
 		}
 		req = parsed
 	} else {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "content_type",
-			"Content-Type must be application/json or multipart/form-data"), reqID))
+		writeDeployError(NewError(CodeInvalidInput, "content_type",
+			"Content-Type must be application/json or multipart/form-data"))
 		return
 	}
 
-	var ownerTokenID string
-	var anonymousSessionID string
-	var userID string
 	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
 		tok, authErr := s.authenticateToken(r)
 		if authErr != nil {
-			writeError(w, apiErrWithReqID(authErr, reqID))
+			writeDeployError(authErr)
 			return
 		}
+		actorIsAdmin = tok.IsAdmin
 		ownerTokenID = ownerForToken(tok)
 		if tok.OwnerUserID != "" {
 			user, userErr := s.auth.GetUser(r.Context(), tok.OwnerUserID)
 			if userErr != nil || !user.IsActive {
-				writeError(w, apiErrWithReqID(NewError(CodeForbidden, "user", "token owner is inactive or missing"), reqID))
+				writeDeployError(NewError(CodeForbidden, "user", "token owner is inactive or missing"))
 				return
 			}
 			if !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
-				writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "user_quota",
+				writeDeployError(NewError(CodeUnauthorized, "user_quota",
 					fmt.Sprintf("user deploy limit reached (%d/%d)", user.DeployCount, user.DeployLimit)).
-					WithHint("Ask an admin to raise your deploy quota."), reqID))
+					WithHint("Ask an admin to raise your deploy quota."))
 				return
 			}
 			userID = user.ID
 		}
 	} else if user, ok := s.adminUserFromCookie(r); ok {
+		userID = user.ID
+		actorIsAdmin = user.IsAdmin
+		ownerTokenID = "user:" + user.ID
 		if !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
-			writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "user_quota",
+			writeDeployError(NewError(CodeUnauthorized, "user_quota",
 				fmt.Sprintf("user deploy limit reached (%d/%d)", user.DeployCount, user.DeployLimit)).
-				WithHint("Ask an admin to raise your deploy quota."), reqID))
+				WithHint("Ask an admin to raise your deploy quota."))
 			return
 		}
-		userID = user.ID
-		ownerTokenID = "user:" + user.ID
 	} else {
 		sess, sessionErr := s.ensureAnonymousSession(w, r)
 		if sessionErr != nil {
-			writeError(w, apiErrWithReqID(sessionErr, reqID))
-			return
-		}
-		if s.cfg.AnonymousDeployLimit >= 0 && sess.DeployCount >= s.cfg.AnonymousDeployLimit {
-			writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "anonymous_quota",
-				fmt.Sprintf("anonymous deploy limit reached (%d/%d)", sess.DeployCount, s.cfg.AnonymousDeployLimit)).
-				WithHint("Ask the user to register or sign in, create a user token, then claim this anonymous session."), reqID))
+			writeDeployError(sessionErr)
 			return
 		}
 		anonymousSessionID = sess.ID
 		ownerTokenID = "anon:" + sess.ID
+		if s.cfg.AnonymousDeployLimit >= 0 && sess.DeployCount >= s.cfg.AnonymousDeployLimit {
+			writeDeployError(NewError(CodeUnauthorized, "anonymous_quota",
+				fmt.Sprintf("anonymous deploy limit reached (%d/%d)", sess.DeployCount, s.cfg.AnonymousDeployLimit)).
+				WithHint("Ask the user to register or sign in, create a user token, then claim this anonymous session."))
+			return
+		}
 	}
 	if req.EnableCustomCode && strings.TrimSpace(req.CustomCode) != "" {
 		if apiErr := s.authorizeDeployCustomCode(r, strings.TrimSpace(req.CustomCode), ownerTokenID); apiErr != nil {
-			writeError(w, apiErrWithReqID(apiErr, reqID))
+			writeDeployError(apiErr)
 			return
 		}
 	}
@@ -630,7 +674,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 	resp, apiErr := s.deployer.Deploy(r.Context(), req, ownerTokenID, clientIP)
 	if apiErr != nil {
-		writeError(w, apiErrWithReqID(apiErr, reqID))
+		writeDeployError(apiErr)
 		return
 	}
 	if anonymousSessionID != "" {
@@ -645,6 +689,23 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.rewriteDeployResponseURLs(r, resp)
+	actorType, actorID, actorRole := auditActorFromOwner(ownerTokenID, actorIsAdmin)
+	action := "deploy.create"
+	if req.CreateVersion {
+		action = "deploy.version.create"
+	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, action, resp.Code, "site", resp.Code, map[string]any{
+		"versionNumber":         resp.VersionNumber,
+		"versionId":             resp.VersionID,
+		"visibility":            resp.Visibility,
+		"customCode":            req.EnableCustomCode,
+		"createVersion":         req.CreateVersion,
+		"accessProtected":       strings.TrimSpace(req.AccessPassword) != "",
+		"title":                 req.Title,
+		"filename":              req.Filename,
+		"templateSourceCode":    req.TemplateSourceCode,
+		"templateSourceVersion": req.TemplateSourceVersion,
+	})
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -676,6 +737,14 @@ func (s *Server) decodeDeployMultipart(r *http.Request) (DeployRequest, *APIErro
 	req.CreateVersion = parseBoolForm(firstMultipartValue(r.MultipartForm, "createVersion"))
 	if !req.CreateVersion {
 		req.CreateVersion = parseBoolForm(firstMultipartValue(r.MultipartForm, "create_version"))
+	}
+	req.TemplateSourceCode = firstMultipartValue(r.MultipartForm, "templateSourceCode")
+	if req.TemplateSourceCode == "" {
+		req.TemplateSourceCode = firstMultipartValue(r.MultipartForm, "template_source_code")
+	}
+	req.TemplateSourceVersion = parseInt64Form(firstMultipartValue(r.MultipartForm, "templateSourceVersion"))
+	if req.TemplateSourceVersion <= 0 {
+		req.TemplateSourceVersion = parseInt64Form(firstMultipartValue(r.MultipartForm, "template_source_version"))
 	}
 	if tags := firstMultipartValue(r.MultipartForm, "tags"); strings.TrimSpace(tags) != "" {
 		for _, tag := range strings.Split(tags, ",") {
@@ -714,6 +783,18 @@ func parseBoolForm(value string) bool {
 	default:
 		return false
 	}
+}
+
+func parseInt64Form(value string) int64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func deployFilesFromMultipart(form *multipart.Form) ([]DeployFile, *APIError) {
@@ -804,8 +885,19 @@ func (s *Server) handleClaimAnonymousSession(w http.ResponseWriter, r *http.Requ
 	if sessionID == "" {
 		sessionID = anonymousSessionIDFromRequest(r)
 	}
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+userID, false)
+	claimDetail := map[string]any{
+		"userId":    userID,
+		"sessionId": sessionID,
+		"source":    "explicit",
+		"auto":      false,
+	}
+	writeClaimError := func(apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "anonymous.claim", "", "anonymous_session", sessionID, claimDetail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	if sessionID == "" {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "anonymous_session", "sessionId is required"), reqID))
+		writeClaimError(NewError(CodeInvalidInput, "anonymous_session", "sessionId is required"))
 		return
 	}
 	result, err := s.deployer.ClaimAnonymousSession(r.Context(), sessionID, userID)
@@ -814,10 +906,22 @@ func (s *Server) handleClaimAnonymousSession(w http.ResponseWriter, r *http.Requ
 		if errors.Is(err, store.ErrNotFound) {
 			code = CodeNotFound
 		}
-		writeError(w, apiErrWithReqID(NewError(code, "anonymous_session", err.Error()), reqID))
+		writeClaimError(NewError(code, "anonymous_session", err.Error()))
 		return
 	}
 	clearAnonymousSessionCookie(w)
+	claimDetail["siteCount"] = result.SiteCount
+	claimDetail["deployCount"] = result.DeployCount
+	claimDetail["alreadyClaimed"] = result.AlreadyClaimed
+	s.recordAuditLog(r, actorType, actorID, actorRole, "anonymous.claim", "", "anonymous_session", result.SessionID, map[string]any{
+		"userId":         result.UserID,
+		"sessionId":      result.SessionID,
+		"siteCount":      result.SiteCount,
+		"deployCount":    result.DeployCount,
+		"alreadyClaimed": result.AlreadyClaimed,
+		"source":         "explicit",
+		"auto":           false,
+	})
 	writeJSON(w, http.StatusOK, SessionClaimResponse{
 		Success:        true,
 		SessionID:      result.SessionID,
@@ -990,34 +1094,43 @@ var _ = errors.Is
 // marketplaceDeployResponse 是 GET /api/deploys 列表里单条记录的 JSON 形态，
 // 字段命名保持稳定，便于前端和 Agent 复用。
 type marketplaceDeployResponse struct {
-	ID                     string   `json:"id"`
-	Code                   string   `json:"code"`
-	Owned                  bool     `json:"owned,omitempty"`
-	CanManage              bool     `json:"canManage,omitempty"`
-	CurrentVersionID       *string  `json:"currentVersionId,omitempty"`
-	PrimaryVersionStrategy string   `json:"primaryVersionStrategy"`
-	Title                  string   `json:"title"`
-	Description            string   `json:"description"`
-	Filename               string   `json:"filename"`
-	FilePath               string   `json:"filePath"`
-	FileSize               int64    `json:"fileSize"`
-	QrCodePath             string   `json:"qrCodePath"`
-	PrimaryVersionID       *string  `json:"primaryVersionId"`
-	CreatedAt              string   `json:"createdAt"`
-	UpdatedAt              string   `json:"updatedAt"`
-	ViewCount              int64    `json:"viewCount"`
-	LikeCount              int64    `json:"likeCount"`
-	FavoriteCount          int64    `json:"favoriteCount"`
-	Favorited              bool     `json:"favorited"`
-	VersionCount           int      `json:"versionCount"`
-	ExpiresAt              *string  `json:"expiresAt"`
-	Status                 string   `json:"status"`
-	Visibility             string   `json:"visibility"`
-	Category               string   `json:"category,omitempty"`
-	Tags                   []string `json:"tags,omitempty"`
-	AccessProtected        bool     `json:"accessProtected"`
-	IsPinned               bool     `json:"isPinned"`
-	PinnedAt               *string  `json:"pinnedAt"`
+	ID                     string        `json:"id"`
+	Code                   string        `json:"code"`
+	Owned                  bool          `json:"owned,omitempty"`
+	CanManage              bool          `json:"canManage,omitempty"`
+	CurrentVersionID       *string       `json:"currentVersionId,omitempty"`
+	PrimaryVersionStrategy string        `json:"primaryVersionStrategy"`
+	Title                  string        `json:"title"`
+	Description            string        `json:"description"`
+	Filename               string        `json:"filename"`
+	FilePath               string        `json:"filePath"`
+	FileSize               int64         `json:"fileSize"`
+	QrCodePath             string        `json:"qrCodePath"`
+	PrimaryVersionID       *string       `json:"primaryVersionId"`
+	CreatedAt              string        `json:"createdAt"`
+	UpdatedAt              string        `json:"updatedAt"`
+	ViewCount              int64         `json:"viewCount"`
+	LikeCount              int64         `json:"likeCount"`
+	ReuseCount             int64         `json:"reuseCount"`
+	TemplateSourceCode     string        `json:"templateSourceCode,omitempty"`
+	TemplateSourceVersion  *int64        `json:"templateSourceVersion,omitempty"`
+	FavoriteCount          int64         `json:"favoriteCount"`
+	Favorited              bool          `json:"favorited"`
+	VersionCount           int           `json:"versionCount"`
+	ExpiresAt              *string       `json:"expiresAt"`
+	Status                 string        `json:"status"`
+	Visibility             string        `json:"visibility"`
+	ReusePolicy            string        `json:"reusePolicy"`
+	SourceDownloadPolicy   string        `json:"sourceDownloadPolicy"`
+	SecurityMode           string        `json:"securityMode"`
+	Category               string        `json:"category,omitempty"`
+	Tags                   []string      `json:"tags,omitempty"`
+	AccessProtected        bool          `json:"accessProtected"`
+	IsPinned               bool          `json:"isPinned"`
+	PinnedAt               *string       `json:"pinnedAt"`
+	Bundle                 *BundleDetail `json:"bundle,omitempty"`
+	Files                  []ContentFile `json:"files,omitempty"`
+	Reuse                  *ReuseDetail  `json:"reuse,omitempty"`
 }
 
 var marketCategorySlugRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$`)
@@ -1072,7 +1185,8 @@ func (s *Server) handleGetMarketCategories(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleAdminPutMarketCategories(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+	tok, authErr := s.authenticateAdmin(r)
+	if authErr != nil {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
@@ -1081,15 +1195,23 @@ func (s *Server) handleAdminPutMarketCategories(w http.ResponseWriter, r *http.R
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "market_categories", "invalid JSON body"), reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromToken(tok)
+	writeMarketCategoriesError := func(detail map[string]any, apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "config.market_categories", "", "config", "market_categories", detail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	categories, apiErr := NormalizeMarketCategories(req.Categories)
 	if apiErr != nil {
-		writeError(w, apiErrWithReqID(apiErr, reqID))
+		writeMarketCategoriesError(map[string]any{"count": len(req.Categories)}, apiErr)
 		return
 	}
 	if err := s.deployer.SetMarketCategories(r.Context(), categories); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "market_categories", err.Error()), reqID))
+		writeMarketCategoriesError(map[string]any{"count": len(categories)}, NewError(CodeInternal, "market_categories", err.Error()))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "config.market_categories", "", "config", "market_categories", map[string]any{
+		"count": len(categories),
+	})
 	writeJSON(w, http.StatusOK, MarketCategoriesResponse{Success: true, Categories: categories})
 }
 
@@ -1168,7 +1290,9 @@ func (s *Server) handleGetMarketplaceDeploy(w http.ResponseWriter, r *http.Reque
 	}
 
 	actor, isAdmin := s.marketplaceActor(r)
-	writeJSON(w, http.StatusOK, s.toMarketplaceResponse(r, d, actor, isAdmin))
+	resp := s.toMarketplaceResponse(r, d, actor, isAdmin)
+	s.enrichMarketplaceDetail(r, &resp, d.Title, d.CurrentVersion)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleLikeDeploy 处理 POST /api/deploys/{code}/like —— 公开点赞。
@@ -1296,17 +1420,397 @@ func (s *Server) toMarketplaceResponse(r *http.Request, d store.MarketplaceDeplo
 		UpdatedAt:              d.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		ViewCount:              d.ViewCount,
 		LikeCount:              d.LikeCount,
+		ReuseCount:             d.ReuseCount,
+		TemplateSourceCode:     d.TemplateSourceCode,
+		TemplateSourceVersion:  d.TemplateSourceVersion,
 		FavoriteCount:          d.FavoriteCount,
 		Favorited:              d.Favorited,
 		VersionCount:           d.VersionCount,
 		ExpiresAt:              expiresAt,
 		Status:                 d.Status,
 		Visibility:             d.Visibility,
+		ReusePolicy:            normalizeReusePolicy(d.ReusePolicy),
+		SourceDownloadPolicy:   normalizeReusePolicy(d.SourceDownloadPolicy),
+		SecurityMode:           normalizeSiteSecurityMode(d.SecurityMode),
 		Category:               d.Category,
 		Tags:                   splitSiteTags(d.Tags),
 		AccessProtected:        d.AccessProtected,
 		IsPinned:               d.IsPinned,
 		PinnedAt:               pinnedAt,
+	}
+}
+
+type detailReusePolicy struct {
+	CanManage            bool
+	AccessProtected      bool
+	Visibility           string
+	Status               string
+	ReusePolicy          string
+	SourceDownloadPolicy string
+	SecurityMode         string
+}
+
+func (s *Server) enrichMarketplaceDetail(r *http.Request, resp *marketplaceDeployResponse, title string, versionPtr *int64) {
+	policy := detailReusePolicy{
+		CanManage:            resp.CanManage,
+		AccessProtected:      resp.AccessProtected,
+		Visibility:           resp.Visibility,
+		Status:               resp.Status,
+		ReusePolicy:          resp.ReusePolicy,
+		SourceDownloadPolicy: resp.SourceDownloadPolicy,
+		SecurityMode:         resp.SecurityMode,
+	}
+	bundle, files, reuse, apiErr := s.deployDetailExtras(r, resp.Code, title, versionPtr, policy)
+	if apiErr != nil {
+		s.logger.Printf("failed to enrich marketplace detail code=%s: %s", resp.Code, apiErr.Detail)
+		return
+	}
+	resp.Bundle = bundle
+	resp.Files = files
+	resp.Reuse = reuse
+}
+
+func (s *Server) deployDetailExtras(r *http.Request, code, title string, versionPtr *int64, policy detailReusePolicy) (*BundleDetail, []ContentFile, *ReuseDetail, *APIError) {
+	content, apiErr := s.deployer.GetContent(r.Context(), code, versionPtr)
+	if apiErr != nil {
+		return nil, nil, nil, apiErr
+	}
+	files := contentFilesWithoutBody(content.Files)
+	bundle := s.bundleDetailForContent(r.Context(), code, content, files, policy.SecurityMode)
+	reuse := s.reuseDetailForContent(r, code, title, content, policy)
+	return bundle, files, reuse, nil
+}
+
+func contentFilesWithoutBody(files []ContentFile) []ContentFile {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]ContentFile, 0, len(files))
+	for _, file := range files {
+		file.Content = ""
+		out = append(out, file)
+	}
+	return out
+}
+
+func (s *Server) bundleDetailForContent(ctx context.Context, code string, content *GetContentResponse, files []ContentFile, siteSecurityMode string) *BundleDetail {
+	if content == nil {
+		return nil
+	}
+	kind := bundleKindFromFiles(files, content.MainEntry, "")
+	root := ""
+	securityMode := defaultSecurityMode(kind)
+	tree := treeJSONFromFiles(files)
+	if reader, ok := s.deployer.(bundleMetadataReader); ok {
+		if meta, err := reader.GetVersionBundle(ctx, code, content.Version); err == nil {
+			if strings.TrimSpace(meta.Kind) != "" {
+				kind = strings.TrimSpace(meta.Kind)
+			}
+			root = strings.TrimSpace(meta.Root)
+			if strings.TrimSpace(meta.MainEntry) != "" {
+				content.MainEntry = strings.TrimSpace(meta.MainEntry)
+			}
+			if strings.TrimSpace(meta.SecurityMode) != "" {
+				securityMode = strings.TrimSpace(meta.SecurityMode)
+			}
+			if raw := strings.TrimSpace(meta.TreeJSON); raw != "" && json.Valid([]byte(raw)) {
+				tree = json.RawMessage(raw)
+			}
+		}
+	}
+	kind = bundleKindFromFiles(files, content.MainEntry, root, kind)
+	siteMode := normalizeSiteSecurityMode(siteSecurityMode)
+	effectiveMode := effectiveSiteSecurityMode(siteMode, securityMode)
+	return &BundleDetail{
+		Kind:                  kind,
+		KindLabel:             bundleKindLabel(kind, root, len(files)),
+		Root:                  root,
+		MainEntry:             content.MainEntry,
+		SecurityMode:          securityMode,
+		SiteSecurityMode:      siteMode,
+		EffectiveSecurityMode: effectiveMode,
+		FileCount:             len(files),
+		TotalSize:             content.TotalSize,
+		Tree:                  tree,
+		EntryNote:             bundleEntryNote(kind, root, content.MainEntry, len(files)),
+	}
+}
+
+func treeJSONFromFiles(files []ContentFile) json.RawMessage {
+	if len(files) == 0 {
+		return json.RawMessage(`[]`)
+	}
+	type treeFile struct {
+		Path     string `json:"path"`
+		Size     int64  `json:"size"`
+		IsBinary bool   `json:"isBinary"`
+		SHA256   string `json:"sha256,omitempty"`
+	}
+	out := make([]treeFile, 0, len(files))
+	for _, file := range files {
+		out = append(out, treeFile{Path: file.Path, Size: file.Size, IsBinary: file.IsBinary, SHA256: file.Sha256})
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return json.RawMessage(`[]`)
+	}
+	return json.RawMessage(b)
+}
+
+func bundleKindFromFiles(files []ContentFile, entry, root string, preferred ...string) string {
+	if isMarkdownEntry(entry) {
+		return "markdown"
+	}
+	if len(preferred) > 0 {
+		switch strings.ToLower(strings.TrimSpace(preferred[0])) {
+		case "markdown":
+			return "markdown"
+		case "single_html", "static_site", "zip_site":
+			return strings.ToLower(strings.TrimSpace(preferred[0]))
+		case "html":
+			if strings.TrimSpace(root) != "" {
+				return "zip_site"
+			}
+			if len(files) <= 1 {
+				return "single_html"
+			}
+			return "static_site"
+		}
+	}
+	if strings.TrimSpace(root) != "" {
+		return "zip_site"
+	}
+	if len(files) <= 1 {
+		return "single_html"
+	}
+	return "static_site"
+}
+
+func isMarkdownEntry(entry string) bool {
+	lower := strings.ToLower(strings.TrimSpace(entry))
+	return strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".markdown")
+}
+
+func defaultSecurityMode(kind string) string {
+	if kind == "markdown" {
+		return "strict"
+	}
+	return "standard"
+}
+
+func bundleKindLabel(kind, root string, fileCount int) string {
+	switch kind {
+	case "markdown":
+		return "Markdown 文档"
+	case "single_html":
+		return "单 HTML"
+	case "static_site":
+		return "多文件静态站点"
+	case "zip_site":
+		return "ZIP 静态站点"
+	case "html":
+		if strings.TrimSpace(root) != "" {
+			return "ZIP 静态站点"
+		}
+		if fileCount <= 1 {
+			return "单 HTML"
+		}
+		return "多文件静态站点"
+	default:
+		if kind == "" {
+			return "未知 Bundle"
+		}
+		return kind
+	}
+}
+
+func bundleEntryNote(kind, root, entry string, fileCount int) string {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		entry = "未识别"
+	}
+	switch kind {
+	case "markdown":
+		return fmt.Sprintf("Markdown 入口为 %s，使用严格渲染策略并隔离用户脚本。", entry)
+	case "single_html":
+		return fmt.Sprintf("单文件 HTML 入口为 %s。", entry)
+	case "static_site":
+		return fmt.Sprintf("多文件静态站点入口为 %s，相对资源按站点目录解析。", entry)
+	case "zip_site":
+		return fmt.Sprintf("ZIP 包已识别站点根目录 %s，入口文件为 %s。", rootOrCurrent(root), entry)
+	case "html":
+		if strings.TrimSpace(root) != "" {
+			return fmt.Sprintf("ZIP 包已识别站点根目录 %s，入口文件为 %s。", rootOrCurrent(root), entry)
+		}
+		if fileCount <= 1 {
+			return fmt.Sprintf("单文件 HTML 入口为 %s。", entry)
+		}
+		return fmt.Sprintf("多文件静态站点入口为 %s，相对资源按站点目录解析。", entry)
+	default:
+		return fmt.Sprintf("入口文件为 %s。", entry)
+	}
+}
+
+func rootOrCurrent(root string) string {
+	if strings.TrimSpace(root) == "" {
+		return "."
+	}
+	return strings.TrimSpace(root)
+}
+
+func (s *Server) reuseDetailForContent(r *http.Request, code, title string, content *GetContentResponse, policy detailReusePolicy) *ReuseDetail {
+	if content == nil {
+		return nil
+	}
+	base := s.requestBaseURL(r)
+	escapedCode := url.QueryEscape(code)
+	downloadURL := fmt.Sprintf("%s/api/deploy/content?code=%s&version=%d&download=1", base, escapedCode, content.Version)
+	detailURL := fmt.Sprintf("%s/api/deploys/%s", base, url.PathEscape(code))
+	allowDownload, allowReuse, policyNote := reusePolicy(policy)
+	if !allowReuse {
+		return &ReuseDetail{
+			DetailURL:     detailURL,
+			AllowReuse:    false,
+			AllowDownload: allowDownload,
+			PolicyNote:    policyNote,
+		}
+	}
+	if !allowDownload {
+		downloadURL = ""
+	}
+	displayTitle := strings.TrimSpace(title)
+	if displayTitle == "" {
+		displayTitle = strings.TrimSpace(content.Title)
+	}
+	if displayTitle == "" {
+		displayTitle = code
+	}
+	outputDir := "pagepilot-template"
+	deployPath := "./pagepilot-template"
+	if len(content.Files) <= 1 {
+		deployPath = "./pagepilot-template/index.html"
+	} else {
+		deployPath = fmt.Sprintf("./pagepilot-template/%s-v%d.zip", code, content.Version)
+	}
+	mcp := map[string]any{
+		"tool":                    "deploy_site",
+		"template_source_code":    code,
+		"template_source_version": content.Version,
+		"reuse_mode":              "new",
+	}
+	return &ReuseDetail{
+		DownloadURL: downloadURL,
+		DetailURL:   detailURL,
+		CLI: fmt.Sprintf(
+			"pagep market show %s\npagep get %s --version %d --download --output ./%s\npagep deploy %s --description \"基于 %s 二次创作\" --title \"新作品标题\" --template-source-code %s --template-source-version %d",
+			code,
+			code,
+			content.Version,
+			outputDir,
+			deployPath,
+			displayTitle,
+			code,
+			content.Version,
+		),
+		AgentPrompt: fmt.Sprintf(
+			"请参考 PagePilot 作品《%s》（code: %s，version: %d）的文件结构和交互方式，基于用户的新需求重新创作。发布新作品时传 templateSourceCode=%s、templateSourceVersion=%d，让 PagePilot 记录模板来源和复用计数。不要直接复制敏感内容。",
+			displayTitle,
+			code,
+			content.Version,
+			code,
+			content.Version,
+		),
+		MCP:                   mcp,
+		AllowReuse:            true,
+		AllowDownload:         allowDownload,
+		PolicyNote:            policyNote,
+		TemplateSourceCode:    code,
+		TemplateSourceVersion: content.Version,
+	}
+}
+
+func reusePolicy(policy detailReusePolicy) (allowDownload, allowReuse bool, note string) {
+	if strings.TrimSpace(policy.Status) != "" && policy.Status != "active" {
+		return false, false, "站点当前未上架，源码下载和模板复用仅限所有者或管理员。"
+	}
+	if policy.AccessProtected {
+		return false, false, "加密作品不提供源码下载和模板复用；如需复用，请先关闭访问密码后再下载。"
+	}
+	if policy.CanManage {
+		return true, true, "你是站点所有者或管理员，可以下载源码并复用为新发布。"
+	}
+	sourcePolicy := normalizeReusePolicy(policy.SourceDownloadPolicy)
+	reusePolicyValue := normalizeReusePolicy(policy.ReusePolicy)
+	sourceAllowed := sourcePolicy == "allow" || (sourcePolicy == "auto" && policy.Visibility == "public" && !policy.AccessProtected)
+	reuseAllowed := reusePolicyValue == "allow" || (reusePolicyValue == "auto" && sourceAllowed)
+	if sourcePolicy == "deny" {
+		sourceAllowed = false
+	}
+	if reusePolicyValue == "deny" {
+		reuseAllowed = false
+	}
+	if sourceAllowed && reuseAllowed {
+		if sourcePolicy == "allow" || reusePolicyValue == "allow" {
+			return true, true, "站点策略已允许源码下载和模板复用。"
+		}
+		return true, true, "公开且未加密的作品可以下载源码并作为模板复用。"
+	}
+	if sourceAllowed {
+		return true, false, "站点策略允许源码下载，但未开放模板复用。"
+	}
+	if policy.Visibility != "public" {
+		return false, false, "不公开站点只允许通过链接浏览，源码下载和模板复用仅限所有者或管理员。"
+	}
+	return false, false, "站点策略未开放源码下载和模板复用。"
+}
+
+func normalizeReusePolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "allow", "deny":
+		return strings.ToLower(strings.TrimSpace(policy))
+	default:
+		return "auto"
+	}
+}
+
+func isReusePolicyInput(policy string) bool {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "auto", "allow", "deny":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeSiteSecurityMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "strict", "compatible", "trusted":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "auto"
+	}
+}
+
+func isSiteSecurityModeInput(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "auto", "strict", "compatible", "trusted":
+		return true
+	default:
+		return false
+	}
+}
+
+func effectiveSiteSecurityMode(siteMode, bundleMode string) string {
+	siteMode = normalizeSiteSecurityMode(siteMode)
+	if siteMode != "auto" {
+		return siteMode
+	}
+	bundleMode = strings.ToLower(strings.TrimSpace(bundleMode))
+	switch bundleMode {
+	case "strict", "compatible", "trusted", "standard":
+		return bundleMode
+	default:
+		return "standard"
 	}
 }
 
@@ -1385,12 +1889,30 @@ func (s *Server) handleSiteAccessLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"success": true})
 		return
 	}
+	versionNumber, apiErr := siteAccessLoginVersion(r, site)
+	if apiErr != nil {
+		s.recordSiteAccessLoginAudit(r, code, 0, "failed", apiErr.Stage)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+		return
+	}
 	if auth.VerifyPassword(req.Password, site.AccessPasswordHash) {
-		setSiteAccessCookie(w, code, site.AccessPasswordHash)
+		setSiteAccessCookie(w, code, site.AccessPasswordHash, versionNumber)
+		s.recordSiteAccessLoginAudit(r, code, versionNumber, "success", "")
 		writeJSON(w, http.StatusOK, map[string]any{"success": true})
 		return
 	}
+	s.recordSiteAccessLoginAudit(r, code, versionNumber, "failed", "incorrect_password")
 	writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "access_password", "password is incorrect"), reqID))
+}
+
+func (s *Server) recordSiteAccessLoginAudit(r *http.Request, code string, versionNumber int64, result string, reason string) {
+	detail := map[string]any{
+		"versionNumber": versionNumber,
+	}
+	if strings.TrimSpace(reason) != "" {
+		detail["reason"] = strings.TrimSpace(reason)
+	}
+	s.recordAuditLogWithResult(r, "browser", "", "public", "site.access_login", code, "site", code, result, detail)
 }
 
 func (s *Server) handleSetSiteAccessPassword(w http.ResponseWriter, r *http.Request) {
@@ -1405,14 +1927,26 @@ func (s *Server) handleSetSiteAccessPassword(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	password := strings.TrimSpace(req.Password)
+	actorType, actorID, actorRole := s.auditActorFromRequest(r)
+	accessPasswordAuditDetail := func() map[string]any {
+		return map[string]any{
+			"accessProtected": password != "",
+		}
+	}
+	writeAccessPasswordError := func(apiErr *APIError) {
+		s.recordAuditLogWithResult(r, actorType, actorID, actorRole, "site.access_password", code, "site", code, "failed",
+			mergeAPIErrorAuditDetail(accessPasswordAuditDetail(), apiErr))
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	if password != "" && len(password) < 4 {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "access_password", "password must be at least 4 characters"), reqID))
+		writeAccessPasswordError(NewError(CodeInvalidInput, "access_password", "password must be at least 4 characters"))
 		return
 	}
 	if err := s.deployer.SetSiteAccessPassword(r.Context(), code, password); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "access_password", err.Error()), reqID))
+		writeAccessPasswordError(NewError(CodeInternal, "access_password", err.Error()))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "site.access_password", code, "site", code, accessPasswordAuditDetail())
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "code": code, "accessProtected": password != ""})
 }
 
@@ -1427,19 +1961,36 @@ func (s *Server) handleSetSiteVisibility(w http.ResponseWriter, r *http.Request)
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
+	rawVisibility := strings.TrimSpace(req.Visibility)
 	visibility := normalizeSiteVisibility(req.Visibility)
+	actorType, actorID, actorRole := s.auditActorFromRequest(r)
+	visibilityAuditDetail := func() map[string]any {
+		value := visibility
+		if value == "" {
+			value = rawVisibility
+		}
+		return map[string]any{
+			"visibility": value,
+		}
+	}
+	writeVisibilityError := func(apiErr *APIError) {
+		s.recordAuditLogWithResult(r, actorType, actorID, actorRole, "site.visibility", code, "site", code, "failed",
+			mergeAPIErrorAuditDetail(visibilityAuditDetail(), apiErr))
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	if visibility == "" {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "visibility", "visibility must be public or unlisted"), reqID))
+		writeVisibilityError(NewError(CodeInvalidInput, "visibility", "visibility must be public or unlisted"))
 		return
 	}
 	if err := s.deployer.SetSiteVisibility(r.Context(), code, visibility); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			writeVisibilityError(NewError(CodeNotFound, "site", "site not found"))
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "visibility", err.Error()), reqID))
+		writeVisibilityError(NewError(CodeInternal, "visibility", err.Error()))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "site.visibility", code, "site", code, visibilityAuditDetail())
 	writeJSON(w, http.StatusOK, SiteVisibilityResponse{Success: true, Code: code, Visibility: visibility})
 }
 
@@ -1454,11 +2005,36 @@ func normalizeSiteVisibility(raw string) string {
 	}
 }
 
-func setSiteAccessCookie(w http.ResponseWriter, code, passwordHash string) {
+func siteAccessLoginVersion(r *http.Request, site store.Site) (int64, *APIError) {
+	raw := strings.TrimSpace(r.URL.Query().Get("version"))
+	if raw == "" {
+		raw = strings.TrimSpace(r.URL.Query().Get("v"))
+	}
+	if raw == "" {
+		return siteAccessCookieVersion(site, nil), nil
+	}
+	version, err := parseInt64(raw)
+	if err != nil || version <= 0 {
+		return 0, NewError(CodeInvalidInput, "version", "version must be a positive integer")
+	}
+	return version, nil
+}
+
+func siteAccessCookieVersion(site store.Site, versionPtr *int64) int64 {
+	if versionPtr != nil && *versionPtr > 0 {
+		return *versionPtr
+	}
+	if site.CurrentVersion != nil && *site.CurrentVersion > 0 {
+		return *site.CurrentVersion
+	}
+	return 0
+}
+
+func setSiteAccessCookie(w http.ResponseWriter, code, passwordHash string, version int64) {
 	expiresAt := time.Now().UTC().Add(siteAccessCookieTTL)
 	http.SetCookie(w, &http.Cookie{
 		Name:     siteAccessCookieName(code),
-		Value:    siteAccessCookieValue(code, passwordHash, expiresAt),
+		Value:    siteAccessCookieValue(code, passwordHash, version, expiresAt),
 		Path:     "/",
 		MaxAge:   int(siteAccessCookieTTL.Seconds()),
 		SameSite: http.SameSiteLaxMode,
@@ -1470,30 +2046,40 @@ func siteAccessCookieName(code string) string {
 	return "pagepilot_access_" + code
 }
 
-func siteAccessCookieValue(code, passwordHash string, expiresAt time.Time) string {
+func siteAccessCookieValue(code, passwordHash string, version int64, expiresAt time.Time) string {
+	versionText := strconv.FormatInt(version, 10)
 	expiresUnix := strconv.FormatInt(expiresAt.Unix(), 10)
-	return expiresUnix + "." + siteAccessCookieSignature(code, passwordHash, expiresUnix)
+	return strings.Join([]string{
+		versionText,
+		expiresUnix,
+		siteAccessCookieSignature(code, passwordHash, versionText, expiresUnix),
+	}, ".")
 }
 
-func siteAccessCookieSignature(code, passwordHash, expiresUnix string) string {
+func siteAccessCookieSignature(code, passwordHash, version, expiresUnix string) string {
 	mac := hmac.New(sha256.New, []byte(passwordHash))
 	_, _ = mac.Write([]byte(code))
+	_, _ = mac.Write([]byte("|"))
+	_, _ = mac.Write([]byte(version))
 	_, _ = mac.Write([]byte("|"))
 	_, _ = mac.Write([]byte(expiresUnix))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func validSiteAccessCookie(value, code, passwordHash string, now time.Time) bool {
+func validSiteAccessCookie(value, code, passwordHash string, version int64, now time.Time) bool {
 	parts := strings.Split(value, ".")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return false
 	}
-	expiresUnix, err := strconv.ParseInt(parts[0], 10, 64)
+	if parts[0] != strconv.FormatInt(version, 10) {
+		return false
+	}
+	expiresUnix, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil || expiresUnix <= now.Unix() {
 		return false
 	}
-	expected := siteAccessCookieSignature(code, passwordHash, parts[0])
-	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(expected)) == 1
+	expected := siteAccessCookieSignature(code, passwordHash, parts[0], parts[1])
+	return subtle.ConstantTimeCompare([]byte(parts[2]), []byte(expected)) == 1
 }
 
 func screenAccessCookieName(code string) string {
@@ -1596,6 +2182,18 @@ func parseIntDefault(s string, def int) int {
 	return n
 }
 
+func parseOptionalRFC3339(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
 // ===== 版本管理处理程序（Day 3） =====
 
 // handleListVersions 处理 GET /api/deploys/{code}/versions。
@@ -1633,11 +2231,16 @@ func (s *Server) handleLock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actorType, actorID, actorRole := s.auditActorFromRequest(r)
+	targetID := strconv.FormatInt(version, 10)
+	detail := map[string]any{"locked": req.Locked}
 	resp, apiErr := s.deployer.LockVersion(r.Context(), code, version, req.Locked)
 	if apiErr != nil {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "version.lock", code, "version", targetID, detail, apiErr)
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "version.lock", code, "version", targetID, detail)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1656,6 +2259,22 @@ func (s *Server) handleSetCurrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actorType, actorID, actorRole := s.auditActorFromRequest(r)
+	targetID := ""
+	if req.VersionNumber != nil {
+		targetID = strconv.FormatInt(*req.VersionNumber, 10)
+	} else if strings.TrimSpace(req.VersionID) != "" {
+		targetID = strings.TrimSpace(req.VersionID)
+	}
+	detail := map[string]any{
+		"versionNumber": req.VersionNumber,
+		"versionId":     req.VersionID,
+	}
+	writeCurrentError := func(apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "version.current", code, "version", targetID, detail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
+
 	var resp *SetCurrentResponse
 	var apiErr *APIError
 	switch {
@@ -1664,14 +2283,15 @@ func (s *Server) handleSetCurrent(w http.ResponseWriter, r *http.Request) {
 	case req.VersionID != "":
 		resp, apiErr = s.deployer.SwitchCurrentByUUID(r.Context(), code, req.VersionID)
 	default:
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-			"provide either 'versionNumber' or 'versionId'"), reqID))
+		writeCurrentError(NewError(CodeInvalidInput, "validate",
+			"provide either 'versionNumber' or 'versionId'"))
 		return
 	}
 	if apiErr != nil {
-		writeError(w, apiErrWithReqID(apiErr, reqID))
+		writeCurrentError(apiErr)
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "version.current", code, "version", strconv.FormatInt(resp.CurrentVersion, 10), detail)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1691,6 +2311,8 @@ func (s *Server) handlePatchVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	actorType, actorID, actorRole := s.auditActorFromRequest(r)
+	targetID := strconv.FormatInt(version, 10)
 
 	if ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))); !strings.HasPrefix(ct, "application/json") {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "content_type",
@@ -1708,16 +2330,21 @@ func (s *Server) handlePatchVersion(w http.ResponseWriter, r *http.Request) {
 
 	if statusVal, hasStatus := raw["status"]; hasStatus {
 		status, ok := statusVal.(string)
+		detail := map[string]any{"status": status}
 		if !ok {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"'status' must be a string"), reqID))
+			detail["statusType"] = fmt.Sprintf("%T", statusVal)
+			apiErr := NewError(CodeInvalidInput, "validate", "'status' must be a string")
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "version.status", code, "version", targetID, detail, apiErr)
+			writeError(w, apiErrWithReqID(apiErr, reqID))
 			return
 		}
 		resp, apiErr := s.deployer.SetVersionStatus(r.Context(), code, version, status)
 		if apiErr != nil {
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "version.status", code, "version", targetID, detail, apiErr)
 			writeError(w, apiErrWithReqID(apiErr, reqID))
 			return
 		}
+		s.recordAuditLog(r, actorType, actorID, actorRole, "version.status", code, "version", targetID, detail)
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -1730,12 +2357,24 @@ func (s *Server) handlePatchVersion(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("invalid OverwriteRequest: %v", err)), reqID))
 		return
 	}
+	overwriteDetail := map[string]any{
+		"description":  req.Description,
+		"title":        req.Title,
+		"filename":     req.Filename,
+		"fileCount":    len(req.Files),
+		"contentBytes": len(req.Content),
+	}
 	resp, apiErr := s.deployer.OverwriteVersion(r.Context(), code, version, req)
 	if apiErr != nil {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "version.overwrite", code, "version", targetID, overwriteDetail, apiErr)
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 	s.rewriteDeployResponseURLs(r, resp)
+	s.recordAuditLog(r, actorType, actorID, actorRole, "version.overwrite", code, "version", strconv.FormatInt(version, 10), map[string]any{
+		"newVersionNumber": resp.VersionNumber,
+		"versionId":        resp.VersionID,
+	})
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1751,11 +2390,15 @@ func (s *Server) handleDeleteVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	actorType, actorID, actorRole := s.auditActorFromRequest(r)
+	targetID := strconv.FormatInt(version, 10)
 	resp, apiErr := s.deployer.DeleteVersion(r.Context(), code, version)
 	if apiErr != nil {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "version.delete", code, "version", targetID, nil, apiErr)
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "version.delete", code, "version", targetID, nil)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1782,19 +2425,27 @@ func (s *Server) handleGetContent(w http.ResponseWriter, r *http.Request) {
 		}
 		versionPtr = &v
 	}
+	download, _ := parseBoolParam(q.Get("download"))
+	downloadDetail := sourceDownloadAuditDetail(download, versionPtr)
+	actorType, actorID, actorRole := s.auditActorFromRequest(r)
 
-	if !s.siteAccessAllowed(r, code, versionPtr) {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "access_password",
-			"this site is password protected"), reqID))
+	if apiErr := s.authorizeSourceContentRead(r, code); apiErr != nil {
+		if download {
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "source_download", code, "site", code, downloadDetail, apiErr)
+		}
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 
 	// download 模式
-	if dl, _ := parseBoolParam(q.Get("download")); dl {
+	if download {
 		if apiErr := s.deployer.StreamDownload(r.Context(), code, versionPtr, w); apiErr != nil {
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "source_download", code, "site", code, downloadDetail, apiErr)
 			// 此时响应头可能已写，但出错时一般没写。
 			writeError(w, apiErrWithReqID(apiErr, reqID))
+			return
 		}
+		s.recordAuditLog(r, actorType, actorID, actorRole, "source_download", code, "site", code, downloadDetail)
 		return
 	}
 
@@ -1804,6 +2455,14 @@ func (s *Server) handleGetContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func sourceDownloadAuditDetail(download bool, versionPtr *int64) map[string]any {
+	detail := map[string]any{"download": download}
+	if versionPtr != nil {
+		detail["version"] = *versionPtr
+	}
+	return detail
 }
 
 // parseBoolParam 把 "1"/"true"/"yes"（大小写不敏感）识别为 true。
@@ -1932,42 +2591,66 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	if ownerUserID == "" {
 		ownerUserID = requesterUserID
 	}
+	actorOwner := ""
+	if requesterUserID != "" {
+		actorOwner = "user:" + requesterUserID
+	}
+	actorType, actorID, actorRole := auditActorFromOwner(actorOwner, isRequesterAdmin)
+	tokenCreateDetail := func() map[string]any {
+		return map[string]any{
+			"label":       strings.TrimSpace(req.Label),
+			"isAdmin":     req.IsAdmin,
+			"ownerUserId": ownerUserID,
+			"expiresAt":   strings.TrimSpace(req.ExpiresAt),
+			"ttlSeconds":  req.TTLSeconds,
+		}
+	}
+	writeTokenCreateError := func(apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "token.create", "", "token", "", tokenCreateDetail(), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	if !isRequesterAdmin {
 		if req.IsAdmin {
-			writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "admin account required to create admin tokens"), reqID))
+			writeTokenCreateError(NewError(CodeForbidden, "auth", "admin account required to create admin tokens"))
 			return
 		}
 		if ownerUserID == "" {
-			writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "token must belong to your user account"), reqID))
+			writeTokenCreateError(NewError(CodeForbidden, "auth", "token must belong to your user account"))
 			return
 		}
 		if ownerUserID != requesterUserID {
-			writeError(w, apiErrWithReqID(NewError(CodeForbidden, "owner", "you can only create tokens for your own user account"), reqID))
+			writeTokenCreateError(NewError(CodeForbidden, "owner", "you can only create tokens for your own user account"))
 			return
 		}
 	}
 	if ownerUserID != "" {
 		if user, err := s.auth.GetUser(r.Context(), ownerUserID); err != nil || !user.IsActive {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "owner", "ownerUserId is not an active user"), reqID))
+			writeTokenCreateError(NewError(CodeInvalidInput, "owner", "ownerUserId is not an active user"))
 			return
 		}
 	}
 	if ownerUserID == "" {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "owner", "token must belong to a user"), reqID))
+		writeTokenCreateError(NewError(CodeInvalidInput, "owner", "token must belong to a user"))
 		return
 	}
 	expiresAt, parseErr := parseTokenExpiresAt(req)
 	if parseErr != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "expiresAt", parseErr.Error()), reqID))
+		writeTokenCreateError(NewError(CodeInvalidInput, "expiresAt", parseErr.Error()))
 		return
 	}
 
 	gen, err := s.auth.Generate(r.Context(), strings.TrimSpace(req.Label), req.IsAdmin, ownerUserID, expiresAt)
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "create_token",
-			fmt.Sprintf("failed to create token: %v", err)), reqID))
+		writeTokenCreateError(NewError(CodeInvalidInput, "create_token",
+			fmt.Sprintf("failed to create token: %v", err)))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "token.create", "", "token", gen.ID, map[string]any{
+		"label":       gen.Label,
+		"isAdmin":     gen.IsAdmin,
+		"ownerUserId": gen.OwnerUserID,
+		"expiresAt":   gen.ExpiresAt,
+	})
 	writeJSON(w, http.StatusOK, TokenCreateResponse{
 		Success:     true,
 		ID:          gen.ID,
@@ -2078,18 +2761,34 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 			"missing token id in path"), reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromOwner(actor, isAdmin)
+	tokenRevokeDetail := func(target store.Token) map[string]any {
+		return map[string]any{
+			"ownerUserId": target.OwnerUserID,
+			"isAdmin":     target.IsAdmin,
+		}
+	}
 	if !isAdmin {
 		tok, err := s.auth.GetToken(r.Context(), id)
 		if err != nil || tok.OwnerUserID != actorUserID {
-			writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "you can only revoke your own tokens"), reqID))
+			apiErr := NewError(CodeForbidden, "auth", "you can only revoke your own tokens")
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "token.revoke", "", "token", id, tokenRevokeDetail(tok), apiErr)
+			writeError(w, apiErrWithReqID(apiErr, reqID))
 			return
 		}
 	}
+	targetToken, _ := s.auth.GetToken(r.Context(), id)
 	if err := s.auth.Revoke(r.Context(), id); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeNotFound, "revoke_token",
-			fmt.Sprintf("token %q not found or already revoked", id)), reqID))
+		apiErr := NewError(CodeNotFound, "revoke_token",
+			fmt.Sprintf("token %q not found or already revoked", id))
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "token.revoke", "", "token", id, tokenRevokeDetail(targetToken), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "token.revoke", "", "token", id, map[string]any{
+		"ownerUserId": targetToken.OwnerUserID,
+		"isAdmin":     targetToken.IsAdmin,
+	})
 	writeJSON(w, http.StatusOK, TokenRevokeResponse{Success: true, ID: id})
 }
 
@@ -2170,8 +2869,9 @@ func (s *Server) siteAccessAllowed(r *http.Request, code string, versionPtr *int
 	if err != nil || site.AccessPasswordHash == "" {
 		return true
 	}
+	versionNumber := siteAccessCookieVersion(site, versionPtr)
 	if c, err := r.Cookie(siteAccessCookieName(code)); err == nil &&
-		validSiteAccessCookie(c.Value, code, site.AccessPasswordHash, time.Now()) {
+		validSiteAccessCookie(c.Value, code, site.AccessPasswordHash, versionNumber, time.Now()) {
 		return true
 	}
 	if s.validScreenAccessCookie(r, code, versionPtr, time.Now()) {
@@ -2189,9 +2889,13 @@ func (s *Server) renderAccessPasswordPage(w http.ResponseWriter, code string) {
 	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>需要访问密码 - PagePilot</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f6fbff;color:#0f172a;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100%% - 32px));border:1px solid #dbeafe;border-radius:16px;background:#fff;box-shadow:0 22px 60px rgba(14,116,144,.12);padding:24px}h1{margin:0;font-size:22px}.muted{color:#64748b;line-height:1.7}input{width:100%%;height:42px;border:1px solid #cbd5e1;border-radius:10px;padding:0 12px;font:inherit}button{width:100%%;height:42px;margin-top:12px;border:0;border-radius:10px;background:#0284c7;color:white;font-weight:800;cursor:pointer}.err{min-height:20px;color:#be123c;font-size:13px}</style></head><body><form class="card" id="f"><h1>这个网页已加密</h1><p class="muted">请输入访问密码后继续查看。</p><input id="p" type="password" autocomplete="current-password" placeholder="访问密码" autofocus><button type="submit">进入网页</button><p class="err" id="e"></p></form><script>document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();const r=await fetch("/api/deploys/%s/access",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:document.getElementById("p").value})});if(r.ok) location.reload(); else document.getElementById("e").textContent="密码不正确";});</script></body></html>`, code)
 }
 
-func (s *Server) renderAccessPasswordPageV2(w http.ResponseWriter, code string) {
+func (s *Server) renderAccessPasswordPageV2(w http.ResponseWriter, code string, versionPtr *int64) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
+	accessPath := fmt.Sprintf("/api/deploys/%s/access", url.PathEscape(code))
+	if versionPtr != nil && *versionPtr > 0 {
+		accessPath += "?version=" + strconv.FormatInt(*versionPtr, 10)
+	}
 	_, _ = fmt.Fprintf(w, `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -2226,7 +2930,7 @@ form.addEventListener("submit",async e=>{
   btn.disabled=true;
   btn.textContent="验证中...";
   try{
-    const r=await fetch("/api/deploys/%s/access",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:document.getElementById("p").value})});
+    const r=await fetch("%s",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:document.getElementById("p").value})});
     if(r.ok){location.reload();return}
     err.textContent="密码不正确，请重新输入。";
   }catch(_){
@@ -2238,7 +2942,7 @@ form.addEventListener("submit",async e=>{
 });
 </script>
 </body>
-</html>`, code)
+</html>`, accessPath)
 }
 
 func (s *Server) authenticateActor(r *http.Request) (string, bool, *APIError) {
@@ -2285,6 +2989,392 @@ func (s *Server) optionalActor(r *http.Request) (string, bool, *APIError) {
 
 func ownerForToken(tok store.Token) string {
 	return "user:" + strings.TrimSpace(tok.OwnerUserID)
+}
+
+func (s *Server) authorizeSourceContentRead(r *http.Request, code string) *APIError {
+	site, err := s.deployer.GetSite(r.Context(), code)
+	if errors.Is(err, store.ErrNotFound) {
+		return NewError(CodeNotFound, "site", "site not found")
+	}
+	if err != nil {
+		return NewError(CodeInternal, "site", err.Error())
+	}
+	if strings.TrimSpace(site.AccessPasswordHash) != "" {
+		return NewError(CodeForbidden, "source_download",
+			"encrypted sites do not allow source download").
+			WithHint("Remove the access password before downloading or reusing the source.")
+	}
+	actor, isAdmin, authErr := s.optionalActor(r)
+	if authErr != nil {
+		return authErr
+	}
+	if isAdmin || (actor != "" && actor == site.OwnerTokenID) {
+		return nil
+	}
+	allowDownload, _, _ := reusePolicy(detailReusePolicy{
+		AccessProtected:      strings.TrimSpace(site.AccessPasswordHash) != "",
+		Visibility:           site.Visibility,
+		Status:               site.Status,
+		ReusePolicy:          site.ReusePolicy,
+		SourceDownloadPolicy: site.SourceDownloadPolicy,
+		SecurityMode:         site.SecurityMode,
+	})
+	if allowDownload {
+		return nil
+	}
+	return NewError(CodeForbidden, "source_download",
+		"source download requires the site owner, an admin, or a public unencrypted site").
+		WithHint("Access passwords allow viewing the page; they do not grant source download permission.")
+}
+
+func auditActorFromToken(tok store.Token) (actorType, actorID, actorRole string) {
+	actorRole = "user"
+	if tok.IsAdmin {
+		actorRole = "admin"
+	}
+	if strings.TrimSpace(tok.OwnerUserID) != "" {
+		return "user", strings.TrimSpace(tok.OwnerUserID), actorRole
+	}
+	if strings.HasPrefix(tok.ID, "admin:") {
+		return "user", strings.TrimPrefix(tok.ID, "admin:"), actorRole
+	}
+	if strings.TrimSpace(tok.ID) != "" {
+		return "token", strings.TrimSpace(tok.ID), actorRole
+	}
+	return "unknown", "", actorRole
+}
+
+func auditActorFromOwner(owner string, isAdmin bool) (actorType, actorID, actorRole string) {
+	actorRole = "user"
+	if isAdmin {
+		actorRole = "admin"
+	}
+	owner = strings.TrimSpace(owner)
+	if strings.HasPrefix(owner, "user:") {
+		return "user", strings.TrimPrefix(owner, "user:"), actorRole
+	}
+	if strings.HasPrefix(owner, "anon:") {
+		return "anonymous", strings.TrimPrefix(owner, "anon:"), "anonymous"
+	}
+	if owner != "" {
+		return "token", owner, actorRole
+	}
+	return "unknown", "", actorRole
+}
+
+func (s *Server) recordAuditLog(r *http.Request, actorType, actorID, actorRole, action, siteCode, targetType, targetID string, detail any) {
+	s.recordAuditLogWithResult(r, actorType, actorID, actorRole, action, siteCode, targetType, targetID, "success", detail)
+}
+
+func (s *Server) recordAuditLogWithResult(r *http.Request, actorType, actorID, actorRole, action, siteCode, targetType, targetID, result string, detail any) {
+	writer, ok := s.deployer.(auditLogWriter)
+	if !ok {
+		return
+	}
+	result = strings.TrimSpace(result)
+	if result == "" {
+		result = "success"
+	}
+	detailJSON := "{}"
+	if detail != nil {
+		if b, err := json.Marshal(detail); err == nil && json.Valid(b) {
+			detailJSON = string(b)
+		}
+	}
+	if err := writer.RecordAuditLog(r.Context(), store.AuditLog{
+		ActorType:  actorType,
+		ActorID:    actorID,
+		ActorRole:  actorRole,
+		Action:     action,
+		Result:     result,
+		SiteCode:   siteCode,
+		TargetType: targetType,
+		TargetID:   targetID,
+		IP:         clientIPFromRequest(r),
+		UserAgent:  strings.TrimSpace(r.UserAgent()),
+		DetailJSON: detailJSON,
+		CreatedAt:  time.Now().UTC(),
+	}); err != nil {
+		s.logger.Printf("failed to record audit log action=%s target=%s/%s: %v", action, targetType, targetID, err)
+	}
+}
+
+func deployFailureAuditDetail(req DeployRequest, apiErr *APIError) map[string]any {
+	detail := apiErrorAuditDetail(apiErr)
+	if filename := strings.TrimSpace(req.Filename); filename != "" {
+		detail["filename"] = filename
+	}
+	if title := strings.TrimSpace(req.Title); title != "" {
+		detail["title"] = title
+	}
+	if description := strings.TrimSpace(req.Description); description != "" {
+		detail["description"] = description
+	}
+	if customCode := strings.TrimSpace(req.CustomCode); customCode != "" {
+		detail["customCode"] = customCode
+	}
+	if visibility := strings.TrimSpace(req.Visibility); visibility != "" {
+		detail["visibility"] = visibility
+	}
+	if source := strings.TrimSpace(req.Source); source != "" {
+		detail["source"] = source
+	}
+	detail["createVersion"] = req.CreateVersion
+	detail["enableCustomCode"] = req.EnableCustomCode
+	detail["fileCount"] = len(req.Files)
+	return detail
+}
+
+func apiErrorAuditDetail(apiErr *APIError) map[string]any {
+	detail := map[string]any{}
+	if apiErr == nil {
+		detail["errorCode"] = string(CodeInternal)
+		detail["detail"] = "unknown error"
+		return detail
+	}
+	detail["errorCode"] = string(apiErr.ErrorCode)
+	if apiErr.Stage != "" {
+		detail["stage"] = apiErr.Stage
+	}
+	if apiErr.Detail != "" {
+		detail["detail"] = apiErr.Detail
+	}
+	if apiErr.Hint != "" {
+		detail["hint"] = apiErr.Hint
+	}
+	if apiErr.RetryAfterSeconds != nil {
+		detail["retryAfterSeconds"] = *apiErr.RetryAfterSeconds
+	}
+	return detail
+}
+
+func mergeAPIErrorAuditDetail(detail map[string]any, apiErr *APIError) map[string]any {
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	for k, v := range apiErrorAuditDetail(apiErr) {
+		detail[k] = v
+	}
+	return detail
+}
+
+func (s *Server) recordFailedAuditLog(
+	r *http.Request,
+	actorType string,
+	actorID string,
+	actorRole string,
+	action string,
+	siteCode string,
+	targetType string,
+	targetID string,
+	detail map[string]any,
+	apiErr *APIError,
+) {
+	s.recordAuditLogWithResult(r, actorType, actorID, actorRole, action, siteCode, targetType, targetID, "failed",
+		mergeAPIErrorAuditDetail(detail, apiErr))
+}
+
+const cspReportMaxBytes = 64 << 10
+
+type cspViolationReport struct {
+	DocumentURI        string `json:"document-uri"`
+	BlockedURI         string `json:"blocked-uri"`
+	ViolatedDirective  string `json:"violated-directive"`
+	EffectiveDirective string `json:"effective-directive"`
+	OriginalPolicy     string `json:"original-policy"`
+	SourceFile         string `json:"source-file"`
+	LineNumber         int    `json:"line-number"`
+	ColumnNumber       int    `json:"column-number"`
+	StatusCode         int    `json:"status-code"`
+	Referrer           string `json:"referrer"`
+	Disposition        string `json:"disposition"`
+	Sample             string `json:"script-sample"`
+}
+
+type reportingAPICSPReport struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
+	Body struct {
+		DocumentURL        string `json:"documentURL"`
+		BlockedURL         string `json:"blockedURL"`
+		EffectiveDirective string `json:"effectiveDirective"`
+		ViolatedDirective  string `json:"violatedDirective"`
+		OriginalPolicy     string `json:"originalPolicy"`
+		SourceFile         string `json:"sourceFile"`
+		LineNumber         int    `json:"lineNumber"`
+		ColumnNumber       int    `json:"columnNumber"`
+		StatusCode         int    `json:"statusCode"`
+		Referrer           string `json:"referrer"`
+		Disposition        string `json:"disposition"`
+		Sample             string `json:"sample"`
+	} `json:"body"`
+}
+
+func (s *Server) handleCSPReport(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, cspReportMaxBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	report, ok := parseCSPViolationReport(body)
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	siteCode := s.siteCodeFromCSPDocumentURI(report.DocumentURI)
+	targetID := firstNonEmpty(report.EffectiveDirective, report.ViolatedDirective, "unknown")
+	s.recordAuditLogWithResult(r, "browser", "", "public", "security.csp_report", siteCode, "csp", targetID, "reported", report.auditDetail())
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func parseCSPViolationReport(body []byte) (cspViolationReport, bool) {
+	var envelope struct {
+		Report cspViolationReport `json:"csp-report"`
+	}
+	if err := json.Unmarshal(body, &envelope); err == nil && !envelope.Report.empty() {
+		return envelope.Report.normalized(), true
+	}
+	var report cspViolationReport
+	if err := json.Unmarshal(body, &report); err == nil && !report.empty() {
+		return report.normalized(), true
+	}
+	var reports []reportingAPICSPReport
+	if err := json.Unmarshal(body, &reports); err == nil {
+		for _, item := range reports {
+			if strings.TrimSpace(item.Type) != "" && strings.TrimSpace(item.Type) != "csp-violation" {
+				continue
+			}
+			report := cspViolationReport{
+				DocumentURI:        firstNonEmpty(item.Body.DocumentURL, item.URL),
+				BlockedURI:         item.Body.BlockedURL,
+				EffectiveDirective: item.Body.EffectiveDirective,
+				ViolatedDirective:  item.Body.ViolatedDirective,
+				OriginalPolicy:     item.Body.OriginalPolicy,
+				SourceFile:         item.Body.SourceFile,
+				LineNumber:         item.Body.LineNumber,
+				ColumnNumber:       item.Body.ColumnNumber,
+				StatusCode:         item.Body.StatusCode,
+				Referrer:           item.Body.Referrer,
+				Disposition:        item.Body.Disposition,
+				Sample:             item.Body.Sample,
+			}
+			if !report.empty() {
+				return report.normalized(), true
+			}
+		}
+	}
+	return cspViolationReport{}, false
+}
+
+func (r cspViolationReport) empty() bool {
+	return strings.TrimSpace(r.DocumentURI) == "" &&
+		strings.TrimSpace(r.BlockedURI) == "" &&
+		strings.TrimSpace(r.ViolatedDirective) == "" &&
+		strings.TrimSpace(r.EffectiveDirective) == ""
+}
+
+func (r cspViolationReport) normalized() cspViolationReport {
+	r.DocumentURI = auditText(r.DocumentURI, 2048)
+	r.BlockedURI = auditText(r.BlockedURI, 2048)
+	r.ViolatedDirective = auditText(r.ViolatedDirective, 256)
+	r.EffectiveDirective = auditText(r.EffectiveDirective, 256)
+	r.OriginalPolicy = auditText(r.OriginalPolicy, 4096)
+	r.SourceFile = auditText(r.SourceFile, 2048)
+	r.Referrer = auditText(r.Referrer, 2048)
+	r.Disposition = auditText(r.Disposition, 64)
+	r.Sample = auditText(r.Sample, 1024)
+	return r
+}
+
+func (r cspViolationReport) auditDetail() map[string]any {
+	detail := map[string]any{
+		"documentUri":        r.DocumentURI,
+		"blockedUri":         r.BlockedURI,
+		"violatedDirective":  r.ViolatedDirective,
+		"effectiveDirective": r.EffectiveDirective,
+		"disposition":        r.Disposition,
+	}
+	if r.OriginalPolicy != "" {
+		detail["originalPolicy"] = r.OriginalPolicy
+	}
+	if r.SourceFile != "" {
+		detail["sourceFile"] = r.SourceFile
+	}
+	if r.LineNumber > 0 {
+		detail["lineNumber"] = r.LineNumber
+	}
+	if r.ColumnNumber > 0 {
+		detail["columnNumber"] = r.ColumnNumber
+	}
+	if r.StatusCode > 0 {
+		detail["statusCode"] = r.StatusCode
+	}
+	if r.Referrer != "" {
+		detail["referrer"] = r.Referrer
+	}
+	if r.Sample != "" {
+		detail["sample"] = r.Sample
+	}
+	return detail
+}
+
+func (s *Server) siteCodeFromCSPDocumentURI(documentURI string) string {
+	u, err := url.Parse(strings.TrimSpace(documentURI))
+	if err != nil {
+		return ""
+	}
+	if strings.HasPrefix(u.Path, "/agent/") {
+		rest := strings.TrimPrefix(u.Path, "/agent/")
+		code := strings.Split(rest, "/")[0]
+		if routeCodeRe.MatchString(code) {
+			return code
+		}
+	}
+	appURL := s.appURLConfig()
+	suffix := strings.TrimSpace(appURL.AppDomainSuffix)
+	if suffix == "" || appURL.AppURLMode == AppURLModePath {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSuffix(stripHostPort(u.Host), "."))
+	needle := "." + suffix
+	if !strings.HasSuffix(host, needle) {
+		return ""
+	}
+	code := strings.TrimSuffix(host, needle)
+	if strings.Contains(code, ".") || !routeCodeRe.MatchString(code) {
+		return ""
+	}
+	return code
+}
+
+func auditText(value string, limit int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\x00", ""))
+	if limit <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (s *Server) auditActorFromRequest(r *http.Request) (string, string, string) {
+	actor, isAdmin, err := s.optionalActor(r)
+	if err != nil {
+		return "unknown", "", "unknown"
+	}
+	return auditActorFromOwner(actor, isAdmin)
 }
 
 func (s *Server) anonymousActor(r *http.Request) (string, bool, *APIError) {
@@ -2351,6 +3441,7 @@ func (s *Server) authorizeDeployCustomCode(r *http.Request, code, owner string) 
 // handleAdminUI 返回单页 admin HTML（embed 进二进制）。
 // 不强制鉴权——UI 内部用 token 调 API；token 错就显示提示。
 func (s *Server) handleAdminUI(w http.ResponseWriter, r *http.Request) {
+	s.setAdminUISecurityHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(web.AdminHTML())
@@ -2431,66 +3522,82 @@ func (s *Server) handleAdminGetSkill(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminUploadSkillPackage(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+	tok, authErr := s.authenticateAdmin(r)
+	if authErr != nil {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromToken(tok)
+	detail := map[string]any{}
+	writeSkillPackageError := func(apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "skill.package_upload", "", "skill_package", "hostctl-deploy.zip", detail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
 	if err := r.ParseMultipartForm(21 << 20); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill_package", "multipart file is required"), reqID))
+		writeSkillPackageError(NewError(CodeInvalidInput, "skill_package", "multipart file is required"))
 		return
 	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill_package", "file field is required"), reqID))
+		writeSkillPackageError(NewError(CodeInvalidInput, "skill_package", "file field is required"))
 		return
 	}
 	defer file.Close()
 	name := strings.ToLower(strings.TrimSpace(header.Filename))
+	detail["filename"] = name
 	if !strings.HasSuffix(name, ".zip") {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill_package", "skill package must be a .zip file"), reqID))
+		writeSkillPackageError(NewError(CodeInvalidInput, "skill_package", "skill package must be a .zip file"))
 		return
 	}
 	data, err := io.ReadAll(file)
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		writeSkillPackageError(NewError(CodeInternal, "skill_package", err.Error()))
 		return
 	}
+	detail["size"] = len(data)
 	if len(data) == 0 || len(data) > 20<<20 {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill_package", "skill package size must be between 1 byte and 20 MB"), reqID))
+		writeSkillPackageError(NewError(CodeInvalidInput, "skill_package", "skill package size must be between 1 byte and 20 MB"))
 		return
 	}
 	if err := validateSkillZip(data); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "skill_package", err.Error()), reqID))
+		writeSkillPackageError(NewError(CodeInvalidInput, "skill_package", err.Error()))
 		return
 	}
 	path := s.managedSkillZipPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		writeSkillPackageError(NewError(CodeInternal, "skill_package", err.Error()))
 		return
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".hostctl-deploy-*.zip")
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		writeSkillPackageError(NewError(CodeInternal, "skill_package", err.Error()))
 		return
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		writeSkillPackageError(NewError(CodeInternal, "skill_package", err.Error()))
 		return
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		writeSkillPackageError(NewError(CodeInternal, "skill_package", err.Error()))
 		return
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "skill_package", err.Error()), reqID))
+		writeSkillPackageError(NewError(CodeInternal, "skill_package", err.Error()))
 		return
 	}
+	sum := sha256.Sum256(data)
+	s.recordAuditLog(r, actorType, actorID, actorRole, "skill.package_upload", "", "skill_package", "hostctl-deploy.zip", map[string]any{
+		"filename": name,
+		"size":     len(data),
+		"sha256":   hex.EncodeToString(sum[:]),
+		"path":     path,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"package": s.skillPackageInfo(),
@@ -2849,31 +3956,52 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
+	registerDetail := func(email string, emailVerified bool) map[string]any {
+		return map[string]any{
+			"username":      strings.TrimSpace(req.Username),
+			"email":         email,
+			"emailVerified": emailVerified,
+		}
+	}
+	writeRegisterError := func(apiErr *APIError, email string, emailVerified bool) {
+		s.recordFailedAuditLog(r, "unknown", "", "public", "auth.register", "", "user", strings.TrimSpace(req.Username),
+			registerDetail(email, emailVerified), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	if !s.verifyCaptcha(req.CaptchaID, req.Captcha) {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "captcha", "captcha is incorrect or expired"), reqID))
+		writeRegisterError(NewError(CodeInvalidInput, "captcha", "captcha is incorrect or expired"), "", false)
 		return
 	}
 	email := normalizeEmail(req.Email)
 	emailVerified := false
 	if s.cfg.EmailVerificationEnabled {
 		if email == "" {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "email", "email is required when email verification is enabled"), reqID))
+			writeRegisterError(NewError(CodeInvalidInput, "email", "email is required when email verification is enabled"), email, false)
 			return
 		}
 		if !s.verifyEmailCode(email, req.EmailCode) {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "email", "email verification code is incorrect or expired"), reqID))
+			writeRegisterError(NewError(CodeInvalidInput, "email", "email verification code is incorrect or expired"), email, false)
 			return
 		}
 		emailVerified = true
 	}
 	user, err := s.auth.CreateUserWithEmail(r.Context(), req.Username, email, emailVerified, req.Password, false, 20)
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "register", "username already exists or password is invalid"), reqID))
+		writeRegisterError(NewError(CodeInvalidInput, "register", "username already exists or password is invalid"), email, emailVerified)
 		return
 	}
-	if s.claimCurrentAnonymousSession(r, user.ID) {
+	anonymousClaimed := s.claimCurrentAnonymousSession(r, user.ID, user.IsAdmin, "register")
+	if anonymousClaimed {
 		clearAnonymousSessionCookie(w)
 	}
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+user.ID, user.IsAdmin)
+	s.recordAuditLog(r, actorType, actorID, actorRole, "auth.register", "", "user", user.ID, map[string]any{
+		"userId":           user.ID,
+		"username":         user.Username,
+		"email":            user.Email,
+		"emailVerified":    user.EmailVerified,
+		"anonymousClaimed": anonymousClaimed,
+	})
 	writeJSON(w, http.StatusOK, RegisterResponse{Success: true, UserID: user.ID, Username: user.Username, Email: user.Email, EmailVerified: user.EmailVerified})
 }
 
@@ -2884,18 +4012,30 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "login required"), reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+user.ID, user.IsAdmin)
+	auditDetail := map[string]any{
+		"userId":   user.ID,
+		"username": user.Username,
+		"self":     true,
+		"isAdmin":  user.IsAdmin,
+	}
 	var req AccountPasswordRequest
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
 	if len(req.NewPassword) < 8 {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "password", "new password must be at least 8 characters"), reqID))
+		apiErr := NewError(CodeInvalidInput, "password", "new password must be at least 8 characters")
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "account.password", "", "user", user.ID, auditDetail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 	if err := s.auth.ChangeUserPassword(r.Context(), user.ID, req.OldPassword, req.NewPassword); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "password", "old password is incorrect"), reqID))
+		apiErr := NewError(CodeUnauthorized, "password", "old password is incorrect")
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "account.password", "", "user", user.ID, auditDetail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "account.password", "", "user", user.ID, auditDetail)
 	writeJSON(w, http.StatusOK, AccountPasswordResponse{Success: true})
 }
 
@@ -2905,18 +4045,35 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
+	loginDetail := func() map[string]any {
+		return map[string]any{
+			"username": strings.TrimSpace(req.Username),
+		}
+	}
+	writeLoginError := func(apiErr *APIError) {
+		s.recordFailedAuditLog(r, "unknown", "", "public", "auth.login", "", "user", strings.TrimSpace(req.Username), loginDetail(), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	if !s.verifyCaptcha(req.CaptchaID, req.Captcha) {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "captcha", "captcha is incorrect or expired"), reqID))
+		writeLoginError(NewError(CodeInvalidInput, "captcha", "captcha is incorrect or expired"))
 		return
 	}
 	res, err := s.auth.LoginAdmin(r.Context(), req.Username, req.Password, 7*24*time.Hour)
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "username or password is incorrect"), reqID))
+		writeLoginError(NewError(CodeUnauthorized, "auth", "username or password is incorrect"))
 		return
 	}
-	if s.claimCurrentAnonymousSession(r, res.User.ID) {
+	anonymousClaimed := s.claimCurrentAnonymousSession(r, res.User.ID, res.User.IsAdmin, "login")
+	if anonymousClaimed {
 		clearAnonymousSessionCookie(w)
 	}
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+res.User.ID, res.User.IsAdmin)
+	s.recordAuditLog(r, actorType, actorID, actorRole, "auth.login", "", "user", res.User.ID, map[string]any{
+		"userId":           res.User.ID,
+		"username":         res.User.Username,
+		"isAdmin":          res.User.IsAdmin,
+		"anonymousClaimed": anonymousClaimed,
+	})
 	setAdminSessionCookie(w, res.Plaintext, int((7 * 24 * time.Hour).Seconds()))
 	mode := "prod"
 	if !s.requireAuth {
@@ -2931,21 +4088,50 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) claimCurrentAnonymousSession(r *http.Request, userID string) bool {
+func (s *Server) claimCurrentAnonymousSession(r *http.Request, userID string, isAdmin bool, source string) bool {
 	sessionID := anonymousSessionIDFromRequest(r)
 	if sessionID == "" {
 		return false
 	}
-	if _, err := s.deployer.ClaimAnonymousSession(r.Context(), sessionID, userID); err != nil {
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+userID, isAdmin)
+	detail := map[string]any{
+		"userId":    userID,
+		"sessionId": sessionID,
+		"source":    source,
+		"auto":      true,
+	}
+	result, err := s.deployer.ClaimAnonymousSession(r.Context(), sessionID, userID)
+	if err != nil {
 		s.logger.Printf("failed to claim anonymous session %s for user %s: %v", sessionID, userID, err)
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "anonymous.claim", "", "anonymous_session", sessionID, detail,
+			NewError(CodeInvalidInput, "anonymous_session", err.Error()))
 		return false
 	}
+	detail["siteCount"] = result.SiteCount
+	detail["deployCount"] = result.DeployCount
+	detail["alreadyClaimed"] = result.AlreadyClaimed
+	s.recordAuditLog(r, actorType, actorID, actorRole, "anonymous.claim", "", "anonymous_session", result.SessionID, detail)
 	return true
 }
 
 func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("hostctl_admin_session"); err == nil {
-		_ = s.auth.RevokeAdminSession(r.Context(), c.Value)
+		if user, _, verifyErr := s.auth.VerifyAdminSession(r.Context(), c.Value); verifyErr == nil {
+			actorType, actorID, actorRole := auditActorFromOwner("user:"+user.ID, user.IsAdmin)
+			detail := map[string]any{
+				"userId":   user.ID,
+				"username": user.Username,
+				"isAdmin":  user.IsAdmin,
+			}
+			if revokeErr := s.auth.RevokeAdminSession(r.Context(), c.Value); revokeErr != nil {
+				s.recordFailedAuditLog(r, actorType, actorID, actorRole, "auth.logout", "", "user", user.ID, detail,
+					NewError(CodeInternal, "auth", revokeErr.Error()))
+			} else {
+				s.recordAuditLog(r, actorType, actorID, actorRole, "auth.logout", "", "user", user.ID, detail)
+			}
+		} else {
+			_ = s.auth.RevokeAdminSession(r.Context(), c.Value)
+		}
 	}
 	setAdminSessionCookie(w, "", -1)
 	writeJSON(w, http.StatusOK, AdminLogoutResponse{Success: true})
@@ -3052,12 +4238,100 @@ func (s *Server) handleAdminAnonymousSessions(w http.ResponseWriter, r *http.Req
 	})
 }
 
+func (s *Server) handleAdminAuditLogs(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	reader, ok := s.deployer.(auditLogReader)
+	if !ok {
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "audit_logs", "audit log store is unavailable"), reqID))
+		return
+	}
+	page := parseIntDefault(r.URL.Query().Get("page"), 1)
+	if page < 1 {
+		page = 1
+	}
+	pageSize := parseIntDefault(r.URL.Query().Get("pageSize"), 50)
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	filter := store.AuditLogFilter{
+		ActorType:  strings.TrimSpace(r.URL.Query().Get("actorType")),
+		ActorID:    strings.TrimSpace(r.URL.Query().Get("actorId")),
+		ActorRole:  strings.TrimSpace(r.URL.Query().Get("actorRole")),
+		Action:     strings.TrimSpace(r.URL.Query().Get("action")),
+		Result:     strings.TrimSpace(r.URL.Query().Get("result")),
+		SiteCode:   strings.TrimSpace(r.URL.Query().Get("siteCode")),
+		TargetType: strings.TrimSpace(r.URL.Query().Get("targetType")),
+		TargetID:   strings.TrimSpace(r.URL.Query().Get("targetId")),
+		Query:      strings.TrimSpace(r.URL.Query().Get("q")),
+		Limit:      pageSize,
+		Offset:     (page - 1) * pageSize,
+	}
+	if rawSince := strings.TrimSpace(r.URL.Query().Get("since")); rawSince != "" {
+		since, err := time.Parse(time.RFC3339, rawSince)
+		if err != nil {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "audit_logs", "since must be RFC3339"), reqID))
+			return
+		}
+		filter.Since = &since
+	}
+	if rawUntil := strings.TrimSpace(r.URL.Query().Get("until")); rawUntil != "" {
+		until, err := time.Parse(time.RFC3339, rawUntil)
+		if err != nil {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "audit_logs", "until must be RFC3339"), reqID))
+			return
+		}
+		filter.Until = &until
+	}
+	logs, total, err := reader.ListAuditLogs(r.Context(), filter)
+	if err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "audit_logs", err.Error()), reqID))
+		return
+	}
+	items := make([]AuditLogListItem, 0, len(logs))
+	for _, log := range logs {
+		detail := json.RawMessage(strings.TrimSpace(log.DetailJSON))
+		if len(detail) == 0 || !json.Valid(detail) {
+			detail = json.RawMessage(`{}`)
+		}
+		items = append(items, AuditLogListItem{
+			ID:         log.ID,
+			ActorType:  log.ActorType,
+			ActorID:    log.ActorID,
+			ActorRole:  log.ActorRole,
+			Action:     log.Action,
+			Result:     log.Result,
+			SiteCode:   log.SiteCode,
+			TargetType: log.TargetType,
+			TargetID:   log.TargetID,
+			IP:         log.IP,
+			UserAgent:  log.UserAgent,
+			Detail:     detail,
+			CreatedAt:  log.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, AuditLogListResponse{
+		Success:  true,
+		Logs:     items,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	})
+}
+
 // handlePutConfig 更新可热修改的运行时配置。
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
 	// 鉴权：运行配置属于后台管理能力，dev 模式也必须登录管理员。
-	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+	tok, authErr := s.authenticateAdmin(r)
+	if authErr != nil {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
@@ -3065,6 +4339,22 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	var req ConfigUpdateRequest
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
+	}
+	actorType, actorID, actorRole := auditActorFromToken(tok)
+	configUpdateAuditDetail := func() map[string]any {
+		return map[string]any{
+			"appURL":               req.AppURLMode != nil || req.AppDomainSuffix != nil || req.AppURLScheme != nil || req.AppURLPort != nil,
+			"anonymousDeployLimit": req.AnonymousDeployLimit != nil,
+			"cooldownSeconds":      req.CooldownSeconds != nil,
+			"uploadLimits":         req.MaxSingleFileBytes != nil || req.MaxSiteTotalBytes != nil || req.MaxFilesPerSite != nil,
+			"corsAllowOrigins":     req.CORSAllowOrigins != nil,
+			"embedPolicy":          req.EmbedPolicy != nil || req.EmbedAllowOrigins != nil,
+		}
+	}
+	writeConfigError := func(apiErr *APIError) {
+		detail := mergeAPIErrorAuditDetail(configUpdateAuditDetail(), apiErr)
+		s.recordAuditLogWithResult(r, actorType, actorID, actorRole, "config.update", "", "config", "runtime", "failed", detail)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 	}
 
 	if req.AppURLMode != nil || req.AppDomainSuffix != nil || req.AppURLScheme != nil || req.AppURLPort != nil {
@@ -3082,25 +4372,25 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			rawPort := strings.TrimSpace(*req.AppURLPort)
 			next.AppURLPort = normalizeAppURLPort(rawPort)
 			if rawPort != "" && next.AppURLPort == "" {
-				writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-					"appURLPort must be a number between 1 and 65535"), reqID))
+				writeConfigError(NewError(CodeInvalidInput, "validate",
+					"appURLPort must be a number between 1 and 65535"))
 				return
 			}
 		}
 		if (next.AppURLMode == AppURLModeDomain || next.AppURLMode == AppURLModeDual) && next.AppDomainSuffix == "" {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"appDomainSuffix is required when appURLMode is domain or dual"), reqID))
+			writeConfigError(NewError(CodeInvalidInput, "validate",
+				"appDomainSuffix is required when appURLMode is domain or dual"))
 			return
 		}
 		setter, ok := s.deployer.(appURLConfigSetter)
 		if !ok {
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
-				"deployer does not support app URL config"), reqID))
+			writeConfigError(NewError(CodeInternal, "set_config",
+				"deployer does not support app URL config"))
 			return
 		}
 		if err := setter.SetAppURLConfig(r.Context(), next); err != nil {
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
-				fmt.Sprintf("failed to persist app URL config: %v", err)), reqID))
+			writeConfigError(NewError(CodeInternal, "set_config",
+				fmt.Sprintf("failed to persist app URL config: %v", err)))
 			return
 		}
 		s.cfg.AppURLMode = next.AppURLMode
@@ -3110,26 +4400,26 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AnonymousDeployLimit != nil {
 		if *req.AnonymousDeployLimit < -1 {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"anonymousDeployLimit must be -1 or greater"), reqID))
+			writeConfigError(NewError(CodeInvalidInput, "validate",
+				"anonymousDeployLimit must be -1 or greater"))
 			return
 		}
 		if err := s.deployer.SetAnonymousDeployLimit(r.Context(), *req.AnonymousDeployLimit); err != nil {
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
-				fmt.Sprintf("failed to persist anonymous limit: %v", err)), reqID))
+			writeConfigError(NewError(CodeInternal, "set_config",
+				fmt.Sprintf("failed to persist anonymous limit: %v", err)))
 			return
 		}
 		s.cfg.AnonymousDeployLimit = *req.AnonymousDeployLimit
 	}
 	if req.CooldownSeconds != nil {
 		if *req.CooldownSeconds < 0 || *req.CooldownSeconds > 3600 {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"cooldownSeconds must be between 0 and 3600"), reqID))
+			writeConfigError(NewError(CodeInvalidInput, "validate",
+				"cooldownSeconds must be between 0 and 3600"))
 			return
 		}
 		if err := s.deployer.SetCooldownSeconds(r.Context(), *req.CooldownSeconds); err != nil {
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
-				fmt.Sprintf("failed to persist cooldown: %v", err)), reqID))
+			writeConfigError(NewError(CodeInternal, "set_config",
+				fmt.Sprintf("failed to persist cooldown: %v", err)))
 			return
 		}
 		s.cfg.CooldownSeconds = *req.CooldownSeconds
@@ -3148,18 +4438,18 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			files = *req.MaxFilesPerSite
 		}
 		if single <= 0 || total <= 0 || files <= 0 {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"upload limits must be positive"), reqID))
+			writeConfigError(NewError(CodeInvalidInput, "validate",
+				"upload limits must be positive"))
 			return
 		}
 		if single > total {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"maxSingleFileBytes cannot exceed maxSiteTotalBytes"), reqID))
+			writeConfigError(NewError(CodeInvalidInput, "validate",
+				"maxSingleFileBytes cannot exceed maxSiteTotalBytes"))
 			return
 		}
 		if err := s.deployer.SetUploadLimits(r.Context(), single, total, files); err != nil {
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
-				fmt.Sprintf("failed to persist upload limits: %v", err)), reqID))
+			writeConfigError(NewError(CodeInternal, "set_config",
+				fmt.Sprintf("failed to persist upload limits: %v", err)))
 			return
 		}
 		s.cfg.MaxSingleFileBytes = single
@@ -3169,19 +4459,19 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if req.CORSAllowOrigins != nil {
 		origins := strings.TrimSpace(*req.CORSAllowOrigins)
 		if origins == "*" {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"corsAllowOrigins no longer supports wildcard *; leave it blank to disable CORS"), reqID))
+			writeConfigError(NewError(CodeInvalidInput, "validate",
+				"corsAllowOrigins no longer supports wildcard *; leave it blank to disable CORS"))
 			return
 		}
 		origins = config.NormalizeCORSAllowOrigins(origins)
 		if origins != "" && !corsOriginsLookValid(origins) {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"corsAllowOrigins must be empty or a comma/newline separated list of http(s) origins"), reqID))
+			writeConfigError(NewError(CodeInvalidInput, "validate",
+				"corsAllowOrigins must be empty or a comma/newline separated list of http(s) origins"))
 			return
 		}
 		if err := s.deployer.SetCORSAllowOrigins(r.Context(), origins); err != nil {
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
-				fmt.Sprintf("failed to persist CORS origins: %v", err)), reqID))
+			writeConfigError(NewError(CodeInternal, "set_config",
+				fmt.Sprintf("failed to persist CORS origins: %v", err)))
 			return
 		}
 		s.cfg.CORSAllowOrigins = origins
@@ -3196,23 +4486,24 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			origins = config.NormalizeOriginList(*req.EmbedAllowOrigins)
 		}
 		if policy == "allowlist" && strings.TrimSpace(origins) == "" {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"embedAllowOrigins is required when embedPolicy is allowlist"), reqID))
+			writeConfigError(NewError(CodeInvalidInput, "validate",
+				"embedAllowOrigins is required when embedPolicy is allowlist"))
 			return
 		}
 		if origins != "" && !corsOriginsLookValid(origins) {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
-				"embedAllowOrigins must be empty or a comma/newline separated list of http(s) origins"), reqID))
+			writeConfigError(NewError(CodeInvalidInput, "validate",
+				"embedAllowOrigins must be empty or a comma/newline separated list of http(s) origins"))
 			return
 		}
 		if err := s.deployer.SetEmbedPolicy(r.Context(), policy, origins); err != nil {
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "set_config",
-				fmt.Sprintf("failed to persist embed policy: %v", err)), reqID))
+			writeConfigError(NewError(CodeInternal, "set_config",
+				fmt.Sprintf("failed to persist embed policy: %v", err)))
 			return
 		}
 		s.cfg.EmbedPolicy = policy
 		s.cfg.EmbedAllowOrigins = origins
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "config.update", "", "config", "runtime", configUpdateAuditDetail())
 	currentBase := s.requestBaseURL(r)
 	writeJSON(w, http.StatusOK, ConfigUpdateResponse{
 		Success:           true,
@@ -3279,7 +4570,8 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+	tok, authErr := s.authenticateAdmin(r)
+	if authErr != nil {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
@@ -3287,9 +4579,23 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromToken(tok)
+	userCreateDetail := func() map[string]any {
+		return map[string]any{
+			"username":      strings.TrimSpace(req.Username),
+			"email":         strings.TrimSpace(req.Email),
+			"emailVerified": req.EmailVerified != nil,
+			"isAdmin":       req.IsAdmin,
+			"deployLimit":   req.DeployLimit,
+		}
+	}
+	writeUserCreateError := func(apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "user.create", "", "user", "", userCreateDetail(), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	email := normalizeEmail(req.Email)
 	if strings.TrimSpace(req.Email) != "" && email == "" {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", "invalid email address"), reqID))
+		writeUserCreateError(NewError(CodeInvalidInput, "users", "invalid email address"))
 		return
 	}
 	emailVerified := email != ""
@@ -3301,22 +4607,47 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.auth.CreateUserWithEmail(r.Context(), req.Username, email, emailVerified, req.Password, req.IsAdmin, req.DeployLimit)
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", err.Error()), reqID))
+		writeUserCreateError(NewError(CodeInvalidInput, "users", err.Error()))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "user.create", "", "user", user.ID, map[string]any{
+		"username":    user.Username,
+		"isAdmin":     user.IsAdmin,
+		"isActive":    user.IsActive,
+		"deployLimit": user.DeployLimit,
+	})
 	writeJSON(w, http.StatusOK, UserCreateResponse{Success: true, User: toUserListItem(user)})
 }
 
 func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+	tok, authErr := s.authenticateAdmin(r)
+	if authErr != nil {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
 	id := r.PathValue("id")
+	actorType, actorID, actorRole := auditActorFromToken(tok)
+	userUpdateDetail := func(req *UserUpdateRequest) map[string]any {
+		detail := map[string]any{}
+		if req == nil {
+			return detail
+		}
+		detail["username"] = req.Username != nil
+		detail["email"] = req.Email != nil
+		detail["emailVerified"] = req.EmailVerified != nil
+		detail["isAdmin"] = req.IsAdmin != nil
+		detail["isActive"] = req.IsActive != nil
+		detail["deployLimit"] = req.DeployLimit != nil
+		return detail
+	}
+	writeUserUpdateError := func(apiErr *APIError, req *UserUpdateRequest) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "user.update", "", "user", id, userUpdateDetail(req), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	user, err := s.auth.GetUser(r.Context(), id)
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeNotFound, "users", "user not found"), reqID))
+		writeUserUpdateError(NewError(CodeNotFound, "users", "user not found"), nil)
 		return
 	}
 	var req UserUpdateRequest
@@ -3329,7 +4660,7 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if req.Email != nil {
 		email := normalizeEmail(*req.Email)
 		if strings.TrimSpace(*req.Email) != "" && email == "" {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", "invalid email address"), reqID))
+			writeUserUpdateError(NewError(CodeInvalidInput, "users", "invalid email address"), &req)
 			return
 		}
 		user.Email = email
@@ -3350,38 +4681,57 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		user.DeployLimit = *req.DeployLimit
 	}
 	if err := s.auth.UpdateUser(r.Context(), user); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", err.Error()), reqID))
+		writeUserUpdateError(NewError(CodeInvalidInput, "users", err.Error()), &req)
 		return
 	}
 	user, _ = s.auth.GetUser(r.Context(), id)
+	s.recordAuditLog(r, actorType, actorID, actorRole, "user.update", "", "user", user.ID, map[string]any{
+		"username":      req.Username != nil,
+		"email":         req.Email != nil,
+		"emailVerified": req.EmailVerified != nil,
+		"isAdmin":       req.IsAdmin != nil,
+		"isActive":      req.IsActive != nil,
+		"deployLimit":   req.DeployLimit != nil,
+	})
 	writeJSON(w, http.StatusOK, UserUpdateResponse{Success: true, User: toUserListItem(user)})
 }
 
 func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	admin, authErr := s.authenticateAdmin(r)
+	tok, authErr := s.authenticateAdmin(r)
 	if authErr != nil {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
+	actorType, actorID, actorRole := auditActorFromToken(tok)
+	userDeleteDetail := func(user store.AdminUser) map[string]any {
+		return map[string]any{
+			"username": user.Username,
+			"isAdmin":  user.IsAdmin,
+		}
+	}
+	writeUserDeleteError := func(apiErr *APIError, user store.AdminUser) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "user.delete", "", "user", id, userDeleteDetail(user), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	if id == "" {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", "missing user id"), reqID))
+		writeUserDeleteError(NewError(CodeInvalidInput, "users", "missing user id"), store.AdminUser{})
 		return
 	}
-	if id == admin.ID {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", "cannot delete your own account"), reqID))
+	if id == tok.OwnerUserID || id == strings.TrimPrefix(tok.ID, "admin:") {
+		writeUserDeleteError(NewError(CodeInvalidInput, "users", "cannot delete your own account"), store.AdminUser{})
 		return
 	}
 	user, err := s.auth.GetUser(r.Context(), id)
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeNotFound, "users", "user not found"), reqID))
+		writeUserDeleteError(NewError(CodeNotFound, "users", "user not found"), store.AdminUser{})
 		return
 	}
 	if user.IsAdmin {
 		users, err := s.auth.ListUsers(r.Context())
 		if err != nil {
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "users", err.Error()), reqID))
+			writeUserDeleteError(NewError(CodeInternal, "users", err.Error()), user)
 			return
 		}
 		activeAdmins := 0
@@ -3391,14 +4741,18 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if activeAdmins <= 1 {
-			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", "cannot delete the last active admin"), reqID))
+			writeUserDeleteError(NewError(CodeInvalidInput, "users", "cannot delete the last active admin"), user)
 			return
 		}
 	}
 	if err := s.auth.DeleteUser(r.Context(), id); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "users", err.Error()), reqID))
+		writeUserDeleteError(NewError(CodeInvalidInput, "users", err.Error()), user)
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "user.delete", "", "user", id, map[string]any{
+		"username": user.Username,
+		"isAdmin":  user.IsAdmin,
+	})
 	writeJSON(w, http.StatusOK, UserDeleteResponse{Success: true, ID: id})
 }
 
@@ -3492,29 +4846,133 @@ func (s *Server) handleAdminListSites(w http.ResponseWriter, r *http.Request) {
 			ownerUsername = usernames[strings.TrimPrefix(site.OwnerTokenID, "user:")]
 		}
 		items = append(items, SiteListItem{
-			Code:            site.Code,
-			PublicID:        site.PublicID,
-			OwnerTokenID:    site.OwnerTokenID,
-			OwnerUsername:   ownerUsername,
-			CurrentVersion:  site.CurrentVersion,
-			VersionCount:    site.VersionCount,
-			TotalSize:       site.TotalSize,
-			ViewCount:       site.ViewCount,
-			LikeCount:       site.LikeCount,
-			Status:          site.Status,
-			Visibility:      site.Visibility,
-			Category:        site.Category,
-			Tags:            splitSiteTags(site.Tags),
-			Filename:        site.MainEntry,
-			AccessProtected: site.AccessProtected,
-			IsPinned:        site.IsPinned,
-			PinnedAt:        site.PinnedAt,
-			CreatedAt:       site.CreatedAt,
-			Source:          site.Source,
-			LastVersionAt:   site.LastVersionAt,
+			Code:                 site.Code,
+			PublicID:             site.PublicID,
+			OwnerTokenID:         site.OwnerTokenID,
+			OwnerUsername:        ownerUsername,
+			CurrentVersion:       site.CurrentVersion,
+			VersionCount:         site.VersionCount,
+			TotalSize:            site.TotalSize,
+			ViewCount:            site.ViewCount,
+			LikeCount:            site.LikeCount,
+			Status:               site.Status,
+			Visibility:           site.Visibility,
+			ReusePolicy:          normalizeReusePolicy(site.ReusePolicy),
+			SourceDownloadPolicy: normalizeReusePolicy(site.SourceDownloadPolicy),
+			SecurityMode:         normalizeSiteSecurityMode(site.SecurityMode),
+			Category:             site.Category,
+			Tags:                 splitSiteTags(site.Tags),
+			Filename:             site.MainEntry,
+			AccessProtected:      site.AccessProtected,
+			IsPinned:             site.IsPinned,
+			PinnedAt:             site.PinnedAt,
+			CreatedAt:            site.CreatedAt,
+			Source:               site.Source,
+			LastVersionAt:        site.LastVersionAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, SiteListResponse{Success: true, Sites: items})
+}
+
+func (s *Server) handleAdminGetSiteDetail(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	code := strings.TrimSpace(r.PathValue("code"))
+	if code == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "path", "missing code in path"), reqID))
+		return
+	}
+	actor, isAdmin, authErr := s.optionalActor(r)
+	if authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	if actor == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "login or bearer token required"), reqID))
+		return
+	}
+	site, err := s.deployer.GetSite(r.Context(), code)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			return
+		}
+		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site", err.Error()), reqID))
+		return
+	}
+	if !isAdmin && site.OwnerTokenID != actor {
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "owner", "you can only view sites you own"), reqID))
+		return
+	}
+
+	versionsResp, apiErr := s.deployer.ListVersions(r.Context(), code)
+	if apiErr != nil {
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+		return
+	}
+	bundle, files, reuse, apiErr := s.deployDetailExtras(r, code, code, site.CurrentVersion, detailReusePolicy{
+		CanManage:            true,
+		AccessProtected:      strings.TrimSpace(site.AccessPasswordHash) != "",
+		Visibility:           site.Visibility,
+		Status:               site.Status,
+		ReusePolicy:          site.ReusePolicy,
+		SourceDownloadPolicy: site.SourceDownloadPolicy,
+	})
+	if apiErr != nil {
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+		return
+	}
+	item := siteListItemFromSite(site, s.siteOwnerUsername(r.Context(), site.OwnerTokenID))
+	item.VersionCount = len(versionsResp.Versions)
+	if bundle != nil {
+		item.Filename = bundle.MainEntry
+		item.TotalSize = bundle.TotalSize
+	}
+	if len(versionsResp.Versions) > 0 {
+		last := versionsResp.Versions[len(versionsResp.Versions)-1].CreatedAt
+		item.LastVersionAt = &last
+	}
+	writeJSON(w, http.StatusOK, SiteDetailResponse{
+		Success:  true,
+		Site:     item,
+		Versions: versionsResp.Versions,
+		Bundle:   bundle,
+		Files:    files,
+		Reuse:    reuse,
+	})
+}
+
+func siteListItemFromSite(site store.Site, ownerUsername string) SiteListItem {
+	return SiteListItem{
+		Code:                  site.Code,
+		PublicID:              site.PublicID,
+		OwnerTokenID:          site.OwnerTokenID,
+		OwnerUsername:         ownerUsername,
+		CurrentVersion:        site.CurrentVersion,
+		ViewCount:             site.ViewCount,
+		LikeCount:             site.LikeCount,
+		ReuseCount:            site.ReuseCount,
+		Status:                site.Status,
+		Visibility:            site.Visibility,
+		ReusePolicy:           normalizeReusePolicy(site.ReusePolicy),
+		SourceDownloadPolicy:  normalizeReusePolicy(site.SourceDownloadPolicy),
+		SecurityMode:          normalizeSiteSecurityMode(site.SecurityMode),
+		TemplateSourceCode:    site.TemplateSourceCode,
+		TemplateSourceVersion: site.TemplateSourceVersion,
+		Category:              site.Category,
+		Tags:                  splitSiteTags(site.Tags),
+		AccessProtected:       strings.TrimSpace(site.AccessPasswordHash) != "",
+		IsPinned:              site.IsPinned,
+		PinnedAt:              site.PinnedAt,
+		CreatedAt:             site.CreatedAt,
+		Source:                site.Source,
+	}
+}
+
+func (s *Server) siteOwnerUsername(ctx context.Context, ownerTokenID string) string {
+	if !strings.HasPrefix(ownerTokenID, "user:") {
+		return ""
+	}
+	return s.ownerUsername(ctx, strings.TrimPrefix(ownerTokenID, "user:"))
 }
 
 // handleAdminSetSitePin 允许管理员置顶或取消置顶创作市场站点。
@@ -3526,7 +4984,8 @@ func (s *Server) handleAdminSetSitePin(w http.ResponseWriter, r *http.Request) {
 			"missing code in path"), reqID))
 		return
 	}
-	if _, authErr := s.authenticateAdmin(r); authErr != nil {
+	tok, authErr := s.authenticateAdmin(r)
+	if authErr != nil {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
@@ -3534,26 +4993,32 @@ func (s *Server) handleAdminSetSitePin(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromToken(tok)
+	pinDetail := map[string]any{}
+	writePinError := func(apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "site.pin", code, "site", code, pinDetail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	if req.Pinned == nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "pinned",
-			"pinned is required"), reqID))
+		writePinError(NewError(CodeInvalidInput, "pinned", "pinned is required"))
 		return
 	}
+	pinDetail["pinned"] = *req.Pinned
 	if err := s.deployer.SetSitePinned(r.Context(), code, *req.Pinned); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			writePinError(NewError(CodeNotFound, "site", "site not found"))
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_pin", err.Error()), reqID))
+		writePinError(NewError(CodeInternal, "site_pin", err.Error()))
 		return
 	}
 	site, err := s.deployer.GetSite(r.Context(), code)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			writePinError(NewError(CodeNotFound, "site", "site not found"))
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_pin", err.Error()), reqID))
+		writePinError(NewError(CodeInternal, "site_pin", err.Error()))
 		return
 	}
 	resp := SitePinResponse{Success: true, Code: code, IsPinned: site.IsPinned}
@@ -3561,7 +5026,128 @@ func (s *Server) handleAdminSetSitePin(w http.ResponseWriter, r *http.Request) {
 		t := site.PinnedAt.UTC().Format(time.RFC3339Nano)
 		resp.PinnedAt = &t
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "site.pin", code, "site", code, map[string]any{
+		"pinned": *req.Pinned,
+	})
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleAdminSetSiteReusePolicy(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	code := strings.TrimSpace(r.PathValue("code"))
+	if code == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "path", "missing code in path"), reqID))
+		return
+	}
+	tok, authErr := s.authenticateAdmin(r)
+	if authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	var req SiteReusePolicyRequest
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+	actorType, actorID, actorRole := auditActorFromToken(tok)
+	reuseDetail := map[string]any{
+		"reusePolicy":          strings.TrimSpace(req.ReusePolicy),
+		"sourceDownloadPolicy": strings.TrimSpace(req.SourceDownloadPolicy),
+	}
+	writeReusePolicyError := func(apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "site.reuse_policy", code, "site", code, reuseDetail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
+	if !isReusePolicyInput(req.ReusePolicy) {
+		writeReusePolicyError(NewError(CodeInvalidInput, "reusePolicy", "reusePolicy must be one of auto, allow, deny"))
+		return
+	}
+	if !isReusePolicyInput(req.SourceDownloadPolicy) {
+		writeReusePolicyError(NewError(CodeInvalidInput, "sourceDownloadPolicy", "sourceDownloadPolicy must be one of auto, allow, deny"))
+		return
+	}
+	reusePolicyValue := normalizeReusePolicy(req.ReusePolicy)
+	sourcePolicyValue := normalizeReusePolicy(req.SourceDownloadPolicy)
+	reuseDetail["reusePolicy"] = reusePolicyValue
+	reuseDetail["sourceDownloadPolicy"] = sourcePolicyValue
+	if err := s.deployer.SetSiteReusePolicy(r.Context(), code, reusePolicyValue, sourcePolicyValue); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeReusePolicyError(NewError(CodeNotFound, "site", "site not found"))
+			return
+		}
+		writeReusePolicyError(NewError(CodeInternal, "site_reuse_policy", err.Error()))
+		return
+	}
+	site, err := s.deployer.GetSite(r.Context(), code)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeReusePolicyError(NewError(CodeNotFound, "site", "site not found"))
+			return
+		}
+		writeReusePolicyError(NewError(CodeInternal, "site_reuse_policy", err.Error()))
+		return
+	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "site.reuse_policy", code, "site", code, map[string]any{
+		"reusePolicy":          reusePolicyValue,
+		"sourceDownloadPolicy": sourcePolicyValue,
+	})
+	writeJSON(w, http.StatusOK, SiteReusePolicyResponse{
+		Success: true,
+		Site:    siteListItemFromSite(site, s.siteOwnerUsername(r.Context(), site.OwnerTokenID)),
+	})
+}
+
+func (s *Server) handleAdminSetSiteSecurityMode(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	code := strings.TrimSpace(r.PathValue("code"))
+	if code == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "path", "missing code in path"), reqID))
+		return
+	}
+	tok, authErr := s.authenticateAdmin(r)
+	if authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	var req SiteSecurityModeRequest
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+	actorType, actorID, actorRole := auditActorFromToken(tok)
+	securityDetail := map[string]any{"securityMode": strings.TrimSpace(req.SecurityMode)}
+	writeSecurityModeError := func(apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "site.security_mode", code, "site", code, securityDetail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
+	if !isSiteSecurityModeInput(req.SecurityMode) {
+		writeSecurityModeError(NewError(CodeInvalidInput, "securityMode", "securityMode must be one of auto, strict, compatible, trusted"))
+		return
+	}
+	mode := normalizeSiteSecurityMode(req.SecurityMode)
+	securityDetail["securityMode"] = mode
+	if err := s.deployer.SetSiteSecurityMode(r.Context(), code, mode); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeSecurityModeError(NewError(CodeNotFound, "site", "site not found"))
+			return
+		}
+		writeSecurityModeError(NewError(CodeInternal, "site_security_mode", err.Error()))
+		return
+	}
+	site, err := s.deployer.GetSite(r.Context(), code)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeSecurityModeError(NewError(CodeNotFound, "site", "site not found"))
+			return
+		}
+		writeSecurityModeError(NewError(CodeInternal, "site_security_mode", err.Error()))
+		return
+	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "site.security_mode", code, "site", code, map[string]any{
+		"securityMode": mode,
+	})
+	writeJSON(w, http.StatusOK, SiteSecurityModeResponse{
+		Success: true,
+		Site:    siteListItemFromSite(site, s.siteOwnerUsername(r.Context(), site.OwnerTokenID)),
+	})
 }
 
 func (s *Server) handleAdminSetSiteCategory(w http.ResponseWriter, r *http.Request) {
@@ -3576,17 +5162,22 @@ func (s *Server) handleAdminSetSiteCategory(w http.ResponseWriter, r *http.Reque
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromOwner(actor, isAdmin)
+	writeCategoryError := func(detail map[string]any, apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "site.category", code, "site", code, detail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	site, err := s.deployer.GetSite(r.Context(), code)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			writeCategoryError(nil, NewError(CodeNotFound, "site", "site not found"))
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_category", err.Error()), reqID))
+		writeCategoryError(nil, NewError(CodeInternal, "site_category", err.Error()))
 		return
 	}
 	if !isAdmin && site.OwnerTokenID != actor {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "site_category", "you can only update your own site category"), reqID))
+		writeCategoryError(nil, NewError(CodeForbidden, "site_category", "you can only update your own site category"))
 		return
 	}
 	var req SiteCategoryRequest
@@ -3594,14 +5185,18 @@ func (s *Server) handleAdminSetSiteCategory(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	category := strings.TrimSpace(req.Category)
+	categoryDetail := map[string]any{"category": category}
 	if category != "" && !marketCategorySlugRe.MatchString(category) {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "site_category", "category slug is invalid"), reqID))
+		writeCategoryError(categoryDetail, NewError(CodeInvalidInput, "site_category", "category slug is invalid"))
 		return
 	}
 	if err := s.deployer.SetSiteCategory(r.Context(), code, category); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_category", err.Error()), reqID))
+		writeCategoryError(categoryDetail, NewError(CodeInternal, "site_category", err.Error()))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "site.category", code, "site", code, map[string]any{
+		"category": category,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "code": code, "category": category})
 }
 
@@ -3617,27 +5212,36 @@ func (s *Server) handleAdminSetSiteTags(w http.ResponseWriter, r *http.Request) 
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromOwner(actor, isAdmin)
+	writeTagsError := func(detail map[string]any, apiErr *APIError) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "site.tags", code, "site", code, detail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	site, err := s.deployer.GetSite(r.Context(), code)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			writeTagsError(nil, NewError(CodeNotFound, "site", "site not found"))
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_tags", err.Error()), reqID))
+		writeTagsError(nil, NewError(CodeInternal, "site_tags", err.Error()))
 		return
 	}
 	if !isAdmin && site.OwnerTokenID != actor {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "site_tags", "you can only update your own site tags"), reqID))
+		writeTagsError(nil, NewError(CodeForbidden, "site_tags", "you can only update your own site tags"))
 		return
 	}
 	var req SiteTagsRequest
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
+	tagsDetail := map[string]any{"tags": req.Tags}
 	if err := s.deployer.SetSiteTags(r.Context(), code, req.Tags); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site_tags", err.Error()), reqID))
+		writeTagsError(tagsDetail, NewError(CodeInternal, "site_tags", err.Error()))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "site.tags", code, "site", code, map[string]any{
+		"tags": req.Tags,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "code": code, "tags": splitSiteTags(strings.Join(req.Tags, ","))})
 }
 
@@ -3654,10 +5258,13 @@ func (s *Server) handleAdminDeleteSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	actorType, actorID, actorRole := s.auditActorFromRequest(r)
 	if apiErr := s.deployer.DeleteSite(r.Context(), code); apiErr != nil {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "site.delete", code, "site", code, nil, apiErr)
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "site.delete", code, "site", code, nil)
 	writeJSON(w, http.StatusOK, SiteDeleteResponse{Success: true, Code: code})
 }
 
@@ -3697,11 +5304,17 @@ func (s *Server) handleSetPrimaryStrategy(w http.ResponseWriter, r *http.Request
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
+	actorType, actorID, actorRole := s.auditActorFromRequest(r)
+	strategyDetail := map[string]any{"strategy": req.PrimaryVersionStrategy}
 	resp, apiErr := s.deployer.SetPrimaryStrategy(r.Context(), code, req.PrimaryVersionStrategy)
 	if apiErr != nil {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "site.primary_strategy", code, "site", code, strategyDetail, apiErr)
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "site.primary_strategy", code, "site", code, map[string]any{
+		"strategy": resp.PrimaryVersionStrategy,
+	})
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -3736,7 +5349,7 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 			"either 'code' or 'url' is required"), reqID))
 		return
 	}
-	actor, _, actorErr := s.authenticateActor(r)
+	actor, actorIsAdmin, actorErr := s.authenticateActor(r)
 	if actorErr != nil {
 		writeError(w, apiErrWithReqID(actorErr, reqID))
 		return
@@ -3750,6 +5363,7 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 	var ownerTokenID string
 	var userID string
 	if user, ok := s.adminUserFromCookie(r); ok {
+		actorIsAdmin = user.IsAdmin
 		if !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
 			writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "user_quota",
 				fmt.Sprintf("user deploy limit reached (%d/%d)", user.DeployCount, user.DeployLimit)).
@@ -3764,6 +5378,7 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 			writeError(w, apiErrWithReqID(authErr, reqID))
 			return
 		}
+		actorIsAdmin = tok.IsAdmin
 		ownerTokenID = ownerForToken(tok)
 		if tok.OwnerUserID != "" {
 			user, userErr := s.auth.GetUser(r.Context(), tok.OwnerUserID)
@@ -3809,6 +5424,14 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 			s.logger.Printf("failed to increment user deploy count %s: %v", userID, err)
 		}
 	}
+	actorType, actorID, actorRole := auditActorFromOwner(actor, actorIsAdmin)
+	s.recordAuditLog(r, actorType, actorID, actorRole, "deploy.version.create", resp.Code, "site", resp.Code, map[string]any{
+		"versionNumber": resp.VersionNumber,
+		"versionId":     resp.VersionID,
+		"filename":      filename,
+		"title":         req.Title,
+		"legacyPatch":   true,
+	})
 
 	// 响应用 VersionCreatedResponse 结构（OpenAPI 对齐）
 	writeJSON(w, http.StatusOK, s.versionCreatedResponseForRequest(r, resp))
@@ -3904,7 +5527,7 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 		return
 	}
 	if !s.siteAccessAllowed(r, code, versionPtr) {
-		s.renderAccessPasswordPageV2(w, code)
+		s.renderAccessPasswordPageV2(w, code, versionPtr)
 		return
 	}
 
@@ -3948,20 +5571,51 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 			routePrefix = buildVersionServePath(code, *versionPtr, "")
 		}
 	}
-	s.serveHostedFile(w, r, code, versionPtr, sub, body, modTime, routePrefix)
+	securityMode := s.effectiveSecurityModeForServe(r.Context(), code, versionPtr)
+	s.serveHostedFile(w, r, code, versionPtr, sub, body, modTime, routePrefix, securityMode)
 }
 
-func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code string, versionPtr *int64, sub string, body []byte, modTime time.Time, routePrefix string) {
+func (s *Server) effectiveSecurityModeForServe(ctx context.Context, code string, versionPtr *int64) string {
+	site, err := s.deployer.GetSite(ctx, code)
+	if err != nil {
+		return "standard"
+	}
+	siteMode := normalizeSiteSecurityMode(site.SecurityMode)
+	if siteMode != "auto" {
+		return siteMode
+	}
+	versionNumber := int64(0)
+	if versionPtr != nil {
+		versionNumber = *versionPtr
+	} else if site.CurrentVersion != nil {
+		versionNumber = *site.CurrentVersion
+	}
+	if versionNumber <= 0 {
+		return "standard"
+	}
+	if reader, ok := s.deployer.(bundleMetadataReader); ok {
+		if meta, err := reader.GetVersionBundle(ctx, code, versionNumber); err == nil {
+			return effectiveSiteSecurityMode(siteMode, meta.SecurityMode)
+		}
+	}
+	return "standard"
+}
+
+func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code string, versionPtr *int64, sub string, body []byte, modTime time.Time, routePrefix string, securityMode string) {
 	setHostedContentCORSHeaders(w, r)
 	lowerSub := strings.ToLower(sub)
 	if strings.HasSuffix(lowerSub, ".md") || strings.HasSuffix(lowerSub, ".markdown") {
-		s.setHostedMarkdownSecurityHeaders(w)
+		nonce := markdownCSPNonce()
+		theme := render.NormalizeMarkdownTheme(r.URL.Query().Get("theme"))
+		s.setHostedMarkdownSecurityHeaders(w, nonce)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		rendered := s.renderHostedMarkdown(r.Context(), code, versionPtr, sub, body)
-		http.ServeContent(w, r, filepath.Base(sub)+".html", modTime, strings.NewReader(rendered))
+		w.Header().Set("Cache-Control", "no-store")
+		rendered := s.renderHostedMarkdown(r.Context(), code, versionPtr, sub, body, theme)
+		rendered = render.ApplyMarkdownNonce(rendered, nonce)
+		_, _ = io.WriteString(w, rendered)
 		return
 	}
-	s.setHostedContentSecurityHeaders(w)
+	s.setHostedContentSecurityHeaders(w, securityMode)
 	if !strings.HasSuffix(lowerSub, ".html") && !strings.HasSuffix(lowerSub, ".htm") {
 		http.ServeContent(w, r, filepath.Base(sub), modTime, bytes.NewReader(body))
 		return
@@ -3983,21 +5637,19 @@ func hostedSubPathSafe(path string) bool {
 	return true
 }
 
-func (s *Server) renderHostedMarkdown(ctx context.Context, code string, versionPtr *int64, sub string, body []byte) string {
+func (s *Server) renderHostedMarkdown(ctx context.Context, code string, versionPtr *int64, sub string, body []byte, theme string) string {
+	theme = render.NormalizeMarkdownTheme(theme)
 	sum := sha256.Sum256(body)
 	contentSHA := hex.EncodeToString(sum[:])
-	versionNumber := int64(0)
-	if versionPtr != nil {
-		versionNumber = *versionPtr
-	}
-	cacheKey := strings.Join([]string{code, strconv.FormatInt(versionNumber, 10), sub, contentSHA, "default"}, ":")
+	versionNumber := s.markdownRenderVersionNumber(ctx, code, versionPtr)
+	cacheKey := markdownRenderCacheKey(code, versionNumber, sub, contentSHA, theme)
 	cache, ok := s.deployer.(markdownRenderCache)
 	if ok {
 		if entry, hit, err := cache.GetRenderCache(ctx, cacheKey); err == nil && hit {
 			return entry.HTML
 		}
 	}
-	html := render.MarkdownToHTML(body)
+	html := render.MarkdownToHTMLWithTheme(body, theme)
 	if ok {
 		_ = cache.PutRenderCache(ctx, store.RenderCacheEntry{
 			CacheKey:      cacheKey,
@@ -4005,7 +5657,7 @@ func (s *Server) renderHostedMarkdown(ctx context.Context, code string, versionP
 			VersionNumber: versionNumber,
 			MainEntry:     sub,
 			ContentSHA256: contentSHA,
-			Theme:         "default",
+			Theme:         theme,
 			HTML:          html,
 			CreatedAt:     time.Now().UTC(),
 		})
@@ -4013,29 +5665,107 @@ func (s *Server) renderHostedMarkdown(ctx context.Context, code string, versionP
 	return html
 }
 
-func (s *Server) setHostedContentSecurityHeaders(w http.ResponseWriter) {
-	csp := "sandbox allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-pointer-lock allow-top-navigation-by-user-activation; " +
-		"default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; " +
-		"img-src * data: blob:; media-src * data: blob:; font-src * data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval'; " +
-		"connect-src *; frame-src *; child-src *"
+func (s *Server) markdownRenderVersionNumber(ctx context.Context, code string, versionPtr *int64) int64 {
+	if versionPtr != nil && *versionPtr > 0 {
+		return *versionPtr
+	}
+	site, err := s.deployer.GetSite(ctx, code)
+	if err != nil || site.CurrentVersion == nil || *site.CurrentVersion <= 0 {
+		return 0
+	}
+	return *site.CurrentVersion
+}
+
+func markdownRenderCacheKey(code string, versionNumber int64, entry string, contentSHA string, theme string) string {
+	return strings.Join([]string{
+		code,
+		strconv.FormatInt(versionNumber, 10),
+		filepath.ToSlash(entry),
+		contentSHA,
+		render.NormalizeMarkdownTheme(theme),
+		render.MarkdownRendererVersion,
+	}, ":")
+}
+
+func (s *Server) setHostedContentSecurityHeaders(w http.ResponseWriter, securityMode string) {
+	csp := hostedContentCSP(securityMode)
 	if frameAncestors := s.frameAncestorsDirective(); frameAncestors != "" {
 		csp += "; " + frameAncestors
 	}
+	csp = withCSPReportEndpoint(csp)
 	w.Header().Set("Content-Security-Policy", csp)
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 }
 
-func (s *Server) setHostedMarkdownSecurityHeaders(w http.ResponseWriter) {
-	csp := "sandbox allow-popups allow-downloads allow-modals; " +
-		"default-src 'none'; img-src * data: blob:; media-src * data: blob:; font-src data: blob:; style-src 'unsafe-inline'; " +
-		"base-uri 'none'; form-action 'none'"
+func hostedContentCSP(securityMode string) string {
+	switch strings.ToLower(strings.TrimSpace(securityMode)) {
+	case "strict":
+		return "sandbox allow-scripts allow-forms allow-popups allow-downloads allow-modals; " +
+			"default-src 'self' data: blob:; " +
+			"img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; font-src 'self' data:; " +
+			"style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; " +
+			"connect-src 'self' https: http: wss: ws:; frame-src 'self' https: http:; child-src 'self' https: http:"
+	case "trusted":
+		return "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; " +
+			"img-src * data: blob:; media-src * data: blob:; font-src * data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval'; " +
+			"connect-src *; frame-src *; child-src *"
+	default:
+		return "sandbox allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-pointer-lock allow-top-navigation-by-user-activation; " +
+			"default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; " +
+			"img-src * data: blob:; media-src * data: blob:; font-src * data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval'; " +
+			"connect-src *; frame-src *; child-src *"
+	}
+}
+
+func (s *Server) setHostedMarkdownSecurityHeaders(w http.ResponseWriter, nonce string) {
+	csp := "default-src 'self'; " +
+		"script-src 'nonce-" + nonce + "'; " +
+		"style-src 'self' 'nonce-" + nonce + "'; " +
+		"style-src-elem 'self' 'unsafe-inline'; " +
+		"style-src-attr 'unsafe-inline'; " +
+		"img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; font-src 'self' data:; connect-src 'self'; " +
+		"object-src 'none'; base-uri 'none'; form-action 'none'"
 	if frameAncestors := s.frameAncestorsDirective(); frameAncestors != "" {
 		csp += "; " + frameAncestors
 	}
+	csp = withCSPReportEndpoint(csp)
 	w.Header().Set("Content-Security-Policy", csp)
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+}
+
+func (s *Server) setAdminUISecurityHeaders(w http.ResponseWriter) {
+	setAdminSecurityHeaders(w)
+	w.Header().Set("Cache-Control", "no-cache")
+}
+
+func setAdminSecurityHeaders(w http.ResponseWriter) {
+	csp := "default-src 'self'; " +
+		"script-src 'self'; style-src 'self'; " +
+		"img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; " +
+		"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	csp = withCSPReportEndpoint(csp)
+	w.Header().Set("Content-Security-Policy", csp)
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+}
+
+func withCSPReportEndpoint(csp string) string {
+	csp = strings.TrimSpace(csp)
+	if csp == "" || strings.Contains(csp, "report-uri ") {
+		return csp
+	}
+	return csp + "; report-uri /api/security/csp-report"
+}
+
+func markdownCSPNonce() string {
+	buf := make([]byte, 18)
+	if _, err := rand.Read(buf); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
 func (s *Server) frameAncestorsDirective() string {
@@ -4059,6 +5789,37 @@ func (s *Server) frameAncestorsDirective() string {
 	default:
 		return ""
 	}
+}
+
+func noSniffFileServer(fsys fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(fsys))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		fileServer.ServeHTTP(w, r)
+	})
+}
+
+func markdownAssetFileServer(fsys fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(fsys))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		if strings.TrimSpace(r.Header.Get("Origin")) == "null" {
+			w.Header().Set("Access-Control-Allow-Origin", "null")
+			w.Header().Add("Vary", "Origin")
+		}
+		fileServer.ServeHTTP(w, r)
+	})
+}
+
+func adminAssetFileServer(fsys fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(fsys))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setAdminSecurityHeaders(w)
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 func setHostedContentCORSHeaders(w http.ResponseWriter, r *http.Request) {

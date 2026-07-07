@@ -23,15 +23,28 @@ const (
 	CodeUnauthorized       ErrorCode = "UNAUTHORIZED"
 	CodeMethodNotAllowed   ErrorCode = "METHOD_NOT_ALLOWED"
 	CodeInternal           ErrorCode = "INTERNAL"
+
+	CodeZipOpenFailed      ErrorCode = "ZIP_OPEN_FAILED"
+	CodeZipUnsafePath      ErrorCode = "ZIP_UNSAFE_PATH"
+	CodeZipEntryReadFailed ErrorCode = "ZIP_ENTRY_READ_FAILED"
+	CodeZipFileTooLarge    ErrorCode = "ZIP_FILE_TOO_LARGE"
+	CodeZipTotalTooLarge   ErrorCode = "ZIP_TOTAL_TOO_LARGE"
+	CodeZipTooManyFiles    ErrorCode = "ZIP_TOO_MANY_FILES"
+	CodeZipEmpty           ErrorCode = "ZIP_EMPTY"
+	CodeZipDuplicatePath   ErrorCode = "ZIP_DUPLICATE_PATH"
+	CodeZipEntryMissing    ErrorCode = "ZIP_ENTRY_MISSING"
+	CodeZipAmbiguousEntry  ErrorCode = "ZIP_AMBIGUOUS_ENTRY"
 )
 
 // httpStatus 把 ErrorCode 映射到 HTTP 状态码。
 // 对齐项目 OpenAPI 3.1：VERSION_LOCKED 走 423 Locked。
 func (c ErrorCode) httpStatus() int {
 	switch c {
-	case CodeInvalidInput, CodeInvalidDescription, CodeInvalidCustomCode, CodeInvalidFilePath:
+	case CodeInvalidInput, CodeInvalidDescription, CodeInvalidCustomCode, CodeInvalidFilePath,
+		CodeZipOpenFailed, CodeZipUnsafePath, CodeZipEntryReadFailed, CodeZipEmpty,
+		CodeZipDuplicatePath, CodeZipEntryMissing, CodeZipAmbiguousEntry:
 		return http.StatusBadRequest
-	case CodeContentTooLarge:
+	case CodeContentTooLarge, CodeZipFileTooLarge, CodeZipTotalTooLarge, CodeZipTooManyFiles:
 		return http.StatusRequestEntityTooLarge
 	case CodeRateLimited:
 		return http.StatusTooManyRequests

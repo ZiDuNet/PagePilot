@@ -15,10 +15,16 @@ type Site struct {
 	CurrentVersion         *int64
 	PrimaryVersionStrategy string // 'likes' | 'latest'
 	Visibility             string // 'public' | 'unlisted'
+	ReusePolicy            string // 'auto' | 'allow' | 'deny'
+	SourceDownloadPolicy   string // 'auto' | 'allow' | 'deny'
+	SecurityMode           string // 'auto' | 'strict' | 'compatible' | 'trusted'
 	Category               string // marketplace category slug, e.g. landing/dashboard/docs/tool/game
 	Tags                   string // comma-separated marketplace tags
 	ViewCount              int64
 	LikeCount              int64
+	ReuseCount             int64
+	TemplateSourceCode     string
+	TemplateSourceVersion  *int64
 	Status                 string // 'active' | 'inactive'
 	AccessPasswordHash     string
 	IsPinned               bool
@@ -43,10 +49,16 @@ type MarketplaceDeploy struct {
 	FileSize               int64 // 当前版本总大小
 	PrimaryVersionStrategy string
 	Visibility             string
+	ReusePolicy            string
+	SourceDownloadPolicy   string
+	SecurityMode           string
 	Category               string
 	Tags                   string
 	ViewCount              int64
 	LikeCount              int64
+	ReuseCount             int64
+	TemplateSourceCode     string
+	TemplateSourceVersion  *int64
 	FavoriteCount          int64
 	Favorited              bool
 	VersionCount           int
@@ -68,18 +80,20 @@ type LikeRecord struct {
 
 // Version 是 versions 表的记录。
 type Version struct {
-	ID            string
-	SiteCode      string
-	VersionNumber int64
-	Title         string
-	Description   string
-	MainEntry     string
-	TotalSize     int64
-	FileCount     int
-	ContentSha256 string
-	IsLocked      bool
-	Status        string
-	CreatedAt     time.Time
+	ID                    string
+	SiteCode              string
+	VersionNumber         int64
+	Title                 string
+	Description           string
+	MainEntry             string
+	TotalSize             int64
+	FileCount             int
+	ContentSha256         string
+	TemplateSourceCode    string
+	TemplateSourceVersion *int64
+	IsLocked              bool
+	Status                string
+	CreatedAt             time.Time
 }
 
 // FileMeta 是 files 表的记录。
@@ -109,7 +123,9 @@ type AuditLog struct {
 	ID         int64
 	ActorType  string
 	ActorID    string
+	ActorRole  string
 	Action     string
+	Result     string
 	SiteCode   string
 	TargetType string
 	TargetID   string
@@ -123,9 +139,15 @@ type AuditLog struct {
 type AuditLogFilter struct {
 	ActorType  string
 	ActorID    string
+	ActorRole  string
 	Action     string
+	Result     string
 	SiteCode   string
 	TargetType string
+	TargetID   string
+	Query      string
+	Since      *time.Time
+	Until      *time.Time
 	Limit      int
 	Offset     int
 }
@@ -242,26 +264,32 @@ type ScreenPairing struct {
 
 // SiteWithMeta 用于 admin UI 列表：site 主表 + 版本统计聚合。
 type SiteWithMeta struct {
-	Code            string
-	PublicID        string
-	OwnerTokenID    string
-	CurrentVersion  *int64
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	Source          string
-	ViewCount       int64
-	LikeCount       int64
-	Status          string
-	Visibility      string
-	Category        string
-	Tags            string
-	MainEntry       string
-	AccessProtected bool
-	IsPinned        bool
-	PinnedAt        *time.Time
-	VersionCount    int
-	TotalSize       int64
-	LastVersionAt   *time.Time
+	Code                  string
+	PublicID              string
+	OwnerTokenID          string
+	CurrentVersion        *int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	Source                string
+	ViewCount             int64
+	LikeCount             int64
+	ReuseCount            int64
+	TemplateSourceCode    string
+	TemplateSourceVersion *int64
+	Status                string
+	Visibility            string
+	ReusePolicy           string
+	SourceDownloadPolicy  string
+	SecurityMode          string
+	Category              string
+	Tags                  string
+	MainEntry             string
+	AccessProtected       bool
+	IsPinned              bool
+	PinnedAt              *time.Time
+	VersionCount          int
+	TotalSize             int64
+	LastVersionAt         *time.Time
 }
 
 // ErrNotFound 表示记录不存在。
@@ -405,6 +433,7 @@ type Store interface {
 
 	// IncrementViewCount 给 site.view_count + 1。
 	IncrementViewCount(ctx context.Context, code string) error
+	IncrementSiteReuseCount(ctx context.Context, code string) error
 
 	// AddLike 给 site 加一次点赞（user_fingerprint 已存在则忽略）。
 	// 返回加完后 like_count 总数。
@@ -426,6 +455,9 @@ type Store interface {
 
 	// SetSitePinned 设置或取消创作市场置顶。
 	SetSitePinned(ctx context.Context, code string, pinned bool) error
+
+	SetSiteReusePolicy(ctx context.Context, code, reusePolicy, sourceDownloadPolicy string) error
+	SetSiteSecurityMode(ctx context.Context, code, securityMode string) error
 
 	// TouchSiteUpdated 把 site.updated_at 更新为当前时间。
 	TouchSiteUpdated(ctx context.Context, code string) error

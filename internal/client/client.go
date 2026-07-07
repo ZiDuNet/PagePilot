@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/yourorg/hostctl/internal/api"
@@ -141,19 +142,21 @@ func (c *Client) Deploy(ctx context.Context, req api.DeployRequest) (*api.Deploy
 }
 
 type MultipartDeployRequest struct {
-	SourcePath       string
-	UploadName       string
-	Filename         string
-	Description      string
-	Title            string
-	CustomCode       string
-	CreateVersion    bool
-	Visibility       string
-	Category         string
-	Tags             []string
-	AccessPassword   string
-	Source           string
-	EnableCustomCode bool
+	SourcePath            string
+	UploadName            string
+	Filename              string
+	Description           string
+	Title                 string
+	CustomCode            string
+	CreateVersion         bool
+	Visibility            string
+	Category              string
+	Tags                  []string
+	AccessPassword        string
+	Source                string
+	TemplateSourceCode    string
+	TemplateSourceVersion int64
+	EnableCustomCode      bool
 }
 
 func (c *Client) DeployMultipart(ctx context.Context, req MultipartDeployRequest) (*api.DeployResponse, error) {
@@ -228,6 +231,12 @@ func writeMultipartDeploy(writer *multipart.Writer, pw *io.PipeWriter, req Multi
 	}
 	if len(req.Tags) > 0 {
 		fields["tags"] = strings.Join(req.Tags, ",")
+	}
+	if strings.TrimSpace(req.TemplateSourceCode) != "" {
+		fields["templateSourceCode"] = strings.TrimSpace(req.TemplateSourceCode)
+	}
+	if req.TemplateSourceVersion > 0 {
+		fields["templateSourceVersion"] = strconv.FormatInt(req.TemplateSourceVersion, 10)
 	}
 	for key, value := range fields {
 		if strings.TrimSpace(value) == "" {
@@ -422,6 +431,92 @@ func (c *Client) SetSitePin(ctx context.Context, code string, pinned bool) (map[
 		return nil, err
 	}
 	return resp, nil
+}
+
+// SetSiteReusePolicy 设置源码下载和模板复用策略。
+func (c *Client) SetSiteReusePolicy(ctx context.Context, code, reusePolicy, sourceDownloadPolicy string) (map[string]any, error) {
+	var resp map[string]any
+	if err := c.doPatch(ctx,
+		"/api/admin/sites/"+url.PathEscape(code)+"/reuse-policy",
+		map[string]any{
+			"reusePolicy":          reusePolicy,
+			"sourceDownloadPolicy": sourceDownloadPolicy,
+		}, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// SetSiteSecurityMode 设置站点级安全模式。
+func (c *Client) SetSiteSecurityMode(ctx context.Context, code, securityMode string) (map[string]any, error) {
+	var resp map[string]any
+	if err := c.doPatch(ctx,
+		"/api/admin/sites/"+url.PathEscape(code)+"/security-mode",
+		map[string]any{"securityMode": securityMode}, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// AdminSiteDetail 读取后台站点详情，包含 Bundle、文件树、版本和复用参数。
+func (c *Client) AdminSiteDetail(ctx context.Context, code string) (map[string]any, error) {
+	var out map[string]any
+	if err := c.doGet(ctx, "/api/admin/sites/"+url.PathEscape(code), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+type AuditLogQuery struct {
+	ActorType  string
+	ActorID    string
+	ActorRole  string
+	Action     string
+	Result     string
+	SiteCode   string
+	TargetType string
+	TargetID   string
+	Query      string
+	Since      string
+	Until      string
+	Page       int
+	PageSize   int
+}
+
+// ListAuditLogs 查询管理员审计日志。
+func (c *Client) ListAuditLogs(ctx context.Context, query AuditLogQuery) (map[string]any, error) {
+	qs := url.Values{}
+	setIfNotEmpty := func(key, value string) {
+		if strings.TrimSpace(value) != "" {
+			qs.Set(key, strings.TrimSpace(value))
+		}
+	}
+	setIfNotEmpty("actorType", query.ActorType)
+	setIfNotEmpty("actorId", query.ActorID)
+	setIfNotEmpty("actorRole", query.ActorRole)
+	setIfNotEmpty("action", query.Action)
+	setIfNotEmpty("result", query.Result)
+	setIfNotEmpty("siteCode", query.SiteCode)
+	setIfNotEmpty("targetType", query.TargetType)
+	setIfNotEmpty("targetId", query.TargetID)
+	setIfNotEmpty("q", query.Query)
+	setIfNotEmpty("since", query.Since)
+	setIfNotEmpty("until", query.Until)
+	if query.Page > 0 {
+		qs.Set("page", fmt.Sprintf("%d", query.Page))
+	}
+	if query.PageSize > 0 {
+		qs.Set("pageSize", fmt.Sprintf("%d", query.PageSize))
+	}
+	path := "/api/admin/audit-logs"
+	if enc := qs.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	var out map[string]any
+	if err := c.doGet(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ListVersions 调用 GET /api/deploys/{code}/versions。

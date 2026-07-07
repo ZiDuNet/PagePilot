@@ -194,6 +194,9 @@ func printDeployResult(r *api.DeployResponse) {
 	fmt.Printf("  Version:     %d\n", r.VersionNumber)
 	fmt.Printf("  Size:        %d bytes\n", r.Size)
 	fmt.Printf("  Created at:  %s\n", r.CreatedAt)
+	if r.TemplateSourceCode != "" {
+		fmt.Printf("  Template:    %s v%d\n", r.TemplateSourceCode, r.TemplateSourceVersion)
+	}
 	if r.PreserveHint != "" {
 		fmt.Printf("  Hint:        %s\n", r.PreserveHint)
 	}
@@ -434,12 +437,14 @@ func looksBinary(b []byte) bool {
 
 func cmdDeploy() *cobra.Command {
 	var (
-		description string
-		title       string
-		customCode  string
-		filename    string
-		accessPass  string
-		category    string
+		description           string
+		title                 string
+		customCode            string
+		filename              string
+		accessPass            string
+		category              string
+		templateSourceCode    string
+		templateSourceVersion int64
 	)
 	c := &cobra.Command{
 		Use:   "deploy <source>",
@@ -465,15 +470,17 @@ func cmdDeploy() *cobra.Command {
 			}
 			defer source.Cleanup()
 			req := client.MultipartDeployRequest{
-				SourcePath:     source.Path,
-				UploadName:     source.Name,
-				Description:    description,
-				Title:          title,
-				Filename:       mainEntry,
-				Source:         "cli",
-				AccessPassword: accessPass,
-				Category:       category,
-				Visibility:     "",
+				SourcePath:            source.Path,
+				UploadName:            source.Name,
+				Description:           description,
+				Title:                 title,
+				Filename:              mainEntry,
+				Source:                "cli",
+				AccessPassword:        accessPass,
+				Category:              category,
+				Visibility:            "",
+				TemplateSourceCode:    templateSourceCode,
+				TemplateSourceVersion: templateSourceVersion,
 			}
 			if customCode != "" {
 				req.EnableCustomCode = true
@@ -496,6 +503,8 @@ func cmdDeploy() *cobra.Command {
 	c.Flags().StringVarP(&filename, "filename", "f", "", "main entry filename; optional for ZIP/directories")
 	c.Flags().StringVar(&accessPass, "access-password", "", "optional visit password for a new user-owned site")
 	c.Flags().StringVar(&category, "category", "", "marketplace category slug, e.g. landing/dashboard/docs/tool/game/screen")
+	c.Flags().StringVar(&templateSourceCode, "template-source-code", "", "record that this deploy is derived from a marketplace site code")
+	c.Flags().Int64Var(&templateSourceVersion, "template-source-version", 0, "record the source marketplace version number")
 	_ = c.MarkFlagRequired("description")
 	return c
 }
@@ -504,8 +513,10 @@ func cmdDeploy() *cobra.Command {
 
 func cmdAppend() *cobra.Command {
 	var (
-		description string
-		title       string
+		description           string
+		title                 string
+		templateSourceCode    string
+		templateSourceVersion int64
 	)
 	c := &cobra.Command{
 		Use:   "append <code> <source>",
@@ -528,15 +539,17 @@ func cmdAppend() *cobra.Command {
 			}
 			defer source.Cleanup()
 			req := client.MultipartDeployRequest{
-				SourcePath:       source.Path,
-				UploadName:       source.Name,
-				Description:      description,
-				Title:            title,
-				Filename:         mainEntry,
-				EnableCustomCode: true,
-				CustomCode:       args[0],
-				CreateVersion:    true,
-				Source:           "cli",
+				SourcePath:            source.Path,
+				UploadName:            source.Name,
+				Description:           description,
+				Title:                 title,
+				Filename:              mainEntry,
+				EnableCustomCode:      true,
+				CustomCode:            args[0],
+				CreateVersion:         true,
+				Source:                "cli",
+				TemplateSourceCode:    templateSourceCode,
+				TemplateSourceVersion: templateSourceVersion,
 			}
 			ctx, cancel := withSignalCancel()
 			defer cancel()
@@ -551,6 +564,8 @@ func cmdAppend() *cobra.Command {
 	}
 	c.Flags().StringVarP(&description, "description", "d", "", "version description (required, max 240 chars)")
 	c.Flags().StringVarP(&title, "title", "t", "", "version title (optional metadata)")
+	c.Flags().StringVar(&templateSourceCode, "template-source-code", "", "record that this version is derived from a marketplace site code")
+	c.Flags().Int64Var(&templateSourceVersion, "template-source-version", 0, "record the source marketplace version number")
 	_ = c.MarkFlagRequired("description")
 	return c
 }
@@ -1058,8 +1073,142 @@ func cmdAdmin() *cobra.Command {
 		},
 	}
 	pinC.Flags().BoolVar(&unpin, "unpin", false, "clear the marketplace pin")
-	root.AddCommand(pinC)
+
+	siteDetailC := &cobra.Command{
+		Use:   "site-detail <code>",
+		Short: "Show admin site detail, bundle metadata, file tree, versions, and reuse hints",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := withSignalCancel()
+			defer cancel()
+			resp, err := buildClient().AdminSiteDetail(ctx, args[0])
+			if err != nil {
+				printErr(err)
+				return errSilent
+			}
+			if flagJSON {
+				_ = json.NewEncoder(os.Stdout).Encode(resp)
+				return nil
+			}
+			printAdminSiteDetail(resp)
+			return nil
+		},
+	}
+
+	var auditQuery client.AuditLogQuery
+	auditC := &cobra.Command{
+		Use:   "audit-logs",
+		Short: "Query admin audit logs with filters",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := withSignalCancel()
+			defer cancel()
+			resp, err := buildClient().ListAuditLogs(ctx, auditQuery)
+			if err != nil {
+				printErr(err)
+				return errSilent
+			}
+			if flagJSON {
+				_ = json.NewEncoder(os.Stdout).Encode(resp)
+				return nil
+			}
+			printAuditLogList(resp)
+			return nil
+		},
+	}
+	auditC.Flags().StringVar(&auditQuery.ActorType, "actor-type", "", "actor type filter")
+	auditC.Flags().StringVar(&auditQuery.ActorID, "actor-id", "", "actor id filter")
+	auditC.Flags().StringVar(&auditQuery.ActorRole, "actor-role", "", "actor role filter")
+	auditC.Flags().StringVar(&auditQuery.Action, "action", "", "action filter, e.g. site.pin")
+	auditC.Flags().StringVar(&auditQuery.Result, "result", "", "result filter: success / failed")
+	auditC.Flags().StringVar(&auditQuery.SiteCode, "site-code", "", "site code filter")
+	auditC.Flags().StringVar(&auditQuery.TargetType, "target-type", "", "target type filter")
+	auditC.Flags().StringVar(&auditQuery.TargetID, "target-id", "", "target id filter")
+	auditC.Flags().StringVarP(&auditQuery.Query, "query", "q", "", "keyword search over audit fields and detail JSON")
+	auditC.Flags().StringVar(&auditQuery.Since, "since", "", "RFC3339 lower bound, e.g. 2026-07-06T00:00:00Z")
+	auditC.Flags().StringVar(&auditQuery.Until, "until", "", "RFC3339 upper bound, e.g. 2026-07-07T00:00:00Z")
+	auditC.Flags().IntVar(&auditQuery.Page, "page", 1, "page number")
+	auditC.Flags().IntVar(&auditQuery.PageSize, "page-size", 50, "page size, max 200")
+
+	var reusePolicy string
+	var sourceDownloadPolicy string
+	reuseC := &cobra.Command{
+		Use:   "reuse-policy <code>",
+		Short: "Set source download and template reuse policy for a site",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !validReusePolicy(reusePolicy) {
+				return fmt.Errorf("--reuse must be auto, allow, or deny")
+			}
+			if !validReusePolicy(sourceDownloadPolicy) {
+				return fmt.Errorf("--source-download must be auto, allow, or deny")
+			}
+			ctx, cancel := withSignalCancel()
+			defer cancel()
+			resp, err := buildClient().SetSiteReusePolicy(ctx, args[0], reusePolicy, sourceDownloadPolicy)
+			if err != nil {
+				printErr(err)
+				return errSilent
+			}
+			if flagJSON {
+				_ = json.NewEncoder(os.Stdout).Encode(resp)
+				return nil
+			}
+			site, _ := resp["site"].(map[string]any)
+			fmt.Printf("Updated %s reusePolicy=%s sourceDownloadPolicy=%s\n",
+				args[0], asString(site["reusePolicy"]), asString(site["sourceDownloadPolicy"]))
+			return nil
+		},
+	}
+	reuseC.Flags().StringVar(&reusePolicy, "reuse", "auto", "template reuse policy: auto / allow / deny")
+	reuseC.Flags().StringVar(&sourceDownloadPolicy, "source-download", "auto", "source download policy: auto / allow / deny")
+
+	var securityMode string
+	securityC := &cobra.Command{
+		Use:   "security-mode <code>",
+		Short: "Set site runtime security mode",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !validSiteSecurityMode(securityMode) {
+				return fmt.Errorf("--mode must be auto, strict, compatible, or trusted")
+			}
+			ctx, cancel := withSignalCancel()
+			defer cancel()
+			resp, err := buildClient().SetSiteSecurityMode(ctx, args[0], securityMode)
+			if err != nil {
+				printErr(err)
+				return errSilent
+			}
+			if flagJSON {
+				_ = json.NewEncoder(os.Stdout).Encode(resp)
+				return nil
+			}
+			site, _ := resp["site"].(map[string]any)
+			fmt.Printf("Updated %s securityMode=%s\n", args[0], asString(site["securityMode"]))
+			return nil
+		},
+	}
+	securityC.Flags().StringVar(&securityMode, "mode", "auto", "security mode: auto / strict / compatible / trusted")
+
+	root.AddCommand(pinC, siteDetailC, auditC, reuseC, securityC)
 	return root
+}
+
+func validReusePolicy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "allow", "deny":
+		return true
+	default:
+		return false
+	}
+}
+
+func validSiteSecurityMode(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "strict", "compatible", "trusted":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseTTLSeconds(value string) (*int64, error) {
@@ -1308,6 +1457,185 @@ func printMarketplaceDetail(m map[string]any) {
 		}
 		fmt.Printf("%-24s %v\n", k+":", v)
 	}
+	if bundle, ok := m["bundle"].(map[string]any); ok {
+		fmt.Println("\nBundle")
+		for _, k := range []string{"kindLabel", "kind", "mainEntry", "securityMode", "siteSecurityMode", "effectiveSecurityMode", "fileCount", "totalSize", "entryNote"} {
+			if v, exists := bundle[k]; exists && v != nil {
+				fmt.Printf("  %-20s %v\n", k+":", v)
+			}
+		}
+	}
+	if files, ok := m["files"].([]any); ok && len(files) > 0 {
+		fmt.Println("\nFiles")
+		limit := len(files)
+		if limit > 12 {
+			limit = 12
+		}
+		for _, item := range files[:limit] {
+			file, _ := item.(map[string]any)
+			fmt.Printf("  %-42s %8d\n", asString(file["path"]), toInt64(file["size"]))
+		}
+		if len(files) > limit {
+			fmt.Printf("  ... and %d more files\n", len(files)-limit)
+		}
+	}
+	if reuse, ok := m["reuse"].(map[string]any); ok {
+		fmt.Println("\nReuse")
+		for _, k := range []string{"allowReuse", "allowDownload", "policyNote", "downloadUrl", "detailUrl", "cli", "agentPrompt"} {
+			if v, exists := reuse[k]; exists && v != nil && fmt.Sprint(v) != "" {
+				fmt.Printf("  %-20s %v\n", k+":", v)
+			}
+		}
+		if mcp, exists := reuse["mcp"]; exists && mcp != nil {
+			b, _ := json.MarshalIndent(mcp, "  ", "  ")
+			fmt.Printf("  %-20s %s\n", "mcp:", strings.TrimSpace(string(b)))
+		}
+	}
+}
+
+func printAdminSiteDetail(resp map[string]any) {
+	site, _ := resp["site"].(map[string]any)
+	fmt.Println("Site")
+	for _, k := range []string{"code", "publicId", "ownerUsername", "ownerTokenId", "status", "visibility", "accessProtected", "reusePolicy", "sourceDownloadPolicy", "securityMode", "currentVersion", "versionCount", "totalSize", "createdAt", "lastVersionAt"} {
+		if v, exists := site[k]; exists && v != nil && fmt.Sprint(v) != "" {
+			fmt.Printf("  %-22s %v\n", k+":", v)
+		}
+	}
+	if bundle, ok := resp["bundle"].(map[string]any); ok {
+		fmt.Println("\nBundle")
+		for _, k := range []string{"kindLabel", "kind", "mainEntry", "root", "securityMode", "siteSecurityMode", "effectiveSecurityMode", "fileCount", "totalSize", "entryNote"} {
+			if v, exists := bundle[k]; exists && v != nil && fmt.Sprint(v) != "" {
+				fmt.Printf("  %-22s %v\n", k+":", v)
+			}
+		}
+	}
+	if files, ok := resp["files"].([]any); ok && len(files) > 0 {
+		fmt.Println("\nFiles")
+		limit := len(files)
+		if limit > 40 {
+			limit = 40
+		}
+		for _, item := range files[:limit] {
+			file, _ := item.(map[string]any)
+			fmt.Printf("  %-48s %8d %s\n", asString(file["path"]), toInt64(file["size"]), binaryFlag(file["isBinary"]))
+		}
+		if len(files) > limit {
+			fmt.Printf("  ... and %d more files\n", len(files)-limit)
+		}
+	}
+	if reuse, ok := resp["reuse"].(map[string]any); ok {
+		fmt.Println("\nReuse")
+		for _, k := range []string{"allowReuse", "allowDownload", "policyNote", "downloadUrl", "detailUrl", "cli", "agentPrompt"} {
+			if v, exists := reuse[k]; exists && v != nil && fmt.Sprint(v) != "" {
+				fmt.Printf("  %-22s %v\n", k+":", v)
+			}
+		}
+		if mcp, exists := reuse["mcp"]; exists && mcp != nil {
+			b, _ := json.MarshalIndent(mcp, "  ", "  ")
+			fmt.Printf("  %-22s %s\n", "mcp:", strings.TrimSpace(string(b)))
+		}
+	}
+	if versions, ok := resp["versions"].([]any); ok && len(versions) > 0 {
+		fmt.Println("\nVersions")
+		limit := len(versions)
+		if limit > 12 {
+			limit = 12
+		}
+		fmt.Printf("  %-8s %-8s %-8s %-20s %s\n", "VERSION", "STATUS", "LOCKED", "CREATED", "TITLE")
+		for _, item := range versions[:limit] {
+			version, _ := item.(map[string]any)
+			fmt.Printf("  %-8d %-8s %-8v %-20s %s\n",
+				toInt64(version["versionNumber"]),
+				asString(version["status"]),
+				version["isLocked"],
+				prettyTime(version["createdAt"]),
+				shortString(asString(version["title"]), 42),
+			)
+		}
+		if len(versions) > limit {
+			fmt.Printf("  ... and %d more versions\n", len(versions)-limit)
+		}
+	}
+}
+
+func printAuditLogList(resp map[string]any) {
+	logs, _ := resp["logs"].([]any)
+	total := toInt64(resp["total"])
+	page := toInt64(resp["page"])
+	pageSize := toInt64(resp["pageSize"])
+	fmt.Printf("Audit logs page %d (total %d, page size %d)\n\n", page, total, pageSize)
+	if len(logs) == 0 {
+		fmt.Println("No audit logs found.")
+		return
+	}
+	fmt.Printf("%-16s %-24s %-8s %-18s %-10s %-12s %-22s %s\n", "TIME", "ACTION", "RESULT", "ACTOR", "ROLE", "SITE", "TARGET", "IP")
+	for _, item := range logs {
+		log, _ := item.(map[string]any)
+		target := strings.Trim(strings.TrimSpace(asString(log["targetType"])+":"+asString(log["targetId"])), ":")
+		actor := asString(log["actorId"])
+		if actor == "" {
+			actor = asString(log["actorType"])
+		}
+		fmt.Printf("%-16s %-24s %-8s %-18s %-10s %-12s %-22s %s\n",
+			prettyTime(log["createdAt"]),
+			shortString(asString(log["action"]), 24),
+			shortString(asString(log["result"]), 8),
+			shortString(actor, 18),
+			shortString(asString(log["actorRole"]), 10),
+			shortString(asString(log["siteCode"]), 12),
+			shortString(target, 22),
+			shortString(asString(log["ip"]), 20),
+		)
+	}
+	fmt.Println("\nDetails")
+	for _, item := range logs {
+		log, _ := item.(map[string]any)
+		id := toInt64(log["id"])
+		action := asString(log["action"])
+		if action == "" {
+			action = "-"
+		}
+		fmt.Printf("- #%d %s %s\n", id, action, prettyTime(log["createdAt"]))
+		fmt.Printf("  User-Agent: %s\n", fallbackString(asString(log["userAgent"]), "-"))
+		fmt.Printf("  Detail: %s\n", formatAuditLogDetail(log["detail"]))
+	}
+}
+
+func formatAuditLogDetail(detail any) string {
+	if detail == nil {
+		return "{}"
+	}
+	if s, ok := detail.(string); ok {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return "{}"
+		}
+		var parsed any
+		if json.Unmarshal([]byte(s), &parsed) == nil {
+			detail = parsed
+		} else {
+			return s
+		}
+	}
+	b, err := json.Marshal(detail)
+	if err != nil {
+		return fmt.Sprint(detail)
+	}
+	return string(b)
+}
+
+func fallbackString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func binaryFlag(v any) string {
+	if b, ok := v.(bool); ok && b {
+		return "bin"
+	}
+	return ""
 }
 
 // prettyTime 把 ISO 时间字符串截短到分钟，便于表格展示。
@@ -1335,6 +1663,20 @@ func asString(v any) string {
 		return s
 	}
 	return ""
+}
+
+func shortString(value string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= max {
+		return string(runes)
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
 }
 
 // ===== 子命令：like =====

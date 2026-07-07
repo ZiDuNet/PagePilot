@@ -5,6 +5,7 @@ import {
   Timeline
 } from "antd";
 import {
+  AlertTriangle,
   Bot,
   Bookmark,
   ChevronLeft,
@@ -54,6 +55,9 @@ type AgentDocTab = "skill" | "mcp";
 type PreviewStatus = "idle" | "loading" | "loaded";
 type PreviewViewport = "desktop" | "tablet" | "mobile";
 
+const PREVIEW_IFRAME_SANDBOX =
+  "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-top-navigation-by-user-activation";
+
 interface EditableDeployFile {
   path: string;
   content: string;
@@ -77,6 +81,8 @@ interface VersionItem {
   id?: string;
   versionId?: string;
   versionNumber: number;
+  templateSourceCode?: string;
+  templateSourceVersion?: number;
   status?: string;
   isCurrent?: boolean;
   isLocked?: boolean;
@@ -102,6 +108,16 @@ interface DeploySiteItem {
   updatedAt?: string;
 }
 
+interface StructuredAPIErrorPayload {
+  errorCode?: string;
+  detail?: string;
+  stage?: string;
+  hint?: string;
+  requestId?: string;
+  retryAfter?: number;
+  [key: string]: unknown;
+}
+
 interface SiteListResponse {
   sites?: DeploySiteItem[];
 }
@@ -121,11 +137,197 @@ function getPageFromPath(pathname: string): Page {
   return "home";
 }
 
+function getMarketDetailKeyFromPath(pathname: string): string {
+  const match = pathname.match(/^\/market\/([^/?#]+)/);
+  if (!match?.[1]) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
 function formatSize(bytes?: number): string {
   const n = Number(bytes || 0);
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(2)} MB`;
+}
+
+interface FileTreeEntry {
+  path: string;
+  size?: number;
+  sha256?: string;
+  isBinary?: boolean;
+}
+
+function fileDirectory(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx > 0 ? path.slice(0, idx) : "根目录";
+}
+
+function FileTreeExplorer({
+  files,
+  totalSize,
+  onCopy
+}: {
+  files: FileTreeEntry[];
+  totalSize?: number;
+  onCopy: (value: string) => void | Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const folders = new Set<string>();
+  let computedSize = 0;
+  for (const file of files) {
+    computedSize += Number(file.size || 0);
+    const parts = file.path.split("/").filter(Boolean);
+    for (let i = 1; i < parts.length; i += 1) {
+      folders.add(parts.slice(0, i).join("/"));
+    }
+  }
+  const filtered = normalizedQuery
+    ? files.filter((file) => `${file.path} ${file.sha256 || ""}`.toLowerCase().includes(normalizedQuery))
+    : files;
+  const visible = filtered.slice(0, 120);
+
+  return (
+    <div className="file-tree-panel">
+      <div className="file-tree-toolbar">
+        <label className="file-tree-search">
+          <Search size={13} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索路径、文件名或 SHA" />
+        </label>
+        <div className="file-tree-stats" aria-label="文件树统计">
+          <span>{files.length} 文件</span>
+          <span>{folders.size} 目录</span>
+          <span>{formatSize(totalSize || computedSize)}</span>
+        </div>
+      </div>
+      <div className="detail-file-tree enhanced">
+        {visible.map((file) => (
+          <div className={`file-tree-row ${file.isBinary ? "is-binary" : ""}`} key={file.path}>
+            <button className="file-tree-path-button" type="button" title="复制文件路径" onClick={() => void onCopy(file.path)}>
+              <code>{file.path}</code>
+              <small>{fileDirectory(file.path)} · {file.isBinary ? "二进制" : "文本"}</small>
+            </button>
+            <div className="file-tree-meta">
+              <em>{formatSize(file.size || 0)}</em>
+              {file.sha256 && (
+                <button type="button" title="复制 SHA-256" onClick={() => void onCopy(file.sha256 || "")}>
+                  <Copy size={11} />SHA
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+        {!visible.length && <span className="file-tree-empty">没有匹配的文件</span>}
+      </div>
+      {filtered.length > visible.length && (
+        <p className="file-tree-more">已显示前 {visible.length} 个文件，可继续搜索缩小范围。</p>
+      )}
+    </div>
+  );
+}
+
+function structuredAPIError(err: unknown): StructuredAPIErrorPayload | null {
+  if (!(err instanceof APIError)) return null;
+  if (!err.body || typeof err.body !== "object" || Array.isArray(err.body)) return null;
+  return err.body as StructuredAPIErrorPayload;
+}
+
+function plainErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function errorStageLabel(stage?: string): string {
+  const normalized = String(stage || "").toLowerCase();
+  const labels: Record<string, string> = {
+    zip_bundle: "ZIP / Bundle 识别",
+    validate: "发布参数校验",
+    file_path: "文件路径校验",
+    content: "内容校验",
+    load_site: "站点读取",
+    source_download: "源码下载"
+  };
+  return labels[normalized] || stage || "发布处理";
+}
+
+function deployErrorTitle(payload: StructuredAPIErrorPayload | null): string {
+  const code = String(payload?.errorCode || "").toUpperCase();
+  const stage = String(payload?.stage || "").toLowerCase();
+  if (code.startsWith("ZIP_") || stage === "zip_bundle") return "ZIP / 多文件包需要调整";
+  if (code === "CONTENT_TOO_LARGE") return "上传内容超过限制";
+  if (code === "INVALID_FILE_PATH") return "文件路径不符合要求";
+  if (code === "INVALID_CUSTOM_CODE") return "自定义 code 不可用";
+  if (code === "RATE_LIMITED") return "发布过于频繁";
+  return "发布失败";
+}
+
+function deployErrorHints(payload: StructuredAPIErrorPayload | null): string[] {
+  const hints = new Set<string>();
+  const code = String(payload?.errorCode || "").toUpperCase();
+  const stage = String(payload?.stage || "").toLowerCase();
+  if (payload?.hint) hints.add(String(payload.hint));
+  if (stage === "zip_bundle" || code.startsWith("ZIP_")) {
+    hints.add("请确认 ZIP 里只有一个可发布的网站根目录，优先放置 index.html 或 README.md。");
+    hints.add("如果入口文件不在根目录，可以在入口文件名里填写真实相对路径后再发布。");
+  }
+  if (code === "ZIP_AMBIGUOUS_ENTRY") {
+    hints.add("检测到多个候选入口，请把每个网站拆成独立 ZIP，或只保留一个入口。");
+  }
+  if (code === "ZIP_ENTRY_MISSING") {
+    hints.add("没有找到 HTML 或 Markdown 入口，请添加 index.html、README.md 或明确填写入口文件名。");
+  }
+  if (code === "ZIP_UNSAFE_PATH" || code === "INVALID_FILE_PATH") {
+    hints.add("文件路径只能使用相对路径，不能包含 ..、盘符、反斜杠开头或空路径段。");
+  }
+  if (code === "ZIP_FILE_TOO_LARGE" || code === "ZIP_TOTAL_TOO_LARGE" || code === "ZIP_TOO_MANY_FILES" || code === "CONTENT_TOO_LARGE") {
+    hints.add("请压缩资源、删除无关文件，或让管理员调整单文件、文件数和整站大小上限。");
+  }
+  if (!hints.size) {
+    hints.add("请检查标题、描述、code、入口文件和上传内容是否完整，再重新发布。");
+  }
+  return Array.from(hints);
+}
+
+function DeployErrorPanel({ message, error }: { message: string; error: StructuredAPIErrorPayload | null }) {
+  const [copied, setCopied] = useState(false);
+  const hints = deployErrorHints(error);
+  const diagnostics = JSON.stringify({ message, ...(error || {}) }, null, 2);
+  const copyDiagnostics = async () => {
+    await navigator.clipboard.writeText(diagnostics);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  return (
+    <div className="deploy-error-card" role="alert">
+      <div className="deploy-error-head">
+        <span className="deploy-error-icon"><AlertTriangle size={18} /></span>
+        <div>
+          <strong>{deployErrorTitle(error)}</strong>
+          <p>{error?.detail || message}</p>
+        </div>
+      </div>
+      {error && (
+        <div className="deploy-error-badges">
+          {error.errorCode && <code>{error.errorCode}</code>}
+          {error.stage && <span>{errorStageLabel(error.stage)}</span>}
+          {error.retryAfter && <span>{error.retryAfter}s 后重试</span>}
+          {error.requestId && <span>请求 {error.requestId}</span>}
+        </div>
+      )}
+      <ul className="deploy-error-hints">
+        {hints.map((hint) => <li key={hint}>{hint}</li>)}
+      </ul>
+      {error && (
+        <button className="deploy-error-copy" type="button" onClick={() => void copyDiagnostics()}>
+          <Copy size={13} />{copied ? "已复制诊断信息" : "复制诊断信息"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function formatDate(value?: string): string {
@@ -682,6 +884,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
   const [items, setItems] = useState<MarketplaceDeploy[]>([]);
   const [selected, setSelected] = useState<MarketplaceDeploy | null>(null);
   const [detail, setDetail] = useState<MarketplaceDeploy | null>(null);
+  const [detailKey, setDetailKey] = useState(() => getMarketDetailKeyFromPath(location.pathname));
   const [detailLoading, setDetailLoading] = useState(false);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -773,25 +976,63 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
     void load(1, false);
   }, [load]);
 
-  const openDetail = useCallback(async (item: MarketplaceDeploy) => {
+  const closeDetail = useCallback((restoreScroll = false) => {
+    setDetailKey("");
+    setDetail(null);
+    setDetailLoading(false);
+    if (location.pathname.startsWith("/market/")) {
+      history.pushState({}, "", "/market");
+    }
+    if (restoreScroll) {
+      window.setTimeout(() => {
+        window.scrollTo({ top: listScrollRef.current, behavior: "auto" });
+      }, 0);
+    }
+  }, []);
+
+  const openDetail = useCallback((item: MarketplaceDeploy) => {
     listScrollRef.current = window.scrollY;
-    setDetailLoading(true);
     setDetail(item);
-    try {
-      const key = item.publicId || item.id || item.code;
-      const data = await api<MarketplaceDeploy>(`/api/deploys/${encodeURIComponent(key)}`);
-      setDetail(data);
-    } finally {
-      setDetailLoading(false);
+    const key = item.publicId || item.id || item.code;
+    setDetailKey(key);
+    const href = `/market/${encodeURIComponent(key)}`;
+    if (location.pathname !== href) {
+      history.pushState({}, "", href);
     }
   }, []);
 
   const backToList = useCallback(() => {
-    setDetail(null);
-    window.setTimeout(() => {
-      window.scrollTo({ top: listScrollRef.current, behavior: "auto" });
-    }, 0);
+    closeDetail(true);
+  }, [closeDetail]);
+
+  useEffect(() => {
+    const onPop = () => setDetailKey(getMarketDetailKeyFromPath(location.pathname));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
   }, []);
+
+  useEffect(() => {
+    if (!detailKey) {
+      setDetail(null);
+      setDetailLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDetailLoading(true);
+    api<MarketplaceDeploy>(`/api/deploys/${encodeURIComponent(detailKey)}`)
+      .then((data) => {
+        if (!cancelled) setDetail(data);
+      })
+      .catch(() => {
+        if (!cancelled) setDetail(null);
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detailKey]);
 
   useEffect(() => {
     api<MarketCategoriesResponse>("/api/market/categories")
@@ -823,7 +1064,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
                 onClick={() => {
                   setPage(1);
                   setKind(item.key);
-                  setDetail(null);
+                  closeDetail();
                 }}
               >
                 <span className="market-category-icon">{item.icon}</span>
@@ -846,7 +1087,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
                 onClick={() => {
                   setPage(1);
                   setCategory(item.key);
-                  setDetail(null);
+                  closeDetail();
                 }}
               >
                 <span className="market-category-icon">{item.icon}</span>
@@ -859,7 +1100,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
           </nav>
           <div className="market-sidebar-note">
             <strong>提示</strong>
-            <span>加密作品会出现在市场，但预览和源码下载会继续受访问密码保护。</span>
+            <span>加密作品可以凭访问密码浏览；源码下载和模板复用会被禁用。</span>
           </div>
         </aside>
 
@@ -979,7 +1220,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
         </div>
       </section>
 
-      {selected && <MarketUseDrawer item={selected} session={session} onClose={() => setSelected(null)} />}
+      {selected && <MarketUseDrawer item={selected} onClose={() => setSelected(null)} />}
     </section>
   );
 }
@@ -1082,11 +1323,12 @@ function MarketplaceCard({
             title={`${title} 预览`}
             loading="lazy"
             scrolling="no"
-            sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"
+            sandbox={PREVIEW_IFRAME_SANDBOX}
           />
         )}
         <div className="card-quickbar" aria-label="作品数据">
           <span title="访问量"><Eye size={13} />{compactNumber(item.viewCount || 0)}</span>
+          <span title="复用次数"><Workflow size={13} />{compactNumber(item.reuseCount || 0)}</span>
           <span title="版本数"><Layers size={13} />v{item.versionCount || 1}</span>
         </div>
         <div className="card-hover-actions">
@@ -1155,13 +1397,19 @@ function MarketDetailViewFull({
 }) {
   const appURL = sameSiteURL(`/agent/${encodeURIComponent(item.code)}/`);
   const isLocked = Boolean(item.accessProtected);
-  const canDownload = Boolean(session?.success) && !isLocked;
+  const canDownload = Boolean(item.reuse?.allowDownload && item.reuse?.downloadUrl);
+  const canReuse = item.reuse?.allowReuse !== false;
+  const downloadUrl = item.reuse?.downloadUrl || `/api/deploy/content?code=${encodeURIComponent(item.code)}&download=1`;
   const canManage = Boolean(item.canManage || item.owned || session?.isAdmin);
   const [versions, setVersions] = useState<VersionItem[]>([]);
   const [viewport, setViewport] = useState<PreviewViewport>("desktop");
   const [busyVersion, setBusyVersion] = useState<number | null>(null);
   const [showAllVersions, setShowAllVersions] = useState(false);
   const displayTags = (item.tags || []).slice(0, 6);
+  const detailFiles = item.files || [];
+  const treeItems = item.bundle?.tree || [];
+  const displayTree = treeItems.length ? treeItems : detailFiles;
+  const mcpText = item.reuse?.mcp ? JSON.stringify(item.reuse.mcp, null, 2) : "";
 
   const loadVersions = useCallback(async () => {
     const data = await api<VersionsResponse>(`/api/deploys/${encodeURIComponent(item.code)}/versions`);
@@ -1245,7 +1493,7 @@ function MarketDetailViewFull({
                 <span>打开应用并输入访问密码后才能查看内容。</span>
               </div>
             ) : (
-              <iframe src={`${appURL}?preview=1`} title={`${item.title || item.code} 预览`} sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals" />
+              <iframe src={`${appURL}?preview=1`} title={`${item.title || item.code} 预览`} sandbox={PREVIEW_IFRAME_SANDBOX} />
             )}
           </div>
         </div>
@@ -1278,18 +1526,57 @@ function MarketDetailViewFull({
           <span><strong>{marketFileType(item)}</strong><em>类型</em></span>
           <span><strong>{item.likeCount || 0}</strong><em>点赞</em></span>
           <span><strong>{item.viewCount || 0}</strong><em>访问</em></span>
+          <span><strong>{item.reuseCount || 0}</strong><em>复用</em></span>
           <span><strong>{item.versionCount || versions.length || 1}</strong><em>版本</em></span>
           <span><strong>{formatDate(item.updatedAt || item.createdAt)}</strong><em>更新</em></span>
         </div>
+        {item.bundle && (
+          <div className="detail-info-block">
+            <div className="detail-info-head"><FileArchive size={15} /><strong>Bundle 信息</strong></div>
+            <div className="detail-info-grid">
+              <span><em>类型</em><strong>{item.bundle.kindLabel || item.bundle.kind || "-"}</strong></span>
+              <span><em>入口</em><strong>{item.bundle.mainEntry || item.filename || "-"}</strong></span>
+              {item.bundle.root && <span><em>根目录</em><strong>{item.bundle.root}</strong></span>}
+              <span><em>安全模式</em><strong>{securityModeLabel(item.bundle.effectiveSecurityMode || item.bundle.securityMode)}</strong></span>
+              <span><em>文件</em><strong>{item.bundle.fileCount || detailFiles.length || 0} 个 · {formatSize(item.bundle.totalSize || item.fileSize || 0)}</strong></span>
+            </div>
+            {item.bundle.entryNote && <p>{item.bundle.entryNote}</p>}
+          </div>
+        )}
+        {!!displayTree.length && (
+          <div className="detail-info-block">
+            <div className="detail-info-head"><FileText size={15} /><strong>完整文件树</strong></div>
+            <FileTreeExplorer
+              files={displayTree}
+              totalSize={item.bundle?.totalSize || item.fileSize}
+              onCopy={copyText}
+            />
+          </div>
+        )}
+        {item.reuse && (
+          <div className="detail-info-block">
+            <div className="detail-info-head"><Workflow size={15} /><strong>复用参数</strong></div>
+            {item.templateSourceCode && (
+              <p>这个作品基于 {item.templateSourceCode} v{item.templateSourceVersion || "-"} 二次创作。</p>
+            )}
+            {item.reuse.policyNote && <p>{item.reuse.policyNote}</p>}
+            <div className="detail-copy-stack">
+              {item.reuse.agentPrompt && <button className="button compact full" type="button" onClick={() => void copyText(item.reuse?.agentPrompt || "")}><Copy size={13} />复制 Agent 提示词</button>}
+              {item.reuse.cli && <button className="button compact full" type="button" onClick={() => void copyText(item.reuse?.cli || "")}><Code2 size={13} />复制 CLI 命令</button>}
+              {mcpText && <button className="button compact full" type="button" onClick={() => void copyText(mcpText)}><PackageOpen size={13} />复制 MCP 参数</button>}
+              {!item.reuse.allowReuse && <span className="muted-line">当前作品不开放模板复用。</span>}
+            </div>
+          </div>
+        )}
         <div className="market-detail-actions">
-          <button className="button primary full" type="button" onClick={() => onUse(item)}><Workflow size={16} />使用此模板</button>
+          <button className="button primary full" type="button" disabled={!canReuse} onClick={() => onUse(item)}><Workflow size={16} />{canReuse ? "使用此模板" : "模板复用受限"}</button>
           <a className="button full" href={appURL} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开应用</a>
           <button className="button full" type="button" onClick={() => void copyText(appURL)}><Copy size={16} />复制链接</button>
           {canManage && <a className="button full" href={updateURL}><Upload size={16} />更新版本</a>}
           {canDownload ? (
-            <a className="button full" href={`/api/deploy/content?code=${encodeURIComponent(item.code)}&download=1`}><Download size={16} />下载源文件</a>
+            <a className="button full" href={downloadUrl}><Download size={16} />下载源文件</a>
           ) : (
-            <a className="button full" href="/admin?mode=login"><Download size={16} />登录后下载源文件</a>
+            <button className="button full" type="button" disabled><Download size={16} />源码下载受限</button>
           )}
         </div>
         <div className="detail-qr-block">
@@ -1314,6 +1601,9 @@ function MarketDetailViewFull({
                   </span>
                 </div>
                 <p>{formatDate(version.createdAt)}</p>
+                {version.templateSourceCode && (
+                  <p className="muted-line">来源：{version.templateSourceCode} v{version.templateSourceVersion || "-"}</p>
+                )}
                 <div className="version-actions">
                   <a className="button compact" href={versionURL} target="_blank" rel="noreferrer">查看</a>
                   <button className="button compact" type="button" onClick={() => void copyText(versionURL)}><Copy size={13} />复制</button>
@@ -1337,10 +1627,19 @@ function MarketDetailViewFull({
 }
 
 function marketFileType(item: MarketplaceDeploy) {
+  if (item.bundle?.kindLabel) return item.bundle.kindLabel;
   const name = (item.filename || item.filePath || "").toLowerCase();
   if (name.endsWith(".md") || name.endsWith(".markdown")) return "MD";
   if (name.endsWith(".html") || name.endsWith(".htm")) return "HTML";
   return "ZIP / Site";
+}
+
+function securityModeLabel(mode?: string) {
+  if (mode === "strict") return "严格";
+  if (mode === "trusted") return "受信任";
+  if (mode === "compatible") return "兼容";
+  if (mode === "standard") return "标准";
+  return mode || "标准";
 }
 
 function marketCategoryLabel(category?: string) {
@@ -1375,19 +1674,66 @@ function categoryIcon(slug?: string) {
   }
 }
 
-function MarketUseDrawer({ item, session, onClose }: { item: MarketplaceDeploy; session: SessionInfo | null; onClose: () => void }) {
-  const downloadURL = `/api/deploy/content?code=${encodeURIComponent(item.code)}&download=1`;
+function MarketUseDrawer({ item, onClose }: { item: MarketplaceDeploy; onClose: () => void }) {
+  const [reuseMode, setReuseMode] = useState<"new" | "update">("new");
+  const [targetCode, setTargetCode] = useState("");
+  const fallbackReusable = item.visibility === "public" && !item.accessProtected;
+  const canReuse = item.reuse ? item.reuse.allowReuse !== false : fallbackReusable;
+  const canDownload = item.reuse ? Boolean(item.reuse.allowDownload && item.reuse.downloadUrl) : fallbackReusable;
+  const policyNote = item.reuse?.policyNote || (canReuse ? "公开且未加密的作品可以下载源码并作为模板复用。" : "当前作品未开放源码下载和模板复用。");
+  const downloadURL = item.reuse?.downloadUrl || `/api/deploy/content?code=${encodeURIComponent(item.code)}&download=1`;
   const title = item.title || item.code;
-  const canDownload = Boolean(session?.success) && !item.accessProtected;
-  const cli = [
-    `pagep get ${item.code} --download --output ./pagepilot-downloads`,
-    `pagep deploy ./pagepilot-downloads/${item.code} --title "${title} remix" --description "基于 PagePilot 创作市场作品 ${item.code} 二次创作"`
+  const sourceVersion = item.reuse?.templateSourceVersion || item.versionCount || 1;
+  const sourceCode = item.reuse?.templateSourceCode || item.code;
+  const sourceFiles = item.bundle?.tree?.length ? item.bundle.tree : (item.files || []);
+  const sourceSummary = {
+    kind: item.bundle?.kindLabel || marketFileType(item),
+    entry: item.bundle?.mainEntry || item.filename || "自动识别",
+    root: item.bundle?.root || "根目录",
+    downloadType: canDownload
+      ? (sourceFiles.length > 1 || item.bundle?.kind === "zip_site" || item.bundle?.kind === "static_site" ? "ZIP 源码包" : "单文件源码")
+      : "下载受限",
+    fileCount: item.bundle?.fileCount || sourceFiles.length || 1,
+    totalSize: formatSize(item.bundle?.totalSize || item.fileSize || 0)
+  };
+  const visibleSourceFiles = sourceFiles.slice(0, 6);
+  const mcpText = item.reuse?.mcp
+    ? JSON.stringify(item.reuse.mcp, null, 2)
+    : JSON.stringify({
+      tool: "deploy_site",
+      template_source_code: sourceCode,
+      template_source_version: sourceVersion,
+      reuse_mode: reuseMode
+    }, null, 2);
+  const normalizedTargetCode = targetCode.trim();
+  const canCopyReuse = canReuse && (reuseMode === "new" || normalizedTargetCode.length > 0);
+  const newCli = item.reuse?.cli || [
+    `pagep market show ${item.code}`,
+    "复制详情响应里的 reuse.cli 后执行；它会包含准确的源码下载路径、template-source-code 和 template-source-version。"
   ].join("\n");
-  const agentPrompt = [
+  const updateCli = [
+    `pagep get ${item.code} --download --output ./pagepilot-downloads`,
+    normalizedTargetCode
+      ? `pagep append ${normalizedTargetCode} ./pagepilot-downloads/${item.code} --description "基于 ${title} 复用更新" --template-source-code ${sourceCode} --template-source-version ${sourceVersion}`
+      : "pagep append YOUR_EXISTING_CODE ./pagepilot-downloads/{downloaded-folder} --description \"基于市场作品复用更新\" --template-source-code " + sourceCode + " --template-source-version " + sourceVersion
+  ].join("\n");
+  const cli = reuseMode === "new" ? newCli : updateCli;
+  const newAgentPrompt = item.reuse?.agentPrompt || [
     `请从 PagePilot 创作市场复用作品 code=${item.code}。`,
     "先下载源文件并检查文件结构、入口 HTML、资源引用和交互逻辑。",
-    "在此基础上按我的新需求修改，然后作为新作品发布；不要覆盖原作品，除非我明确提供并确认原 code 的所有权。"
+    "在此基础上按我的新需求修改，然后作为新作品发布，并传 templateSourceCode/templateSourceVersion 记录来源；不要覆盖原作品，除非我明确提供并确认原 code 的所有权。"
   ].join("\n");
+  const updateAgentPrompt = [
+    `请参考 PagePilot 创作市场作品《${title}》（code=${item.code}，version=${sourceVersion}）的结构和风格。`,
+    normalizedTargetCode
+      ? `目标是更新我已有的 PagePilot 发布 code=${normalizedTargetCode}，请追加为新版本，不要创建新的 code。`
+      : "目标是更新我已有的 PagePilot 发布。开始前必须先让我确认目标 code，再追加为新版本，不要创建新的 code。",
+    `发布时传 templateSourceCode=${sourceCode}、templateSourceVersion=${sourceVersion} 记录复用来源；不要复制原作品里的隐私数据、密钥或不可复用内容。`
+  ].join("\n");
+  const agentPrompt = reuseMode === "new" ? newAgentPrompt : updateAgentPrompt;
+  const modeNote = reuseMode === "new"
+    ? "新建二创会生成新的 PagePilot code，并记录来源作品。"
+    : "更新已有发布需要你拥有目标 code，系统会追加新版本，不会覆盖来源作品。";
 
   return createPortal(
     <div className="market-use-modal" role="dialog" aria-modal="true" aria-label="作品复用">
@@ -1401,25 +1747,70 @@ function MarketUseDrawer({ item, session, onClose }: { item: MarketplaceDeploy; 
           <button className="button compact" type="button" onClick={onClose}>关闭</button>
         </div>
         <div className="market-use-body">
+          <div className="reuse-mode-panel">
+            <div className="reuse-mode-tabs" role="tablist" aria-label="复用方式">
+              <button className={reuseMode === "new" ? "active" : ""} type="button" role="tab" aria-selected={reuseMode === "new"} onClick={() => setReuseMode("new")}>
+                新建二创
+              </button>
+              <button className={reuseMode === "update" ? "active" : ""} type="button" role="tab" aria-selected={reuseMode === "update"} onClick={() => setReuseMode("update")}>
+                更新已有
+              </button>
+            </div>
+            <p>{modeNote}</p>
+            {reuseMode === "update" && (
+              <label className="reuse-target-code">
+                <span>目标 code</span>
+                <input value={targetCode} onChange={(event) => setTargetCode(event.target.value)} placeholder="填写你拥有的已有发布 code" />
+              </label>
+            )}
+          </div>
+          <div className="source-structure-panel">
+            <div className="detail-info-head"><FileArchive size={15} /><strong>源文件结构</strong></div>
+            <div className="source-summary-grid">
+              <span><em>类型</em><strong>{sourceSummary.kind}</strong></span>
+              <span><em>入口</em><strong>{sourceSummary.entry}</strong></span>
+              <span><em>根目录</em><strong>{sourceSummary.root}</strong></span>
+              <span><em>下载</em><strong>{sourceSummary.downloadType}</strong></span>
+              <span><em>文件</em><strong>{sourceSummary.fileCount} 个</strong></span>
+              <span><em>大小</em><strong>{sourceSummary.totalSize}</strong></span>
+            </div>
+            {visibleSourceFiles.length ? (
+              <div className="source-file-list">
+                {visibleSourceFiles.map((file) => (
+                  <button type="button" key={file.path} onClick={() => navigator.clipboard.writeText(file.path)} title="复制文件路径">
+                    <FileText size={12} />
+                    <code>{file.path}</code>
+                    <em>{formatSize(file.size || 0)}</em>
+                  </button>
+                ))}
+                {sourceFiles.length > visibleSourceFiles.length && <span>还有 {sourceFiles.length - visibleSourceFiles.length} 个文件，可在详情页查看完整文件树。</span>}
+              </div>
+            ) : (
+              <p className="muted-line">服务端未返回文件树时，请先下载源文件后检查入口和资源路径。</p>
+            )}
+          </div>
           <div className="use-grid">
             <UseCard icon={<Download />} title="1. 下载源文件" text="多文件站点会下载 ZIP，单文件页面会下载源码。">
               {canDownload ? (
                 <a className="button primary full" href={downloadURL}>下载源文件</a>
-              ) : item.accessProtected ? (
-                <button className="button full" disabled>源码受密码保护</button>
               ) : (
-                <a className="button full" href="/admin?mode=login">登录后下载</a>
+                <button className="button full" type="button" disabled>源码下载受限</button>
               )}
             </UseCard>
-            <UseCard icon={<Code2 />} title="2. CLI 命令行" text="复制命令到终端，下载后作为新作品发布。">
-              <button className="button full" type="button" onClick={() => navigator.clipboard.writeText(cli)}><Copy size={14} />复制 CLI</button>
+            <UseCard icon={<Code2 />} title="2. CLI 命令行" text={reuseMode === "new" ? "复制命令到终端，下载后作为新作品发布。" : "复制命令到终端，下载后追加到已有发布。"}>
+              <button className="button full" type="button" disabled={!canCopyReuse} onClick={() => navigator.clipboard.writeText(cli)}><Copy size={14} />复制 CLI</button>
             </UseCard>
             <UseCard icon={<Bot />} title="3. Agent / MCP" text="复制给 Agent，由创作市场提供复用边界。">
-              <button className="button full" type="button" onClick={() => navigator.clipboard.writeText(agentPrompt)}><Copy size={14} />复制指令</button>
+              <button className="button full" type="button" disabled={!canCopyReuse} onClick={() => navigator.clipboard.writeText(agentPrompt)}><Copy size={14} />复制指令</button>
+            </UseCard>
+            <UseCard icon={<PackageOpen />} title="4. MCP 参数" text="复制结构化参数给支持 MCP 的客户端，保留来源 code 和版本。">
+              <button className="button full" type="button" disabled={!canCopyReuse} onClick={() => navigator.clipboard.writeText(mcpText)}><Copy size={14} />复制 MCP</button>
             </UseCard>
           </div>
+          <p className="muted-line">{policyNote}</p>
           <DocBlock title="CLI" lines={cli.split("\n")} />
-          <DocBlock title="Agent / MCP 指令" lines={agentPrompt.split("\n")} />
+          <DocBlock title="Agent 指令" lines={agentPrompt.split("\n")} />
+          <DocBlock title="MCP 参数" lines={mcpText.split("\n")} />
         </div>
       </section>
     </div>,
@@ -1458,6 +1849,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
   const [updatableSitesError, setUpdatableSitesError] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [errorDetail, setErrorDetail] = useState<StructuredAPIErrorPayload | null>(null);
   const [result, setResult] = useState<DeployResponse | null>(null);
   const canPublishToMarket = Boolean(session?.success || session?.userId);
 
@@ -1549,6 +1941,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
   const submit = async () => {
     setBusy(true);
     setError("");
+    setErrorDetail(null);
     setResult(null);
     try {
       if (createVersion && !customCode.trim()) {
@@ -1582,7 +1975,8 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
       });
       setResult(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorMessage(err));
+      setErrorDetail(structuredAPIError(err));
     } finally {
       setBusy(false);
     }
@@ -1608,7 +2002,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
         </div>
         <div className="preview-box">
           {mode === "single" ? (
-            <iframe title="实时预览" srcDoc={content} sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals" />
+            <iframe title="实时预览" srcDoc={content} sandbox={PREVIEW_IFRAME_SANDBOX} />
           ) : (
             <div>
               <FileArchive size={36} />
@@ -1747,7 +2141,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
         <button className="button primary full" type="button" disabled={!ready || busy} onClick={submit}>
           <Rocket size={18} />{busy ? "部署中..." : "立即部署"}
         </button>
-        {error && <div className="error-box">{error}</div>}
+        {error && <DeployErrorPanel message={error} error={errorDetail} />}
       </aside>
       {result && <DeployResult result={result} onClose={() => setResult(null)} />}
     </section>
@@ -1850,8 +2244,8 @@ function SkillGuide({ baseURL }: { baseURL: string }) {
           title="复用创作市场作品"
           lines={[
             "pagep get demo-code --download --output ./pagepilot-downloads",
-            "修改源码后使用 pagep deploy 发布为新作品。",
-            "不要默认覆盖原作品；只有用户明确提供并确认原 code 所有权时才更新。"
+            "修改源码后使用 pagep deploy --template-source-code demo-code 发布为新作品。",
+            "可从详情页复制带 template-source-version 的完整命令；不要默认覆盖原作品。"
           ]}
         />
         <DocBlock
@@ -1909,8 +2303,8 @@ function MCPGuide({ baseURL }: { baseURL: string }) {
           title="创作市场提供"
           lines={[
             "市场详情页会生成下载源文件、CLI、Agent/MCP 三种复用方式。",
-            "Agent 复用公开作品时默认发布为新作品。",
-            "加密作品必须先通过访问密码授权。"
+            "Agent 复用公开作品时默认发布为新作品，并传 template_source_code 记录来源。",
+            "加密作品只能授权浏览，不提供源码下载和模板复用。"
           ]}
         />
         <DocBlock

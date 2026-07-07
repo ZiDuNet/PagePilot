@@ -25,6 +25,7 @@ func (s *Server) handleRequestScreenCommand(w http.ResponseWriter, r *http.Reque
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+userID, isAdmin)
 	screenID := strings.TrimSpace(r.PathValue("screenId"))
 	if screenID == "" {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "screen", "screen id is required"), reqID))
@@ -35,31 +36,57 @@ func (s *Server) handleRequestScreenCommand(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	commandType := normalizeScreenCommandType(req.Type)
+	commandDetail := func(requestID string) map[string]any {
+		detailType := commandType
+		if detailType == "" {
+			detailType = strings.TrimSpace(req.Type)
+		}
+		detail := map[string]any{
+			"type": detailType,
+		}
+		if requestID != "" {
+			detail["requestId"] = requestID
+		}
+		return detail
+	}
 	if commandType == "" {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "type", "type must be one of refresh, sleep, wake, shutdown"), reqID))
+		apiErr := NewError(CodeInvalidInput, "type", "type must be one of refresh, sleep, wake, shutdown")
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.command.request", "", "screen", screenID, commandDetail(""), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 	screen, err := s.deployer.GetScreen(r.Context(), screenID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "screen", "screen not found"), reqID))
+			apiErr := NewError(CodeNotFound, "screen", "screen not found")
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.command.request", "", "screen", screenID, commandDetail(""), apiErr)
+			writeError(w, apiErrWithReqID(apiErr, reqID))
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen", err.Error()), reqID))
+		apiErr := NewError(CodeInternal, "screen", err.Error())
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.command.request", "", "screen", screenID, commandDetail(""), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 	if !isAdmin && screen.OwnerUserID != userID {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "screen", "you can only control your own screens"), reqID))
+		apiErr := NewError(CodeForbidden, "screen", "you can only control your own screens")
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.command.request", "", "screen", screenID, commandDetail(""), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 	commandID := "cmd_" + randomHex(12)
+	detail := commandDetail(commandID)
 	updated, err := s.deployer.RequestScreenCommand(r.Context(), screenID, commandID, commandType, normalizeScreenCommandPayload(req.Payload))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "screen", "screen not found"), reqID))
+			apiErr := NewError(CodeNotFound, "screen", "screen not found")
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.command.request", "", "screen", screenID, detail, apiErr)
+			writeError(w, apiErrWithReqID(apiErr, reqID))
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen_command", err.Error()), reqID))
+		apiErr := NewError(CodeInternal, "screen_command", err.Error())
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.command.request", "", "screen", screenID, detail, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 	resp := ScreenCommandResponse{Success: true, Screen: s.toScreenItem(r.Context(), updated)}
@@ -72,6 +99,7 @@ func (s *Server) handleRequestScreenCommand(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	s.sendScreenWSCommand(screenID, resp.Command)
+	s.recordAuditLog(r, actorType, actorID, actorRole, "screen.command.request", "", "screen", screenID, detail)
 	writeJSON(w, http.StatusOK, resp)
 }
 

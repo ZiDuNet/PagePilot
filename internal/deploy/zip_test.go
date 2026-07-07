@@ -123,6 +123,46 @@ func TestResolveContentRejectsZipTraversal(t *testing.T) {
 	if !strings.Contains(strings.ToLower(apiErr.Detail), "safe relative path") {
 		t.Fatalf("unexpected error detail: %s", apiErr.Detail)
 	}
+	if apiErr.Stage != "zip_bundle" {
+		t.Fatalf("Stage = %q, want zip_bundle", apiErr.Stage)
+	}
+	if apiErr.ErrorCode != api.CodeZipUnsafePath {
+		t.Fatalf("ErrorCode = %q, want %q", apiErr.ErrorCode, api.CodeZipUnsafePath)
+	}
+	if apiErr.Hint == "" {
+		t.Fatal("expected ZIP path error to include a hint")
+	}
+}
+
+func TestResolveContentRejectsZipWithoutEntrypoint(t *testing.T) {
+	d := New(config.Default(), nil)
+	d.cfg.MaxSingleFileBytes = 1 << 20
+	d.cfg.MaxSiteTotalBytes = 2 << 20
+	d.cfg.MaxFilesPerSite = 50
+
+	zipBytes := makeTestZip(t, map[string]string{
+		"assets/app.css": "body{color:#0f172a}",
+		"assets/app.js":  "console.log('no entry')",
+	})
+
+	_, _, apiErr := d.resolveContent(api.DeployRequest{
+		Files: []api.DeployFile{{
+			Path:          "assets.zip",
+			ContentBase64: base64.StdEncoding.EncodeToString(zipBytes),
+		}},
+	}, "")
+	if apiErr == nil {
+		t.Fatal("expected ZIP without entrypoint to be rejected")
+	}
+	if apiErr.Stage != "zip_bundle" {
+		t.Fatalf("Stage = %q, want zip_bundle", apiErr.Stage)
+	}
+	if apiErr.ErrorCode != api.CodeZipEntryMissing {
+		t.Fatalf("ErrorCode = %q, want %q", apiErr.ErrorCode, api.CodeZipEntryMissing)
+	}
+	if apiErr.Hint == "" {
+		t.Fatal("expected ZIP missing-entry error to include a hint")
+	}
 }
 
 func TestResolveContentRejectsBatchZipWithMultipleWebsiteRoots(t *testing.T) {
@@ -150,6 +190,12 @@ func TestResolveContentRejectsBatchZipWithMultipleWebsiteRoots(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(apiErr.Hint), "one deployable website") {
 		t.Fatalf("unexpected error hint: %s", apiErr.Hint)
+	}
+	if apiErr.Stage != "zip_bundle" {
+		t.Fatalf("Stage = %q, want zip_bundle", apiErr.Stage)
+	}
+	if apiErr.ErrorCode != api.CodeZipAmbiguousEntry {
+		t.Fatalf("ErrorCode = %q, want %q", apiErr.ErrorCode, api.CodeZipAmbiguousEntry)
 	}
 }
 

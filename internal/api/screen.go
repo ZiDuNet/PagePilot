@@ -46,7 +46,7 @@ func (s *Server) handleListScreens(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBindScreen(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	userID, _, authErr := s.screenActor(r)
+	userID, isAdmin, authErr := s.screenActor(r)
 	if authErr != nil {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
@@ -71,6 +71,11 @@ func (s *Server) handleBindScreen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen_pairing", err.Error()), reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+userID, isAdmin)
+	s.recordAuditLog(r, actorType, actorID, actorRole, "screen.bind", "", "screen", screen.ID, map[string]any{
+		"name":       screen.Name,
+		"deviceName": screen.DeviceName,
+	})
 	writeJSON(w, http.StatusOK, ScreenBindResponse{Success: true, Screen: s.toScreenItem(r.Context(), screen)})
 }
 
@@ -81,6 +86,7 @@ func (s *Server) handlePublishScreen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+userID, isAdmin)
 	screenID := strings.TrimSpace(r.PathValue("screenId"))
 	if screenID == "" {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "screen", "screen id is required"), reqID))
@@ -91,21 +97,33 @@ func (s *Server) handlePublishScreen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := strings.TrimSpace(req.Code)
+	publishFailureDetail := func(version *int64, ownerID string) map[string]any {
+		return map[string]any{
+			"siteCode":      code,
+			"versionNumber": version,
+			"ownerUserId":   ownerID,
+		}
+	}
+	writePublishError := func(apiErr *APIError, version *int64, ownerID string) {
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.publish", code, "screen", screenID,
+			publishFailureDetail(version, ownerID), apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+	}
 	if code == "" {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "code", "code is required"), reqID))
+		writePublishError(NewError(CodeInvalidInput, "code", "code is required"), nil, userID)
 		return
 	}
 	site, err := s.deployer.GetSite(r.Context(), code)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "site", "site not found"), reqID))
+			writePublishError(NewError(CodeNotFound, "site", "site not found"), nil, userID)
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "site", err.Error()), reqID))
+		writePublishError(NewError(CodeInternal, "site", err.Error()), nil, userID)
 		return
 	}
 	if !isAdmin && !screenPublishAllowedForUser(site, userID) {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "site", "you can publish your own apps or public unprotected creation market apps to screens"), reqID))
+		writePublishError(NewError(CodeForbidden, "site", "you can publish your own apps or public unprotected creation market apps to screens"), req.VersionNumber, userID)
 		return
 	}
 	publishOwnerID := userID
@@ -113,10 +131,10 @@ func (s *Server) handlePublishScreen(w http.ResponseWriter, r *http.Request) {
 		screen, err := s.deployer.GetScreen(r.Context(), screenID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				writeError(w, apiErrWithReqID(NewError(CodeNotFound, "screen", "screen not found"), reqID))
+				writePublishError(NewError(CodeNotFound, "screen", "screen not found"), req.VersionNumber, publishOwnerID)
 				return
 			}
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen", err.Error()), reqID))
+			writePublishError(NewError(CodeInternal, "screen", err.Error()), req.VersionNumber, publishOwnerID)
 			return
 		}
 		publishOwnerID = screen.OwnerUserID
@@ -126,25 +144,30 @@ func (s *Server) handlePublishScreen(w http.ResponseWriter, r *http.Request) {
 		version = site.CurrentVersion
 	}
 	if version == nil || *version <= 0 {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "version", "site has no current version"), reqID))
+		writePublishError(NewError(CodeInvalidInput, "version", "site has no current version"), version, publishOwnerID)
 		return
 	}
 	if err := s.deployer.PublishScreen(r.Context(), screenID, publishOwnerID, code, version); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "screen", "screen not found"), reqID))
+			writePublishError(NewError(CodeNotFound, "screen", "screen not found"), version, publishOwnerID)
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen", err.Error()), reqID))
+		writePublishError(NewError(CodeInternal, "screen", err.Error()), version, publishOwnerID)
 		return
 	}
 	screen, err := s.deployer.GetScreen(r.Context(), screenID)
 	if err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen", err.Error()), reqID))
+		writePublishError(NewError(CodeInternal, "screen", err.Error()), version, publishOwnerID)
 		return
 	}
 	if err := s.sendScreenWSManifest(r.Context(), screenID, r); err != nil {
 		s.logger.Printf("push screen manifest failed for %s: %v", screenID, err)
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "screen.publish", code, "screen", screenID, map[string]any{
+		"siteCode":      code,
+		"versionNumber": version,
+		"ownerUserId":   publishOwnerID,
+	})
 	writeJSON(w, http.StatusOK, ScreenPublishResponse{Success: true, Screen: s.toScreenItem(r.Context(), screen)})
 }
 
@@ -166,6 +189,7 @@ func (s *Server) handleUnbindScreen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+userID, isAdmin)
 	screenID := strings.TrimSpace(r.PathValue("screenId"))
 	if screenID == "" {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "screen", "screen id is required"), reqID))
@@ -176,22 +200,37 @@ func (s *Server) handleUnbindScreen(w http.ResponseWriter, r *http.Request) {
 		screen, err := s.deployer.GetScreen(r.Context(), screenID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				writeError(w, apiErrWithReqID(NewError(CodeNotFound, "screen", "screen not found"), reqID))
+				apiErr := NewError(CodeNotFound, "screen", "screen not found")
+				s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.unbind", "", "screen", screenID,
+					map[string]any{"ownerUserId": unbindOwnerID}, apiErr)
+				writeError(w, apiErrWithReqID(apiErr, reqID))
 				return
 			}
-			writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen", err.Error()), reqID))
+			apiErr := NewError(CodeInternal, "screen", err.Error())
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.unbind", "", "screen", screenID,
+				map[string]any{"ownerUserId": unbindOwnerID}, apiErr)
+			writeError(w, apiErrWithReqID(apiErr, reqID))
 			return
 		}
 		unbindOwnerID = screen.OwnerUserID
 	}
 	if err := s.deployer.UnbindScreen(r.Context(), screenID, unbindOwnerID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, apiErrWithReqID(NewError(CodeNotFound, "screen", "screen not found"), reqID))
+			apiErr := NewError(CodeNotFound, "screen", "screen not found")
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.unbind", "", "screen", screenID,
+				map[string]any{"ownerUserId": unbindOwnerID}, apiErr)
+			writeError(w, apiErrWithReqID(apiErr, reqID))
 			return
 		}
-		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen", err.Error()), reqID))
+		apiErr := NewError(CodeInternal, "screen", err.Error())
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.unbind", "", "screen", screenID,
+			map[string]any{"ownerUserId": unbindOwnerID}, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "screen.unbind", "", "screen", screenID, map[string]any{
+		"ownerUserId": unbindOwnerID,
+	})
 	writeJSON(w, http.StatusOK, ScreenDeleteResponse{Success: true, ID: screenID})
 }
 

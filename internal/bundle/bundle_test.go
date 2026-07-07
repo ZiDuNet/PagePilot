@@ -3,6 +3,7 @@ package bundle
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -125,6 +126,19 @@ func TestAnalyzeZipBundleRejectsTraversal(t *testing.T) {
 	if !strings.Contains(strings.ToLower(err.Error()), "safe relative path") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	var bundleErr *Error
+	if !errors.As(err, &bundleErr) {
+		t.Fatalf("expected structured bundle error, got %T", err)
+	}
+	if bundleErr.Stage != StageZipBundle {
+		t.Fatalf("Stage = %q, want %q", bundleErr.Stage, StageZipBundle)
+	}
+	if bundleErr.Code != ErrCodeUnsafePath {
+		t.Fatalf("Code = %q, want %q", bundleErr.Code, ErrCodeUnsafePath)
+	}
+	if bundleErr.Hint == "" {
+		t.Fatal("expected bundle error to include a hint")
+	}
 }
 
 func TestAnalyzeZipBundleRejectsBatchWithoutSingleEntryRoot(t *testing.T) {
@@ -147,6 +161,16 @@ func TestAnalyzeZipBundleRejectsBatchWithoutSingleEntryRoot(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "multiple") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	var bundleErr *Error
+	if !errors.As(err, &bundleErr) {
+		t.Fatalf("expected structured bundle error, got %T", err)
+	}
+	if bundleErr.Code != ErrCodeAmbiguousEntry {
+		t.Fatalf("Code = %q, want %q", bundleErr.Code, ErrCodeAmbiguousEntry)
+	}
+	if bundleErr.Hint == "" {
+		t.Fatal("expected bundle error to include a hint")
 	}
 }
 

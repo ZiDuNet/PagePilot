@@ -64,12 +64,59 @@ export interface MarketplaceDeploy {
   isPinned?: boolean;
   viewCount?: number;
   likeCount?: number;
+  reuseCount?: number;
+  templateSourceCode?: string;
+  templateSourceVersion?: number;
   favoriteCount?: number;
   favorited?: boolean;
   versionCount?: number;
   fileSize?: number;
   createdAt?: string;
   updatedAt?: string;
+  bundle?: BundleDetail;
+  files?: ContentFile[];
+  reuse?: ReuseDetail;
+}
+
+export interface BundleDetail {
+  kind?: string;
+  kindLabel?: string;
+  root?: string;
+  mainEntry?: string;
+  securityMode?: string;
+  siteSecurityMode?: string;
+  effectiveSecurityMode?: string;
+  fileCount?: number;
+  totalSize?: number;
+  tree?: BundleTreeItem[];
+  entryNote?: string;
+}
+
+export interface BundleTreeItem {
+  path: string;
+  size?: number;
+  isBinary?: boolean;
+  sha256?: string;
+}
+
+export interface ContentFile {
+  path: string;
+  size?: number;
+  sha256?: string;
+  isBinary?: boolean;
+}
+
+export interface ReuseDetail {
+  downloadUrl?: string;
+  detailUrl?: string;
+  cli?: string;
+  agentPrompt?: string;
+  mcp?: Record<string, unknown>;
+  allowReuse?: boolean;
+  allowDownload?: boolean;
+  policyNote?: string;
+  templateSourceCode?: string;
+  templateSourceVersion?: number;
 }
 
 export interface DeployResponse {
@@ -83,6 +130,9 @@ export interface DeployResponse {
   versionId?: string;
   category?: string;
   size?: number;
+  reuseCount?: number;
+  templateSourceCode?: string;
+  templateSourceVersion?: number;
 }
 
 export interface MarketCategoryInfo {

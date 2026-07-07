@@ -183,14 +183,16 @@ func toolList() []toolDef {
 			InputSchema: jsonSchema{
 				Type: "object",
 				Properties: map[string]*schemaProp{
-					"source":          {Type: "string", Description: "本地路径。支持单 HTML、单 Markdown、网站 ZIP 或多文件目录。ZIP 会由服务器识别入口目录。"},
-					"description":     {Type: "string", Description: "必填，≤240 字符，说明本次部署内容"},
-					"title":           {Type: "string", Description: "站点标题，建议填写可读名称；不要使用 index.html 这类文件名"},
-					"custom_code":     {Type: "string", Description: "自定义短码，^[a-z0-9-]{3,32}$；留空自动生成"},
-					"create_version":  {Type: "boolean", Description: "custom_code 已存在时，true 追加版本；false/省略 报 CONFLICT"},
-					"visibility":      {Type: "string", Description: "public 进入创作市场；unlisted 仅链接访问", Enum: []string{"public", "unlisted"}},
-					"category":        {Type: "string", Description: "新作品的创作市场分类 slug，例如 landing/dashboard/docs/tool/game/screen。追加版本时通常不传。"},
-					"access_password": {Type: "string", Description: "Optional visit password for a new site. Empty means public."},
+					"source":                  {Type: "string", Description: "本地路径。支持单 HTML、单 Markdown、网站 ZIP 或多文件目录。ZIP 会由服务器识别入口目录。"},
+					"description":             {Type: "string", Description: "必填，≤240 字符，说明本次部署内容"},
+					"title":                   {Type: "string", Description: "站点标题，建议填写可读名称；不要使用 index.html 这类文件名"},
+					"custom_code":             {Type: "string", Description: "自定义短码，^[a-z0-9-]{3,32}$；留空自动生成"},
+					"create_version":          {Type: "boolean", Description: "custom_code 已存在时，true 追加版本；false/省略 报 CONFLICT"},
+					"visibility":              {Type: "string", Description: "public 进入创作市场；unlisted 仅链接访问", Enum: []string{"public", "unlisted"}},
+					"category":                {Type: "string", Description: "新作品的创作市场分类 slug，例如 landing/dashboard/docs/tool/game/screen。追加版本时通常不传。"},
+					"access_password":         {Type: "string", Description: "Optional visit password for a new site. Empty means public."},
+					"template_source_code":    {Type: "string", Description: "复用创作市场作品时传入原作品 code，用于记录来源和增加复用计数。"},
+					"template_source_version": {Type: "number", Description: "复用创作市场作品时传入原作品版本号；省略时使用原作品当前版本。"},
 				},
 				Required: []string{"source", "description", "title"},
 			},
@@ -228,6 +230,64 @@ func toolList() []toolDef {
 					"pinned": {Type: "boolean", Description: "true to pin, false to unpin"},
 				},
 				Required: []string{"code", "pinned"},
+			},
+		},
+		{
+			Name:        "set_site_reuse_policy",
+			Description: "管理员限定：设置站点源码下载和模板复用策略。auto 表示公开且未加密才默认开放；加密站点不会对非所有者 / 管理员开放源码下载，即使显式 allow 也不能绕过访问密码保护。",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"code":                   {Type: "string", Description: "Site short code"},
+					"reuse_policy":           {Type: "string", Description: "模板复用策略", Enum: []string{"auto", "allow", "deny"}},
+					"source_download_policy": {Type: "string", Description: "源码下载策略", Enum: []string{"auto", "allow", "deny"}},
+				},
+				Required: []string{"code", "reuse_policy", "source_download_policy"},
+			},
+		},
+		{
+			Name:        "set_site_security_mode",
+			Description: "管理员限定：设置站点级运行安全模式。auto 使用发布包自动识别结果；strict 更严格，compatible 更兼容，trusted 仅用于可信内容。",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"code":          {Type: "string", Description: "Site short code"},
+					"security_mode": {Type: "string", Description: "运行安全模式", Enum: []string{"auto", "strict", "compatible", "trusted"}},
+				},
+				Required: []string{"code", "security_mode"},
+			},
+		},
+		{
+			Name:        "get_admin_site_detail",
+			Description: "读取当前 Token 可管理的站点详情，包含 Bundle 类型、入口文件、完整文件树、版本、源码下载和模板复用参数。",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"code": {Type: "string", Description: "Site short code"},
+				},
+				Required: []string{"code"},
+			},
+		},
+		{
+			Name:        "query_audit_logs",
+			Description: "管理员限定：分页查询审计日志，可按用户、站点、动作、对象、结果、时间和关键词过滤。",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]*schemaProp{
+					"actor_type":  {Type: "string", Description: "操作者类型，例如 user/token/anonymous"},
+					"actor_id":    {Type: "string", Description: "操作者 ID"},
+					"actor_role":  {Type: "string", Description: "角色，例如 admin/user/anonymous"},
+					"action":      {Type: "string", Description: "动作，例如 site.pin、deploy.create"},
+					"result":      {Type: "string", Description: "结果，例如 success/failed"},
+					"site_code":   {Type: "string", Description: "站点 code"},
+					"target_type": {Type: "string", Description: "对象类型"},
+					"target_id":   {Type: "string", Description: "对象 ID"},
+					"q":           {Type: "string", Description: "关键词搜索"},
+					"since":       {Type: "string", Description: "RFC3339 起始时间"},
+					"until":       {Type: "string", Description: "RFC3339 截止时间"},
+					"page":        {Type: "integer", Description: "页码，默认 1"},
+					"page_size":   {Type: "integer", Description: "每页数量，最大 200"},
+				},
 			},
 		},
 		{
@@ -315,7 +375,7 @@ func toolList() []toolDef {
 		},
 		{
 			Name:        "get_deploy_detail",
-			Description: "读取单个应用的详情（公开市场信息）。public_id 是 UUID（32 字符）或 code 都可以。",
+			Description: "读取单个应用的详情（公开市场信息），包含 Bundle 类型、入口文件、文件树、安全模式和复用参数。public_id 是 UUID（32 字符）或 code 都可以。",
 			InputSchema: jsonSchema{
 				Type: "object",
 				Properties: map[string]*schemaProp{
@@ -450,6 +510,14 @@ func handleToolCall(ctx context.Context, c *client.Client, params json.RawMessag
 		resultText, callErr = toolSetSiteAccessPassword(ctx, c, p.Arguments)
 	case "set_site_pin":
 		resultText, callErr = toolSetSitePin(ctx, c, p.Arguments)
+	case "set_site_reuse_policy":
+		resultText, callErr = toolSetSiteReusePolicy(ctx, c, p.Arguments)
+	case "set_site_security_mode":
+		resultText, callErr = toolSetSiteSecurityMode(ctx, c, p.Arguments)
+	case "get_admin_site_detail":
+		resultText, callErr = toolGetAdminSiteDetail(ctx, c, p.Arguments)
+	case "query_audit_logs":
+		resultText, callErr = toolQueryAuditLogs(ctx, c, p.Arguments)
 	case "get_site_content":
 		resultText, callErr = toolGetContent(ctx, c, p.Arguments)
 	case "list_versions":
@@ -506,6 +574,8 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 	createVersion, _ := args["create_version"].(bool)
 	visibility, _ := args["visibility"].(string)
 	category, _ := args["category"].(string)
+	templateSourceCode, _ := args["template_source_code"].(string)
+	templateSourceVersion := toInt64(args["template_source_version"])
 
 	if source == "" {
 		return "", fmt.Errorf("source is required")
@@ -544,17 +614,19 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 		filename = files[0].Path
 	}
 	req := client.MultipartDeployRequest{
-		SourcePath:       sourceFile.Path,
-		UploadName:       sourceFile.Name,
-		Filename:         filename,
-		Description:      desc,
-		Title:            title,
-		CustomCode:       customCode,
-		CreateVersion:    createVersion,
-		Visibility:       visibility,
-		AccessPassword:   accessPassword,
-		Source:           "mcp",
-		EnableCustomCode: customCode != "",
+		SourcePath:            sourceFile.Path,
+		UploadName:            sourceFile.Name,
+		Filename:              filename,
+		Description:           desc,
+		Title:                 title,
+		CustomCode:            customCode,
+		CreateVersion:         createVersion,
+		Visibility:            visibility,
+		AccessPassword:        accessPassword,
+		Source:                "mcp",
+		TemplateSourceCode:    templateSourceCode,
+		TemplateSourceVersion: templateSourceVersion,
+		EnableCustomCode:      customCode != "",
 	}
 	if strings.TrimSpace(category) != "" && !createVersion {
 		req.Category = strings.TrimSpace(category)
@@ -673,6 +745,81 @@ func toolSetSitePin(ctx context.Context, c *client.Client, args map[string]any) 
 		return "", fmt.Errorf("pinned is required")
 	}
 	resp, err := c.SetSitePin(ctx, code, pinned)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolSetSiteReusePolicy(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	code, _ := args["code"].(string)
+	reusePolicy, _ := args["reuse_policy"].(string)
+	sourceDownloadPolicy, _ := args["source_download_policy"].(string)
+	if code == "" {
+		return "", fmt.Errorf("code is required")
+	}
+	if !validReusePolicy(reusePolicy) {
+		return "", fmt.Errorf("reuse_policy must be auto, allow, or deny")
+	}
+	if !validReusePolicy(sourceDownloadPolicy) {
+		return "", fmt.Errorf("source_download_policy must be auto, allow, or deny")
+	}
+	resp, err := c.SetSiteReusePolicy(ctx, code, reusePolicy, sourceDownloadPolicy)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolSetSiteSecurityMode(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	code, _ := args["code"].(string)
+	securityMode, _ := args["security_mode"].(string)
+	if strings.TrimSpace(code) == "" {
+		return "", fmt.Errorf("code is required")
+	}
+	if !validSiteSecurityMode(securityMode) {
+		return "", fmt.Errorf("security_mode must be auto, strict, compatible, or trusted")
+	}
+	resp, err := c.SetSiteSecurityMode(ctx, code, securityMode)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolGetAdminSiteDetail(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	code, _ := args["code"].(string)
+	if strings.TrimSpace(code) == "" {
+		return "", fmt.Errorf("code is required")
+	}
+	resp, err := c.AdminSiteDetail(ctx, code)
+	if err != nil {
+		return "", err
+	}
+	pretty, _ := json.MarshalIndent(resp, "", "  ")
+	return string(pretty), nil
+}
+
+func toolQueryAuditLogs(ctx context.Context, c *client.Client, args map[string]any) (string, error) {
+	query := client.AuditLogQuery{
+		ActorType:  stringArg(args, "actor_type"),
+		ActorID:    stringArg(args, "actor_id"),
+		ActorRole:  stringArg(args, "actor_role"),
+		Action:     stringArg(args, "action"),
+		Result:     stringArg(args, "result"),
+		SiteCode:   stringArg(args, "site_code"),
+		TargetType: stringArg(args, "target_type"),
+		TargetID:   stringArg(args, "target_id"),
+		Query:      stringArg(args, "q"),
+		Since:      stringArg(args, "since"),
+		Until:      stringArg(args, "until"),
+		Page:       int(toInt64(args["page"])),
+		PageSize:   int(toInt64(args["page_size"])),
+	}
+	resp, err := c.ListAuditLogs(ctx, query)
 	if err != nil {
 		return "", err
 	}
@@ -1107,6 +1254,29 @@ func toInt64(v any) int64 {
 		return int64(f)
 	}
 	return 0
+}
+
+func stringArg(args map[string]any, key string) string {
+	value, _ := args[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func validReusePolicy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "allow", "deny":
+		return true
+	default:
+		return false
+	}
+}
+
+func validSiteSecurityMode(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "strict", "compatible", "trusted":
+		return true
+	default:
+		return false
+	}
 }
 
 // _unused 让 strings import 不被自动移除（部分预留）。

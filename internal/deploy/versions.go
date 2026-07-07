@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/yourorg/hostctl/internal/api"
@@ -31,16 +32,18 @@ func (d *Deployer) ListVersions(ctx context.Context, code string) (*api.ListVers
 	for _, v := range versions {
 		isCurrent := site.CurrentVersion != nil && *site.CurrentVersion == v.VersionNumber
 		items = append(items, api.VersionItem{
-			VersionNumber: v.VersionNumber,
-			ID:            v.ID,
-			Title:         v.Title,
-			Description:   v.Description,
-			Size:          v.TotalSize,
-			FileCount:     v.FileCount,
-			IsLocked:      v.IsLocked,
-			IsCurrent:     isCurrent,
-			Status:        v.Status,
-			CreatedAt:     v.CreatedAt,
+			VersionNumber:         v.VersionNumber,
+			ID:                    v.ID,
+			Title:                 v.Title,
+			Description:           v.Description,
+			Size:                  v.TotalSize,
+			FileCount:             v.FileCount,
+			TemplateSourceCode:    v.TemplateSourceCode,
+			TemplateSourceVersion: int64Value(v.TemplateSourceVersion),
+			IsLocked:              v.IsLocked,
+			IsCurrent:             isCurrent,
+			Status:                v.Status,
+			CreatedAt:             v.CreatedAt,
 		})
 	}
 	return &api.ListVersionsResponse{
@@ -169,11 +172,12 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 		Content:     req.Content,
 		Files:       req.Files,
 	}
-	rfiles, resolvedMainEntry, apiErr := d.resolveContent(pseudoReq, mainEntry)
+	resolved, apiErr := d.resolveContentWithBundle(pseudoReq, mainEntry)
 	if apiErr != nil {
 		return nil, apiErr
 	}
-	mainEntry = resolvedMainEntry
+	rfiles := resolved.Files
+	mainEntry = resolved.MainEntry
 	if apiErr := validateEntrypoint(rfiles, mainEntry); apiErr != nil {
 		return nil, apiErr
 	}
@@ -225,6 +229,9 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 		ContentSha256: aggregateSha,
 	}, toFileMetas(code, version, rfiles)); err != nil {
 		return nil, api.NewError(api.CodeInternal, "update_version", err.Error())
+	}
+	if err := d.store.UpsertVersionBundle(ctx, resolved.toVersionBundle(code, version, time.Now().UTC())); err != nil {
+		return nil, api.NewError(api.CodeInternal, "version_bundle", err.Error())
 	}
 
 	// 如果是当前版本，重新切 symlink（指向同一个目录路径，但内容变了）

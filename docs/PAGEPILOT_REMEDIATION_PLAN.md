@@ -2,6 +2,18 @@
 
 本文档用于约束 PagePilot 后续整改顺序、产品取舍、接口默认值、Skill/CLI/MCP 行为和验收标准。后续开发按阶段推进，每阶段完成后必须同步测试、构建和文档。
 
+## 2026-07-07 当前验证状态
+
+- 已完成一轮真实服务 + Playwright 深度 QA：后台注册入口、后台登录后全部 tab、创作市场列表/详情、模板复用弹窗、ZIP 多文件相对资源、Markdown KaTeX / Mermaid / 表格 / 代码高亮、匿名访问密码、加密站点源码下载禁用均通过。
+- 已修复本轮 QA 暴露的问题：`/admin?mode=register` 不进入注册模式、创作市场详情右侧操作区拥挤、模板复用弹窗模式切换和长命令布局不清晰。
+- 已补旧库迁移回归测试：旧 `audit_logs` 缺少 `actor_role` / `result` 时可以自动迁移并保留旧日志，避免旧库启动出现 `no such column: result`；同时新增生产近似旧库组合测试，覆盖旧站点、版本、文件、用户、Token、匿名 session、屏幕、审计日志、FTS 回填和新增表创建。
+- 已新增可复现运行时 QA：`scripts/runtime-qa.mjs` / `make runtime-qa` 会自动编译临时服务、启动临时 SQLite 和 hosted 目录，验证注册成功 / 失败、管理员登录、账号改密、登出、Token 创建和吊销、匿名发布显式认领与归属迁移、已认领匿名 session 拒绝继续发布、Markdown 高级渲染、真实 ZIP 站点发布、ZIP Bundle 详情、ZIP 相对资源访问、市场详情、后台 Bundle 文件树、公开未加密站点源码下载、加密站点对发布者 Token / 管理员 Cookie / 匿名访问密码 Cookie 的源码下载禁用、加密访问、访问密码票据绑定版本和切换当前版本后的失效、版本锁定 / 下架 / 切换当前 / 覆盖 / 删除审计、Token 管理审计、匿名认领审计、传统 CSP report 与 Reporting API 审计、运行设置 / 市场分类 / Skill 包上传 / 用户管理审计、模板复用来源记录、屏幕绑定 / 投放 / 截图 / 指令 / 解绑、认证 / 账号 / 访问密码 / 站点管理 / 屏幕操作审计日志、审计分页与用户 / 站点 / 动作 / 角色 / 时间 / 详情关键字过滤、CORS 边界、OpenAPI 和 Skill ZIP 下载。
+- 已新增真实浏览器视觉 QA：`scripts/visual-qa.mjs` / `make visual-qa` 会启动临时服务并用真实浏览器检查前台主要页面、HTML/Markdown 运行页、加密访问页、后台主要 tab、审计日志筛选和翻页、市场详情和后台站点详情中的 Bundle 信息、完整文件树、复用参数、模板复用弹窗，以及加密作品的源码下载 / 模板复用受限提示的桌面/移动端溢出、空白页与浏览器错误。本轮已据此修复创作市场移动端、Skill/MCP 内容页、后台移动端布局，以及 Markdown nonce 页面缓存导致的 CSP 误拦截。
+- 已新增旧库升级演练 QA：`scripts/legacy-upgrade-qa.mjs` / `make legacy-upgrade-qa` 会构造旧 SQLite + hosted 目录，覆盖公开站点、加密站点、旧管理员、Token、匿名 session、屏幕绑定、审计日志和托管文件，并通过当前服务启动迁移、后台 API、市场搜索、访问密码、源码下载权限和直接 SQLite 校验确认升级后仍可用。
+- 已新增真实容器升级演练脚本：`scripts/docker-upgrade-qa.mjs` / `make docker-upgrade-qa` 会构造临时旧库和 hosted 目录，执行真实 `docker compose up -d --build`，再通过容器 HTTP 接口和 SQLite 校验站点、版本、用户、Token、匿名 session、屏幕、访问密码、FTS、Bundle、审计表和 Skill ZIP。
+- 已补前后台部署错误面板：手动部署页和后台发布页会把 `stage`、稳定错误码、服务端 `hint` 和本地排查建议展示出来，并支持复制诊断信息。
+- 本机缺少 Docker CLI，真实 Docker 老库升级演练仍未执行；上线前需要在服务器运行 `node scripts/docker-upgrade-qa.mjs`，并用真实旧数据目录执行一次 `docker compose up -d --build` 核对站点、版本、用户、Token、访问密码、屏幕绑定和 hosted 文件。
+
 ## 1. 总体目标
 
 PagePilot 的定位是 **Agent 生成应用的发布控制台**。它不只是 HTML 文件托管，而是把 Agent 生成的 HTML、Markdown、ZIP、多文件站点、演示型应用发布为可访问、可治理、可复用、可投放的应用资产。
@@ -235,19 +247,21 @@ OSS_PUBLIC_BASE_URL=
 
 ### 2026-07-06 已落地状态
 
-- 已新增 `internal/bundle`，ZIP 会识别真实站点根目录、入口文件、Markdown 包、嵌套目录和批量包误传，并拒绝路径穿越。
+- 已新增 `internal/bundle`，ZIP 会识别真实站点根目录、入口文件、Markdown 包、嵌套目录和批量包误传，并拒绝路径穿越；ZIP/Bundle 失败会返回 `stage=zip_bundle`、稳定错误码和可直接展示的 `hint`。
 - 已新增 `internal/render`，Markdown 托管页支持相对图片、表格、任务列表、代码块、Mermaid/数学公式语义块和渲染缓存。
-- 已新增 SQLite FTS5 市场搜索、中文 `LIKE` 回退、渲染缓存、Bundle 元数据表和审计日志表；老数据库启动时自动补齐并回填索引。
-- `POST /api/deploy` 已支持 multipart；Go CLI、MCP 和 Python Skill 发布文件/目录/ZIP 时优先走 multipart，旧 JSON/base64 仍保留兼容。
+- 已新增 SQLite FTS5 市场搜索、中文 `LIKE` 回退、渲染缓存、Bundle 元数据表和审计日志表；老数据库启动时自动补齐并回填索引。审计日志已具备后台列表 API、OpenAPI、全局审计 UI、站点详情最近审计摘要、分页筛选、用户 / 站点下拉、动作预设、操作者类型、对象 ID 过滤、RFC3339 时间过滤、IP/UA/详情关键字搜索、CLI/MCP/Skill 查询和发布失败日志。
+- `POST /api/deploy` 已支持 multipart；Go CLI、MCP 和 Python Skill 发布文件/目录/ZIP 时优先走 multipart，旧 JSON/base64 仍保留兼容。Python Skill 发布/追加成功后会输出服务端返回 URL 摘要，并保留 JSON 供自动化解析。
 
 ### 仍需补齐
 
-- Markdown 当前是安全语义渲染，不是 jpage 那种服务端 Markdown / highlight.js / KaTeX 渲染加内置 Mermaid 前端运行时的完整链路。
-- 审计日志已有存储接口，但后台审计列表 API 和 UI 仍需产品化补齐。
-- 文件树、Bundle 类型、安全模式和模板复用信息仍需在市场详情和后台站点详情中进一步展示。
-- 前台“模板复用”还只是基础抽屉，没有达到 jpage 那种下载源文件、文件树、Agent 提示词、CLI/MCP 参数统一生成的完整体验。
-- 尚未做一次覆盖首页、创作市场、详情、手动部署、Skill & MCP、Screens、登录注册、加密访问和后台各 tab 的运行时视觉 QA。
-- 尚未用旧版本真实 SQLite 数据库和 hosted 文件目录跑 Docker 升级验证；当前只能说明迁移设计为增量、不主动清空挂载数据。
+- Markdown 已接入 GFM、Chroma 高亮、同源 KaTeX / Mermaid runtime、内置 KaTeX 字体、内置样式和初始化脚本 nonce、严格脚本 CSP；行内公式、单行 / 多行块级公式和图表在浏览器端由平台内置运行时渲染。Markdown 脚本策略使用 nonce-only `script-src`，不依赖 `script-src 'self'`，也不允许 `script-src 'unsafe-inline'` / `unsafe-eval`，KaTeX / Mermaid 需要的运行时样式通过受控的 `style-src-elem` / `style-src-attr` 放行。Markdown 页面支持 `?theme=auto|light|dark`，渲染缓存 key 包含 `code / version / entry / contentSHA / theme / rendererVersion`。本轮已补公式提取边界和 sanitizer 边界：代码 span / 普通代码块内的美元符号不会误渲染成公式，带参数 info string 的 `mermaid title=...` 和 `katex display` 也会识别；编码 active URL、事件属性、SVG `data:` 图片、不安全 `srcset` 候选和 `xlink:href` 等命名空间 URL 属性会被剔除。后续仍需补充更多公式 / Mermaid 回归和安全专项复查。
+- 后台 `/admin` 入口和 `/admin/assets/*` 静态资源已接入独立严格 CSP、`nosniff`、`X-Frame-Options: DENY` 和 `frame-ancestors 'none'`，不允许 `unsafe-inline` / `unsafe-eval`，并通过 `/api/security/csp-report` 上报违规。
+- 前台应用卡片、市场详情、手动部署实时预览和后台渲染视图已统一预览 iframe sandbox：允许脚本、表单、下载、弹窗逃逸和用户触发顶层导航，但不授予 `allow-same-origin`；真实 `/agent/{code}` 运行时仍由站点级安全模式决定。
+- 审计日志基础产品化已完成，发布失败、注册 / 登录失败、运行配置更新失败、市场分类配置失败、Skill 包上传失败、访问密码设置失败、访问密码验证失败、账号密码修改失败、站点可见性设置失败、置顶 / 分类 / 标签 / 源码下载策略 / 模板复用策略 / 安全模式 / 主版本策略失败、版本管理失败、站点删除失败、匿名认领失败、屏幕操作失败、Token 管理失败和用户管理失败已经写入结构化 failed 日志；发布、版本、配置、站点、注册 / 登录 / 登出、访问密码验证成功、账号密码修改成功、匿名认领、Skill 包、屏幕、Token 和用户管理等关键成功动作也会写入日志。认证、访问密码验证和账号密码修改日志只记录站点、版本、用户、结果和失败原因等非敏感信息，不记录密码明文。托管 HTML / Markdown CSP 已接入 `/api/security/csp-report`，浏览器通过传统 `application/csp-report` 或 Reporting API 上报的违规报告都会归一化为 `security.csp_report` 安全审计日志。后台全局审计页已提供用户 / 站点下拉、动作预设、操作者类型、角色、结果、对象类型和时间范围筛选，站点详情会展示当前 code 的最近审计摘要；`runtime-qa` 已在真实 SQLite 服务上验证分页、站点、动作、操作者、角色、时间窗口、详情 JSON 关键字过滤，`version.lock` / `version.status` / `version.current` / `version.overwrite` / `version.delete` 五类版本管理成功日志，`token.create` / `token.revoke` 成功日志，`anonymous.claim` 匿名认领日志，`security.csp_report` 安全日志，`config.update` / `config.market_categories` 配置日志，`skill.package_upload` Skill 包日志，以及 `user.create` / `user.update` / `user.delete` 用户管理日志，且不泄露明文 Token 或用户密码。后续需要继续补齐更多低频管理动作失败日志，并做真实生产数据量下的后台查询 QA。
+- 文件树、Bundle 类型、安全模式、入口识别说明、模板复用策略和最近审计摘要已在市场详情或后台站点详情中展示；前台支持 `/market/{code-or-publicId}` 直达详情，刷新或分享链接后仍会重新拉取文件树与复用参数。前台市场详情和后台站点详情的文件树已支持路径 / 文件名 / SHA 搜索、目录数 / 文件数 / 总大小统计、复制路径和复制 SHA。新建发布和覆盖版本会写入 `single_html`、`markdown`、`zip_site`、`static_site` 四类稳定 Bundle kind，旧数据会按入口和文件数兜底推断；ZIP/Bundle 入口识别失败会返回 `ZIP_UNSAFE_PATH`、`ZIP_AMBIGUOUS_ENTRY`、`ZIP_ENTRY_MISSING` 等稳定错误码和 `hint`，前后台发布页已展示错误阶段、错误码、修复建议和可复制诊断信息；CLI/MCP/Skill 可查询后台站点详情和文件树；后台站点详情已提供源码下载 / 模板复用策略和站点级安全模式开关，`/agent/{code}` HTML 运行时会按 `auto / strict / compatible / trusted` 生效模式设置 CSP/sandbox，且加密作品一律不提供源码下载，必须先清除访问密码；CSP 违规会进入审计日志辅助排查安全模式兼容性。后续继续打磨安全模式真实兼容性 QA 和复杂 ZIP 样例。
+- 前台“模板复用”已接入抽屉和服务端复用策略，详情接口会返回 `allowDownload`、`allowReuse`、`policyNote`、源码下载、Agent 提示词、CLI 命令和 MCP 参数；复用抽屉已区分“新建二创”和“更新已有发布”，更新模式要求填写目标 code，并生成追加版本语义的 CLI / Agent 指令，同时展示源文件结构摘要并提供独立 MCP 参数复制。发布 API、CLI、MCP 和 Skill 已支持 `templateSourceCode` / `templateSourceVersion`，复用后会记录来源并增加来源作品复用次数。访问密码浏览权限不再等同于源码下载权限；浏览票据已绑定目标版本，切换当前版本后需要重新验证；后续继续打磨真实生产数据视觉 QA 和批量策略。
+- 已完成一轮基础运行时视觉 smoke：临时干净库启动真实服务，完成管理员登录、Token 创建、公开样例发布、市场 API 查询，并用 Playwright 覆盖 `/`、`/market`、`/deploy`、`/agents/`、`/screens/`、`/agent/{code}/`、`/admin`、`/openapi.json`、`/skill/pagep.zip`；桌面 1440px 和手机 390px 首页无横向溢出。后续又用临时库验证了 `/market/{code}` 详情直达、ZIP 文件树展示、ZIP 运行页相对资源执行、Markdown KaTeX / Mermaid / 表格 / 代码高亮渲染、加密站点访问密码查看、发布者 Token / 管理员 Cookie / 访问密码 Cookie 都不能下载加密站点源码，以及后台登录态和总览页渲染。当前已把非浏览器运行时链路沉淀为 `scripts/runtime-qa.mjs`，用于复现 Markdown、真实 ZIP 站点发布、ZIP Bundle 详情、ZIP 相对资源访问、加密访问、源码下载隔离、访问密码票据绑定版本和切换当前版本后的失效、模板来源、屏幕绑定 / 投放 / 截图 / 指令 / 解绑、注册成功 / 失败、登录、账号改密、登出、访问密码、站点管理、传统 CSP report 与 Reporting API 审计、版本锁定 / 下架 / 切换当前 / 覆盖 / 删除、Token 管理、运行设置、市场分类、Skill 包上传、用户管理和屏幕操作审计日志、审计分页和筛选、CORS、OpenAPI 和 Skill ZIP 验证；同时新增 `scripts/visual-qa.mjs`，用真实浏览器覆盖前台主要页面、HTML/Markdown 运行页、加密访问页、后台主要 tab、审计日志筛选和翻页、市场详情和后台站点详情中的 Bundle 信息、完整文件树、复用参数、模板复用弹窗，以及加密作品的源码下载 / 模板复用受限提示的桌面/移动端溢出、空白页和浏览器错误。本轮已修复移动端市场、Skill/MCP 内容页、后台布局和 Markdown nonce 缓存导致的 CSP 问题。
+- 尚未在当前 Windows 本机用旧版本真实 SQLite 数据库和 hosted 文件目录跑 Docker 升级验证；当前只能说明迁移设计为增量、不主动清空挂载数据。单元测试已覆盖老 `admin_users.email`、`audit_logs.result` 和 `sites.public_id` 缺列时先补列再建索引的启动迁移，并补充生产近似旧库组合场景，验证旧站点、版本、文件、用户、Token、匿名 session、屏幕和审计日志升级后仍可读取。`scripts/legacy-upgrade-qa.mjs` 已补充本地旧库 + hosted 升级演练，覆盖迁移启动后的后台站点详情、市场搜索、托管文件读取、访问密码、加密站点源码下载禁用、屏幕、Token、匿名 session、审计日志、FTS 回填和新增表检查；`scripts/docker-upgrade-qa.mjs` 已提供真实 Docker Compose 演练入口，仍需在具备 Docker 的服务器上执行。
 
 ### 改动
 
@@ -293,6 +307,10 @@ OSS_PUBLIC_BASE_URL=
   - `pagep access`
   - `pagep download`
   - `pagep screen publish`
+  - `pagep admin site-detail`
+  - `pagep admin audit-logs`
+  - `pagep admin reuse-policy`
+  - `pagep admin security-mode`
 - MCP 工具与 CLI 能力对齐。
 
 ### 文档

@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import json
 import pathlib
 import tempfile
+import types
 import unittest
 from unittest import mock
 import zipfile
@@ -137,6 +139,226 @@ class RequestHeaderTests(unittest.TestCase):
         self.assertIn(b'name="filename"', captured["body"])
         self.assertIn(b'filename="site.zip"', captured["body"])
         self.assertIn(b"<title>demo</title>", captured["body"])
+
+
+class DeployOptionTests(unittest.TestCase):
+    def test_print_deploy_summary_shows_server_returned_urls(self):
+        stream = io.StringIO()
+
+        hostctl_deploy.print_deploy_summary(
+            {
+                "code": "demo-site",
+                "url": "https://pagepilot.example.com/agent/demo-site/",
+                "detailUrl": "https://pagepilot.example.com/market/demo-site",
+                "versionUrl": "https://pagepilot.example.com/agent/demo-site/?v=2",
+                "versionNumber": 2,
+                "templateSourceCode": "source-demo",
+                "templateSourceVersion": 1,
+                "reuseCount": 3,
+                "preserveHint": "保留原有访问密码。",
+            },
+            stream=stream,
+        )
+
+        text = stream.getvalue()
+        self.assertIn("发布成功", text)
+        self.assertIn("访问 URL", text)
+        self.assertIn("详情 URL", text)
+        self.assertIn("版本 URL", text)
+        self.assertIn("demo-site", text)
+        self.assertIn("source-demo v1", text)
+        self.assertIn("复用计数", text)
+        self.assertIn("服务端返回", text)
+
+    def test_cmd_deploy_prints_friendly_summary_on_success(self):
+        args = types.SimpleNamespace(
+            server="https://pagepilot.example.com",
+            token="",
+            source="site",
+            code="demo-site",
+            filename="",
+            description="中文描述",
+            title="中文标题",
+            visibility="public",
+            category="",
+            create_version=False,
+            access_password="",
+            template_source_code="",
+            template_source_version=None,
+            update=False,
+        )
+        deploy_result = {
+            "success": True,
+            "code": "demo-site",
+            "url": "https://pagepilot.example.com/agent/demo-site/",
+            "detailUrl": "https://pagepilot.example.com/market/demo-site",
+            "versionUrl": "https://pagepilot.example.com/agent/demo-site/?v=1",
+        }
+
+        with mock.patch.object(hostctl_deploy, "source_entry_hint", return_value="index.html"):
+            with mock.patch.object(hostctl_deploy, "deploy_multipart", return_value=(201, deploy_result)):
+                with mock.patch.object(hostctl_deploy, "remember_project"):
+                    with mock.patch.object(hostctl_deploy, "apply_access_password_after_deploy"):
+                        with mock.patch.object(hostctl_deploy, "print_deploy_summary") as summary:
+                            with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                                code = hostctl_deploy.cmd_deploy(args)
+
+        self.assertEqual(code, 0)
+        summary.assert_called_once()
+        self.assertEqual(summary.call_args.args[0]["url"], deploy_result["url"])
+
+    def test_add_deploy_options_records_template_source(self):
+        payload = {}
+        args = types.SimpleNamespace(
+            title="复用演示",
+            visibility="public",
+            category="docs",
+            create_version=False,
+            access_password="",
+            template_source_code="source-demo",
+            template_source_version=3,
+        )
+
+        hostctl_deploy.add_deploy_options(payload, args)
+
+        self.assertEqual(payload["templateSourceCode"], "source-demo")
+        self.assertEqual(payload["templateSourceVersion"], 3)
+
+
+class AdminCommandTests(unittest.TestCase):
+    def test_admin_site_detail_uses_admin_endpoint(self):
+        captured = {}
+        args = types.SimpleNamespace(
+            server="https://pagepilot.example.com",
+            token="admin-token",
+            code="demo site",
+        )
+
+        def fake_request_json(base, token, path, method="GET", payload=None):
+            captured["base"] = base
+            captured["token"] = token
+            captured["path"] = path
+            captured["method"] = method
+            captured["payload"] = payload
+            return 200, {"success": True}
+
+        with mock.patch.object(hostctl_deploy, "request_json", fake_request_json):
+            with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                code = hostctl_deploy.cmd_admin_site_detail(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["path"], "/api/admin/sites/demo%20site")
+        self.assertEqual(captured["method"], "GET")
+        self.assertIsNone(captured["payload"])
+
+    def test_admin_audit_logs_builds_query(self):
+        captured = {}
+        args = types.SimpleNamespace(
+            server="https://pagepilot.example.com",
+            token="admin-token",
+            actor_type="user",
+            actor_id="user-1",
+            actor_role="admin",
+            action="site.pin",
+            result="success",
+            site_code="demo",
+            target_type="site",
+            target_id="demo",
+            query="pinned",
+            since="2026-07-06T00:00:00Z",
+            until="2026-07-07T00:00:00Z",
+            page=2,
+            page_size=25,
+        )
+
+        def fake_request_json(base, token, path, method="GET", payload=None):
+            captured["path"] = path
+            captured["method"] = method
+            return 200, {"success": True}
+
+        with mock.patch.object(hostctl_deploy, "request_json", fake_request_json):
+            with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                code = hostctl_deploy.cmd_admin_audit_logs(args)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(captured["path"].startswith("/api/admin/audit-logs?"))
+        for part in [
+            "actorType=user",
+            "actorId=user-1",
+            "actorRole=admin",
+            "action=site.pin",
+            "result=success",
+            "siteCode=demo",
+            "targetType=site",
+            "targetId=demo",
+            "q=pinned",
+            "since=2026-07-06T00%3A00%3A00Z",
+            "until=2026-07-07T00%3A00%3A00Z",
+            "page=2",
+            "pageSize=25",
+        ]:
+            self.assertIn(part, captured["path"])
+        self.assertEqual(captured["method"], "GET")
+
+    def test_admin_reuse_policy_sends_policy_payload(self):
+        captured = {}
+        args = types.SimpleNamespace(
+            server="https://pagepilot.example.com",
+            token="admin-token",
+            code="demo site",
+            reuse="deny",
+            source_download="allow",
+        )
+
+        def fake_request_json(base, token, path, method="GET", payload=None):
+            captured["base"] = base
+            captured["token"] = token
+            captured["path"] = path
+            captured["method"] = method
+            captured["payload"] = payload
+            return 200, {"success": True}
+
+        with mock.patch.object(hostctl_deploy, "request_json", fake_request_json):
+            with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                code = hostctl_deploy.cmd_admin_reuse_policy(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["base"], "https://pagepilot.example.com")
+        self.assertEqual(captured["token"], "admin-token")
+        self.assertEqual(captured["path"], "/api/admin/sites/demo%20site/reuse-policy")
+        self.assertEqual(captured["method"], "PATCH")
+        self.assertEqual(captured["payload"], {
+            "reusePolicy": "deny",
+            "sourceDownloadPolicy": "allow",
+        })
+
+    def test_admin_security_mode_sends_mode_payload(self):
+        captured = {}
+        args = types.SimpleNamespace(
+            server="https://pagepilot.example.com",
+            token="admin-token",
+            code="demo site",
+            mode="compatible",
+        )
+
+        def fake_request_json(base, token, path, method="GET", payload=None):
+            captured["base"] = base
+            captured["token"] = token
+            captured["path"] = path
+            captured["method"] = method
+            captured["payload"] = payload
+            return 200, {"success": True}
+
+        with mock.patch.object(hostctl_deploy, "request_json", fake_request_json):
+            with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                code = hostctl_deploy.cmd_admin_security_mode(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["base"], "https://pagepilot.example.com")
+        self.assertEqual(captured["token"], "admin-token")
+        self.assertEqual(captured["path"], "/api/admin/sites/demo%20site/security-mode")
+        self.assertEqual(captured["method"], "PATCH")
+        self.assertEqual(captured["payload"], {"securityMode": "compatible"})
 
 
 class MultipartSourceTests(unittest.TestCase):
