@@ -204,6 +204,71 @@ func (c *Client) DeployMultipart(ctx context.Context, req MultipartDeployRequest
 	return &out, nil
 }
 
+type MultipartOverwriteRequest struct {
+	SourcePath  string
+	UploadName  string
+	Filename    string
+	Description string
+	Title       string
+}
+
+func (c *Client) OverwriteMultipart(ctx context.Context, code string, version int64, req MultipartOverwriteRequest) (*api.DeployResponse, error) {
+	pr, pw := io.Pipe()
+	writer := multipart.NewWriter(pw)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- writeMultipartDeploy(writer, pw, MultipartDeployRequest{
+			SourcePath:  req.SourcePath,
+			UploadName:  req.UploadName,
+			Filename:    req.Filename,
+			Description: req.Description,
+			Title:       req.Title,
+			Source:      "cli",
+		})
+	}()
+
+	httpReq, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPatch,
+		fmt.Sprintf("%s/api/deploys/%s/versions/%d", c.baseURL, url.PathEscape(code), version),
+		pr,
+	)
+	if err != nil {
+		_ = pr.Close()
+		_ = <-errCh
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
+	if c.baseURL != "" {
+		httpReq.Header.Set(currentOriginHeader, c.baseURL)
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		_ = pr.Close()
+		if writeErr := <-errCh; writeErr != nil {
+			return nil, writeErr
+		}
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if writeErr := <-errCh; writeErr != nil {
+		return nil, writeErr
+	}
+	if resp.StatusCode >= 400 {
+		var apiErr api.APIError
+		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
+		return nil, &APIError{Status: resp.StatusCode, Body: &apiErr}
+	}
+	var out api.DeployResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
 func writeMultipartDeploy(writer *multipart.Writer, pw *io.PipeWriter, req MultipartDeployRequest) error {
 	fail := func(format string, args ...any) error {
 		err := fmt.Errorf(format, args...)

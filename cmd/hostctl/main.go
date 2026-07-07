@@ -401,6 +401,69 @@ func prepareMultipartSource(source string) (multipartSource, error) {
 	return multipartSource{Path: tmpPath, Name: filepath.Base(source) + ".zip", Cleanup: cleanup}, nil
 }
 
+func sourceEntryHint(source string) (string, error) {
+	info, err := os.Stat(source)
+	if err != nil {
+		return "", fmt.Errorf("stat source: %w", err)
+	}
+	if !info.IsDir() {
+		if strings.EqualFold(filepath.Ext(source), ".zip") {
+			reader, err := zip.OpenReader(source)
+			if err != nil {
+				return "index.html", nil
+			}
+			defer reader.Close()
+			paths := make([]string, 0, len(reader.File))
+			for _, file := range reader.File {
+				if file.FileInfo().IsDir() {
+					continue
+				}
+				paths = append(paths, filepath.ToSlash(file.Name))
+			}
+			return chooseMainEntry(paths), nil
+		}
+		return filepath.Base(source), nil
+	}
+	paths := []string{}
+	if err := filepath.Walk(source, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("inspect source entries: %w", err)
+	}
+	return chooseMainEntry(paths), nil
+}
+
+func chooseMainEntry(paths []string) string {
+	lowered := map[string]string{}
+	for _, path := range paths {
+		lowered[strings.ToLower(path)] = path
+	}
+	for _, preferred := range []string{"index.html", "index.htm", "readme.md", "readme.markdown"} {
+		if path := lowered[preferred]; path != "" {
+			return path
+		}
+	}
+	for _, path := range paths {
+		lower := strings.ToLower(path)
+		if strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, ".htm") ||
+			strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".markdown") {
+			return path
+		}
+	}
+	return "index.html"
+}
+
 func htmlUnescape(s string) string {
 	s = strings.ReplaceAll(s, "&lt;", "<")
 	s = strings.ReplaceAll(s, "&gt;", ">")
@@ -740,18 +803,24 @@ func cmdOverwrite() *cobra.Command {
 			if _, err := fmt.Sscanf(args[1], "%d", &version); err != nil {
 				return fmt.Errorf("invalid version %q: %v", args[1], err)
 			}
-			files, mainEntry, err := readSource(args[2])
+			mainEntry, err := sourceEntryHint(args[2])
 			if err != nil {
 				return err
 			}
-			req := api.OverwriteRequest{
+			source, err := prepareMultipartSource(args[2])
+			if err != nil {
+				return err
+			}
+			defer source.Cleanup()
+			req := client.MultipartOverwriteRequest{
+				SourcePath:  source.Path,
+				UploadName:  source.Name,
 				Description: description,
 				Filename:    mainEntry,
-				Files:       files,
 			}
 			ctx, cancel := withSignalCancel()
 			defer cancel()
-			resp, err := buildClient().Overwrite(ctx, args[0], version, req)
+			resp, err := buildClient().OverwriteMultipart(ctx, args[0], version, req)
 			if err != nil {
 				printErr(err)
 				return errSilent

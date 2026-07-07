@@ -58,6 +58,13 @@ type PreviewViewport = "desktop" | "tablet" | "mobile";
 const PREVIEW_IFRAME_SANDBOX =
   "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-top-navigation-by-user-activation";
 const MARKET_SNAPSHOT_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
+const MARKET_PREVIEW_CONCURRENCY = 2;
+const MARKET_PREVIEW_TIMEOUT_MS = 3600;
+const MARKET_PREVIEW_IDLE_DELAY_MS = 160;
+const marketPreviewCache = new Map<string, string>();
+const marketPreviewPending = new Map<string, Promise<string>>();
+const marketPreviewQueue: Array<() => void> = [];
+let activeMarketPreviewJobs = 0;
 
 interface EditableDeployFile {
   path: string;
@@ -102,6 +109,7 @@ interface ScreensResponse {
 interface DeploySiteItem {
   code: string;
   title?: string;
+  description?: string;
   filename?: string;
   currentVersion?: number;
   versionCount?: number;
@@ -258,6 +266,7 @@ function deployErrorTitle(payload: StructuredAPIErrorPayload | null): string {
   const code = String(payload?.errorCode || "").toUpperCase();
   const stage = String(payload?.stage || "").toLowerCase();
   if (code.startsWith("ZIP_") || stage === "zip_bundle") return "ZIP / 多文件包需要调整";
+  if (code === "INVALID_DESCRIPTION") return "请补充应用描述";
   if (code === "CONTENT_TOO_LARGE") return "上传内容超过限制";
   if (code === "INVALID_FILE_PATH") return "文件路径不符合要求";
   if (code === "INVALID_CUSTOM_CODE") return "自定义 code 不可用";
@@ -265,10 +274,28 @@ function deployErrorTitle(payload: StructuredAPIErrorPayload | null): string {
   return "发布失败";
 }
 
+function isCommonDeployValidationError(payload: StructuredAPIErrorPayload | null): boolean {
+  const code = String(payload?.errorCode || "").toUpperCase();
+  return code === "INVALID_DESCRIPTION";
+}
+
+function friendlyDeployErrorMessage(payload: StructuredAPIErrorPayload | null, fallback: string): string {
+  const code = String(payload?.errorCode || "").toUpperCase();
+  if (code === "INVALID_DESCRIPTION") {
+    return "请填写一句话描述，说明这个应用是做什么的。";
+  }
+  return payload?.detail || fallback;
+}
+
 function deployErrorHints(payload: StructuredAPIErrorPayload | null): string[] {
   const hints = new Set<string>();
   const code = String(payload?.errorCode || "").toUpperCase();
   const stage = String(payload?.stage || "").toLowerCase();
+  if (code === "INVALID_DESCRIPTION") {
+    hints.add("描述会展示在创作市场和后台列表里，请控制在 240 个字符以内。");
+    hints.add("例如：面向门店大屏展示的新品活动页。");
+    return Array.from(hints);
+  }
   if (payload?.hint) hints.add(String(payload.hint));
   if (stage === "zip_bundle" || code.startsWith("ZIP_")) {
     hints.add("请确认 ZIP 里只有一个可发布的网站根目录，优先放置 index.html 或 README.md。");
@@ -295,6 +322,7 @@ function deployErrorHints(payload: StructuredAPIErrorPayload | null): string[] {
 function DeployErrorPanel({ message, error }: { message: string; error: StructuredAPIErrorPayload | null }) {
   const [copied, setCopied] = useState(false);
   const hints = deployErrorHints(error);
+  const displayMessage = friendlyDeployErrorMessage(error, message);
   const diagnostics = JSON.stringify({ message, ...(error || {}) }, null, 2);
   const copyDiagnostics = async () => {
     await navigator.clipboard.writeText(diagnostics);
@@ -308,10 +336,10 @@ function DeployErrorPanel({ message, error }: { message: string; error: Structur
         <span className="deploy-error-icon"><AlertTriangle size={18} /></span>
         <div>
           <strong>{deployErrorTitle(error)}</strong>
-          <p>{error?.detail || message}</p>
+          <p>{displayMessage}</p>
         </div>
       </div>
-      {error && (
+      {error && !isCommonDeployValidationError(error) && (
         <div className="deploy-error-badges">
           {error.errorCode && <code>{error.errorCode}</code>}
           {error.stage && <span>{errorStageLabel(error.stage)}</span>}
@@ -396,6 +424,10 @@ function isTextUpload(name: string): boolean {
 
 function isZipUpload(name: string): boolean {
   return /\.zip$/i.test(name);
+}
+
+function normalizeUploadedZipPath(name: string): string {
+  return isZipUpload(name) ? "site.zip" : name;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -494,28 +526,115 @@ async function downloadSourceFile(url: string, fallbackName: string) {
 
 function buildMarketPreviewSnapshot(html: string, baseURL: string): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  doc.querySelectorAll("script").forEach((node) => node.remove());
+  doc.documentElement.dataset.pagepilotSnapshot = "market";
+  doc.querySelectorAll("script,iframe,object,embed,portal").forEach((node) => node.remove());
+  doc.querySelectorAll("meta[http-equiv]").forEach((node) => {
+    if ((node.getAttribute("http-equiv") || "").toLowerCase() === "refresh") {
+      node.remove();
+    }
+  });
+  doc.querySelectorAll("link").forEach((node) => {
+    const rel = (node.getAttribute("rel") || "").toLowerCase();
+    const as = (node.getAttribute("as") || "").toLowerCase();
+    if (rel.includes("modulepreload") || rel.includes("prefetch") || rel.includes("prerender") || (rel.includes("preload") && as === "script")) {
+      node.remove();
+    }
+  });
+  doc.querySelectorAll("base").forEach((node) => node.remove());
   doc.querySelectorAll("*").forEach((node) => {
     for (const attr of Array.from(node.attributes)) {
       const name = attr.name.toLowerCase();
       const value = attr.value.trim().toLowerCase();
-      if (name.startsWith("on") || value.startsWith("javascript:")) {
+      if (name.startsWith("on") || value.startsWith("javascript:") || name === "autofocus") {
         node.removeAttribute(attr.name);
       }
     }
   });
+  const viewport = doc.createElement("meta");
+  viewport.name = "viewport";
+  viewport.content = "width=device-width, initial-scale=1";
+  doc.head.prepend(viewport);
   const base = doc.createElement("base");
   base.href = baseURL;
   doc.head.prepend(base);
+  const stage = doc.createElement("div");
+  stage.className = "pp-market-snapshot-stage";
+  for (const child of Array.from(doc.body.childNodes)) {
+    stage.append(child);
+  }
+  doc.body.append(stage);
   const style = doc.createElement("style");
   style.textContent = `
-html,body{min-height:100%;margin:0;overflow:hidden;background:#fff!important;}
+html,body{width:100%;height:100%;min-height:100%;margin:0;overflow:hidden;background:#fff!important;}
+html{color-scheme:light;}
 body{pointer-events:none;transform-origin:left top;}
-*{scrollbar-width:none!important;}
+.pp-market-snapshot-stage{position:relative;width:100%;height:100%;min-width:960px;min-height:600px;overflow:hidden;background:#fff;isolation:isolate;}
+:where(a,button,input,select,textarea,label){pointer-events:none!important;}
+:where(img,svg,canvas,video){max-width:100%;}
+:where(*){scrollbar-width:none!important;}
 *::-webkit-scrollbar{display:none!important;}
 `;
   doc.head.append(style);
   return `<!doctype html>${doc.documentElement.outerHTML}`;
+}
+
+function enqueueMarketPreview<T>(job: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      activeMarketPreviewJobs += 1;
+      job()
+        .then(resolve, reject)
+        .finally(() => {
+          activeMarketPreviewJobs = Math.max(0, activeMarketPreviewJobs - 1);
+          runMarketPreviewQueue();
+        });
+    };
+    marketPreviewQueue.push(run);
+    runMarketPreviewQueue();
+  });
+}
+
+function runMarketPreviewQueue() {
+  while (activeMarketPreviewJobs < MARKET_PREVIEW_CONCURRENCY && marketPreviewQueue.length) {
+    const next = marketPreviewQueue.shift();
+    next?.();
+  }
+}
+
+function waitForMarketPreviewIdle(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new Error("preview aborted"));
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(resolve, MARKET_PREVIEW_IDLE_DELAY_MS);
+    signal.addEventListener("abort", () => {
+      window.clearTimeout(timer);
+      reject(new Error("preview aborted"));
+    }, { once: true });
+  });
+}
+
+async function fetchMarketPreviewSnapshot(appURL: string, cacheKey: string, signal: AbortSignal): Promise<string> {
+  const cached = marketPreviewCache.get(cacheKey);
+  if (cached) return cached;
+  const pending = marketPreviewPending.get(cacheKey);
+  if (pending) return pending;
+  const task = enqueueMarketPreview(async () => {
+    await waitForMarketPreviewIdle(signal);
+    const response = await fetch(`${appURL}?preview=1`, {
+      credentials: "same-origin",
+      cache: "force-cache",
+      signal
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const html = await response.text();
+    await waitForMarketPreviewIdle(signal);
+    const snapshot = buildMarketPreviewSnapshot(html, appURL);
+    marketPreviewCache.set(cacheKey, snapshot);
+    return snapshot;
+  }).finally(() => {
+    marketPreviewPending.delete(cacheKey);
+  });
+  marketPreviewPending.set(cacheKey, task);
+  return task;
 }
 
 function useRuntime() {
@@ -981,6 +1100,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const listScrollRef = useRef(0);
+  const loadedListQueryRef = useRef("");
   const hasMore = items.length < total;
   const pinnedCount = items.filter((item) => item.isPinned).length;
   const categories: Array<{ key: MarketCategory; label: string; note: string; icon: React.ReactNode }> = [
@@ -1016,6 +1136,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
     : feedScope + " · 共 " + total + " 个作品" + (pinnedCount ? " · 本页 " + pinnedCount + " 个精选" : "") + " · 可预览、复用和交给 Agent 二次创作";
 
   const load = useCallback(async (nextPage = 1, append = false) => {
+    const requestKey = `${query.trim()}|${sort}|${category}|${kind}`;
     if (append) {
       setLoadingMore(true);
     } else {
@@ -1034,6 +1155,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
       setItems((current) => append ? [...current, ...(data.deploys || [])] : (data.deploys || []));
       setTotal(data.total || 0);
       setPage(nextPage);
+      loadedListQueryRef.current = requestKey;
     } catch (err) {
       if (err instanceof APIError && err.status === 401 && (kind === "mine" || kind === "favorites")) {
         window.dispatchEvent(new CustomEvent("pagepilot-toast", {
@@ -1126,11 +1248,17 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
   }, []);
 
   useEffect(() => {
+    if (detailKey) {
+      if (!items.length) setLoading(false);
+      return;
+    }
+    const currentListQueryKey = `${query.trim()}|${sort}|${category}|${kind}`;
+    if (loadedListQueryRef.current === currentListQueryKey) return;
     const timer = window.setTimeout(() => {
       void load(1, false);
     }, 160);
     return () => window.clearTimeout(timer);
-  }, [load]);
+  }, [category, detailKey, items.length, kind, load, query, sort]);
 
   return (
     <section className="market-page">
@@ -1266,10 +1394,11 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
                 <div className="market-card-grid">{Array.from({ length: 8 }).map((_, index) => <div className="market-card-skeleton" key={index} />)}</div>
               ) : (
                 <div className="market-card-grid">
-                  {items.map((item) => (
+                  {items.map((item, index) => (
                     <MarketplaceCard
                       key={item.code}
                       item={item}
+                      previewIndex={index}
                       session={session}
                       onChanged={refresh}
                       onUse={setSelected}
@@ -1312,20 +1441,23 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
 
 function MarketplaceCard({
   item,
+  previewIndex,
   session,
   onChanged,
   onUse,
   onDetail
 }: {
   item: MarketplaceDeploy;
+  previewIndex: number;
   session: SessionInfo | null;
   onChanged: () => void;
   onUse: (item: MarketplaceDeploy) => void;
   onDetail: (item: MarketplaceDeploy) => void;
 }) {
   const cardRef = useRef<HTMLElement | null>(null);
-  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
-  const [previewDoc, setPreviewDoc] = useState("");
+  const cachedPreview = marketPreviewCache.get(item.code) || "";
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>(cachedPreview ? "loaded" : "idle");
+  const [previewDoc, setPreviewDoc] = useState(cachedPreview);
   const title = item.title || item.code || "未命名作品";
   const appURL = sameSiteURL(`/agent/${encodeURIComponent(item.code)}/`);
   const isLocked = Boolean(item.accessProtected);
@@ -1334,29 +1466,23 @@ function MarketplaceCard({
 
   useEffect(() => {
     const node = cardRef.current;
-    if (!node || isLocked) return;
+    if (!node || isLocked || previewDoc) return;
 
     let cancelQueued = false;
     let controller: AbortController | null = null;
+    let delayID: number | undefined;
     let timeoutID: number | undefined;
+    let scheduled = false;
 
-    const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting) || previewDoc || cancelQueued) return;
+    const loadPreview = () => {
+      if (cancelQueued || previewDoc) return;
       setPreviewStatus("loading");
       controller = new AbortController();
-      timeoutID = window.setTimeout(() => controller?.abort(), 4500);
-      fetch(`${appURL}?preview=1`, {
-        credentials: "same-origin",
-        cache: "force-cache",
-        signal: controller.signal
-      })
-        .then((response) => {
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          return response.text();
-        })
-        .then((html) => {
+      timeoutID = window.setTimeout(() => controller?.abort(), MARKET_PREVIEW_TIMEOUT_MS);
+      fetchMarketPreviewSnapshot(appURL, item.code, controller.signal)
+        .then((snapshot) => {
           if (cancelQueued) return;
-          setPreviewDoc(buildMarketPreviewSnapshot(html, appURL));
+          setPreviewDoc(snapshot);
           setPreviewStatus("loaded");
         })
         .catch(() => {
@@ -1365,16 +1491,24 @@ function MarketplaceCard({
         .finally(() => {
           if (timeoutID) window.clearTimeout(timeoutID);
         });
-    }, { rootMargin: "0px 0px", threshold: 0.08 });
+    };
+
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting) || cancelQueued || scheduled) return;
+      scheduled = true;
+      const delay = Math.min(720, previewIndex * 55);
+      delayID = window.setTimeout(loadPreview, delay);
+    }, { rootMargin: "260px 0px", threshold: 0.04 });
 
     observer.observe(node);
     return () => {
       cancelQueued = true;
       controller?.abort();
+      if (delayID) window.clearTimeout(delayID);
       if (timeoutID) window.clearTimeout(timeoutID);
       observer.disconnect();
     };
-  }, [appURL, isLocked, previewDoc]);
+  }, [appURL, isLocked, item.code, previewDoc, previewIndex]);
 
   const like = async () => {
     try {
@@ -1422,13 +1556,15 @@ function MarketplaceCard({
             <span>输入访问密码后才能查看内容</span>
           </div>
         ) : (
-          <iframe
-            title={`${title} 预览`}
-            loading="lazy"
-            scrolling="no"
-            sandbox={MARKET_SNAPSHOT_SANDBOX}
-            srcDoc={previewDoc}
-          />
+          previewDoc && (
+            <iframe
+              title={`${title} 预览`}
+              loading="lazy"
+              scrolling="no"
+              sandbox={MARKET_SNAPSHOT_SANDBOX}
+              srcDoc={previewDoc}
+            />
+          )
         )}
         {!isLocked && previewStatus === "failed" && (
           <div className="preview-fallback">
@@ -1443,8 +1579,8 @@ function MarketplaceCard({
           <span title="版本数"><Layers size={13} />v{item.versionCount || 1}</span>
         </div>
         <div className="card-hover-actions">
-          <button className="button compact dark" type="button" onClick={() => onDetail(item)}>查看详情</button>
-          <button className="button compact primary" type="button" onClick={() => onUse(item)}>使用模板</button>
+          <button className="button compact dark" type="button" onClick={() => onDetail(item)}><Eye size={14} />查看详情</button>
+          <button className="button compact primary" type="button" onClick={() => onUse(item)}><Workflow size={14} />使用模板</button>
           <button className="quick-action" type="button" aria-label="点赞" onClick={like}>
             <Heart size={15} /><span>{compactNumber(item.likeCount || 0)}</span>
           </button>
@@ -1517,6 +1653,7 @@ function MarketDetailViewFull({
   const [busyVersion, setBusyVersion] = useState<number | null>(null);
   const [showAllVersions, setShowAllVersions] = useState(false);
   const [showFileTree, setShowFileTree] = useState(false);
+  const [detailPreviewReady, setDetailPreviewReady] = useState(false);
   const displayTags = (item.tags || []).slice(0, 6);
   const detailFiles = item.files || [];
   const treeItems = item.bundle?.tree || [];
@@ -1530,6 +1667,13 @@ function MarketDetailViewFull({
   useEffect(() => {
     loadVersions().catch(() => setVersions([]));
   }, [loadVersions]);
+
+  useEffect(() => {
+    setDetailPreviewReady(false);
+    if (isLocked) return;
+    const timer = window.setTimeout(() => setDetailPreviewReady(true), 220);
+    return () => window.clearTimeout(timer);
+  }, [appURL, isLocked]);
 
   const copyText = async (text: string) => {
     await navigator.clipboard.writeText(text);
@@ -1613,16 +1757,23 @@ function MarketDetailViewFull({
                 <strong>网页已加密</strong>
                 <span>打开应用并输入访问密码后才能查看内容。</span>
               </div>
-            ) : (
+            ) : detailPreviewReady ? (
               <iframe
                 ref={previewFrameRef}
                 src={`${appURL}?preview=1`}
                 title={`${item.title || item.code} 预览`}
+                loading="lazy"
                 sandbox={PREVIEW_IFRAME_SANDBOX}
                 tabIndex={0}
                 onLoad={focusPreviewFrame}
                 onMouseDown={focusPreviewFrame}
               />
+            ) : (
+              <div className="detail-preview-placeholder">
+                <FileCode2 size={24} />
+                <strong>正在准备实时预览</strong>
+                <span>详情内容先加载完成，稍后接入应用画面，避免重页面阻塞操作。</span>
+              </div>
             )}
           </div>
         </div>
@@ -1651,13 +1802,13 @@ function MarketDetailViewFull({
           )}
         </div>
         <div className="market-detail-meta compact">
-          <span><strong>{marketCategoryLabel(item.category)}</strong><em>分类</em></span>
-          <span><strong>{marketFileType(item)}</strong><em>类型</em></span>
-          <span><strong>{item.likeCount || 0}</strong><em>点赞</em></span>
-          <span><strong>{item.viewCount || 0}</strong><em>访问</em></span>
-          <span><strong>{item.reuseCount || 0}</strong><em>复用</em></span>
-          <span><strong>{item.versionCount || versions.length || 1}</strong><em>版本</em></span>
-          <span><strong>{formatDate(item.updatedAt || item.createdAt)}</strong><em>更新</em></span>
+          <span><em>分类</em><strong>{marketCategoryLabel(item.category)}</strong></span>
+          <span><em>类型</em><strong>{marketFileType(item)}</strong></span>
+          <span><em>赞</em><strong>{compactNumber(item.likeCount || 0)}</strong></span>
+          <span><em>访问</em><strong>{compactNumber(item.viewCount || 0)}</strong></span>
+          <span><em>复用</em><strong>{compactNumber(item.reuseCount || 0)}</strong></span>
+          <span><em>版本</em><strong>v{compactNumber(item.versionCount || versions.length || 1)}</strong></span>
+          <span><em>更新</em><strong>{formatDate(item.updatedAt || item.createdAt)}</strong></span>
         </div>
         {item.bundle && (
           <div className="detail-info-block">
@@ -1995,6 +2146,9 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
   const ready = mode === "single"
     ? content.trim() && filename.trim()
     : files.length > 0 && files.every((file) => file.path.trim() && (file.contentBase64 || file.content.trim()));
+  const selectedUpdatableSite = createVersion
+    ? updatableSites.find((site) => site.code === customCode.trim())
+    : undefined;
 
   useEffect(() => {
     api<MarketCategoriesResponse>("/api/market/categories")
@@ -2054,7 +2208,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
       if (isZipUpload(file.name)) {
         setMode("multi");
         setFilename("");
-        setFiles([{ path: file.name || "site.zip", content: "", contentBase64: arrayBufferToBase64(await file.arrayBuffer()), isText: false, size: file.size }]);
+        setFiles([{ path: normalizeUploadedZipPath(file.name), content: "", contentBase64: arrayBufferToBase64(await file.arrayBuffer()), isText: false, size: file.size }]);
         return;
       }
       setFilename(file.name || "index.html");
@@ -2085,15 +2239,32 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
       if (createVersion && !customCode.trim()) {
         throw new Error("请先从可更新发布列表中选择一个作品。");
       }
+      const effectiveDescription = description.trim() || selectedUpdatableSite?.description?.trim() || "";
+      const effectiveTitle = title.trim() || selectedUpdatableSite?.title?.trim() || "";
+      if (!effectiveDescription) {
+        throw new APIError("请填写一句话描述，说明这个应用是做什么的。", 0, {
+          errorCode: "INVALID_DESCRIPTION",
+          stage: "validate"
+        });
+      }
+      if (effectiveDescription.length > 240) {
+        throw new APIError("描述最多 240 个字符，请精简后再发布。", 0, {
+          errorCode: "INVALID_DESCRIPTION",
+          stage: "validate"
+        });
+      }
       const payload: Record<string, unknown> = {
-        title: title.trim(),
-        description: description.trim(),
+        title: effectiveTitle,
+        description: effectiveDescription,
         visibility: canPublishToMarket ? visibility : "unlisted",
         category: createVersion ? undefined : (deployCategory || undefined),
         tags: createVersion ? undefined : parseTagInput(tagsInput),
         accessPassword: accessPassword.trim() || undefined
       };
-      if (enableCustom || createVersion) payload.code = customCode.trim();
+      if (enableCustom || createVersion) {
+        payload.customCode = customCode.trim();
+        payload.enableCustomCode = true;
+      }
       if (createVersion) payload.createVersion = true;
       if (mode === "single") {
         payload.filename = filename.trim() || "index.html";
@@ -2161,7 +2332,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
         </label>
         <label className="field">
           <span>描述</span>
-          <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="一句话说明用途" />
+          <input value={description} onChange={(event) => setDescription(event.target.value)} maxLength={240} placeholder="一句话说明用途" />
         </label>
         <div className="field-grid three">
           <label className="field">
@@ -2181,13 +2352,29 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
           </label>
           <label className="field">
             <span>作品标签</span>
-            <input value={tagsInput} onChange={(event) => setTagsInput(event.target.value)} disabled={createVersion} placeholder="官网, 看板, 活动页" />
+            <input
+              value={tagsInput}
+              onChange={(event) => setTagsInput(event.target.value)}
+              disabled={createVersion}
+              placeholder="官网, 看板, 活动页"
+              autoComplete="off"
+              data-lpignore="true"
+              name="pagepilot-deploy-tags"
+            />
           </label>
         </div>
         <div className="field-grid">
           <label className="field">
             <span>访问密码</span>
-            <input value={accessPassword} onChange={(event) => setAccessPassword(event.target.value)} type="password" placeholder="可选" />
+            <input
+              value={accessPassword}
+              onChange={(event) => setAccessPassword(event.target.value)}
+              type="password"
+              placeholder="可选"
+              autoComplete="new-password"
+              data-lpignore="true"
+              name="pagepilot-access-password"
+            />
           </label>
         </div>
         <label className="check-line">
@@ -2332,8 +2519,8 @@ function AgentsPage({ config }: { config: RuntimeConfig | null }) {
   const [tab, setTab] = useState<AgentDocTab>("skill");
 
   return (
-    <section className="content-page">
-      <div className="sub-hero">
+    <section className="content-page agents-page">
+      <div className="sub-hero agents-hero">
         <div className="eyebrow"><Bot size={16} />Agent</div>
         <h1>让 Agent 直接把网页交给 PagePilot</h1>
         <p>
@@ -2354,7 +2541,7 @@ function AgentsPage({ config }: { config: RuntimeConfig | null }) {
         </button>
       </div>
       {tab === "skill" ? <SkillGuide baseURL={baseURL} /> : <MCPGuide baseURL={baseURL} />}
-      <div className="info-grid">
+      <div className="info-grid agents-info-grid">
         <FeatureTile icon={<KeyRound />} title="令牌接入" desc="登录后在用户中心创建 API Token，Agent 使用令牌管理自己的站点和屏幕。" />
         <FeatureTile icon={<ShieldCheck />} title="匿名 Agent" desc="未登录 Agent 会持久化本地 session，后台能看到名称、IP 和 User-Agent。" />
         <FeatureTile icon={<Monitor />} title="屏幕投放" desc="屏幕绑定、投放、截图和远程命令必须使用注册用户 Token。" />
@@ -2516,69 +2703,115 @@ function ScreensPage() {
   }, []);
 
   const onlineCount = screens.filter((screen) => String(screen.status || "").toLowerCase().includes("online")).length;
+  const assignedCount = screens.filter((screen) => screen.currentSiteCode).length;
+  const heartbeats = screens
+    .map((screen) => screen.lastHeartbeatAt)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  const lastHeartbeat = heartbeats.length ? heartbeats[heartbeats.length - 1] : "";
+  const metrics = [
+    { label: "已绑定屏幕", value: String(screens.length || 0), note: "当前账号可管理" },
+    { label: "在线屏幕", value: String(onlineCount), note: "WebSocket 心跳正常" },
+    { label: "投放中", value: String(assignedCount), note: "已关联应用内容" },
+    { label: "最近心跳", value: lastHeartbeat ? formatDateTime(lastHeartbeat) : "暂无", note: currentOrigin() }
+  ];
+  const workflow = [
+    { icon: <KeyRound size={18} />, title: "绑定", desc: "屏幕端输入后台绑定码，归属到注册用户账号。" },
+    { icon: <PackageOpen size={18} />, title: "选择内容", desc: "选择自己的发布或创作市场公开作品进行投放。" },
+    { icon: <Rocket size={18} />, title: "远程投放", desc: "后台、Skill、MCP 或 CLI 都可以下发投放指令。" },
+    { icon: <Eye size={18} />, title: "巡检", desc: "按需截图、刷新 WebView，确认现场画面状态。" }
+  ];
+  const screenStatusLabel = (screen: ScreenInfo) =>
+    String(screen.status || "").toLowerCase().includes("online") ? "在线" : (screen.status || "未知");
 
   return (
-    <section className="content-page screen-page-v2">
-      <div className="screen-hero-v2">
+    <section className="content-page screen-page-v3">
+      <section className="screen-hero-v2 sub-hero">
         <div className="screen-hero-copy">
-          <div className="eyebrow"><Monitor size={16} />广告屏投放</div>
-          <h1>把 Agent 生成的应用，投到真实屏幕上</h1>
-          <p>屏幕绑定后，PagePilot 可以从后台、Skill、MCP 或 CLI 远程投放应用、刷新 WebView、回传截图，并把线上页面变成可管理的展示终端。</p>
-          <div className="screen-hero-actions">
-            <a className="button primary" href="/admin?tab=screens"><Monitor size={18} />进入屏幕管理</a>
-            <a className="button" href="/market"><PackageOpen size={18} />选择市场作品</a>
+          <div className="eyebrow"><Monitor size={16} />屏幕投放中枢</div>
+          <h1>把 PagePilot 应用稳定投到广告屏</h1>
+          <p>门店、展厅、会议屏一次绑定，后续可远程投放应用、刷新终端、按需截图，全程在后台追踪设备状态。</p>
+          <div className="hero-actions">
+            <a className="button primary" href="/admin?tab=screens"><Monitor size={18} />屏幕管理</a>
+            <a className="button" href="/market"><PackageOpen size={18} />选择作品</a>
           </div>
         </div>
-        <div className="screen-device-demo" aria-hidden="true">
-          <div className="screen-device-frame">
-            <div className="screen-device-top"><span /><span /><span /></div>
-            <div className="screen-device-canvas">
-              <strong>PagePilot Screen</strong>
-              <span>/agent/product-launch/</span>
-              <em>refresh · screenshot · publish</em>
+        <div className="screen-hero-steps">
+          {workflow.map((step, index) => (
+            <div className="screen-step-card" key={step.title}>
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              <div>{step.icon}</div>
+              <strong>{step.title}</strong>
+              <p>{step.desc}</p>
             </div>
-          </div>
-          <div className="screen-command-card">
-            <span>pagep screen publish</span>
-            <strong>{screens.length || 0} 屏幕 · {onlineCount} 在线</strong>
-          </div>
+          ))}
         </div>
-      </div>
+      </section>
 
-      <div className="screen-feature-strip">
-        <FeatureTile icon={<Monitor />} title="一次绑定" desc="Android 屏幕 App 绑定到账号后，由后台统一管理。" />
-        <FeatureTile icon={<Rocket />} title="远程投放" desc="从应用管理或创作市场选择作品，一键发布到屏幕。" />
-        <FeatureTile icon={<Eye />} title="截图回传" desc="远程请求截图，确认现场展示是否按预期运行。" />
-        <FeatureTile icon={<Workflow />} title="运行命令" desc="支持刷新、休眠、唤醒和基础远程控制。" />
-      </div>
-
-      <div className="screen-panel-v2">
-        <div className="screen-panel-head">
-          <div>
-            <span className="mini-label">MY SCREENS</span>
-            <h2>我的屏幕</h2>
-            <p>{error ? "登录注册用户后可查看自己的屏幕。" : "服务器：" + currentOrigin()}</p>
+      <section className="screen-metric-row">
+        {metrics.map((metric) => (
+          <div className="screen-metric-card" key={metric.label}>
+            <span>{metric.label}</span>
+            <strong>{metric.value}</strong>
+            <em>{metric.note}</em>
           </div>
-          <a className="button compact" href="/admin?tab=screens">管理绑定</a>
+        ))}
+      </section>
+
+      <section className="screen-dashboard-grid">
+        <div className="screen-table-card">
+          <div className="screen-section-head">
+            <div>
+              <span className="mini-label">MY SCREENS</span>
+              <h2>我的屏幕</h2>
+              <p>{error ? "登录注册用户后可查看自己的屏幕。" : "服务器：" + currentOrigin()}</p>
+            </div>
+            <a className="button compact" href="/admin?tab=screens">管理绑定</a>
+          </div>
+          {error ? <div className="empty-wide">{error}</div> : (
+            <div className="screen-table-list">
+              {screens.map((screen) => (
+                <div className="screen-table-row" key={screen.id}>
+                  <div className="screen-table-main">
+                    <strong>{screen.name || screen.id}</strong>
+                    <span>{formatDeviceInfo(screen.deviceInfo)}</span>
+                    <em>{screen.lastHeartbeatAt ? `最后心跳 ${formatDateTime(screen.lastHeartbeatAt)}` : "暂无心跳记录"}</em>
+                  </div>
+                  <div className="screen-table-state">
+                    <span className={String(screen.status || "").toLowerCase().includes("online") ? "online" : ""}>{screenStatusLabel(screen)}</span>
+                    <code>{screen.currentSiteCode || "空闲"}</code>
+                  </div>
+                </div>
+              ))}
+              {!screens.length && <div className="empty-wide">还没有绑定屏幕。进入后台生成绑定码后，在 Android 屏幕 App 中完成绑定。</div>}
+            </div>
+          )}
         </div>
-        {error ? <div className="empty-wide">{error}</div> : (
-          <div className="screen-list-v2">
-            {screens.map((screen) => (
-              <div className="screen-row-v2" key={screen.id}>
-                <div>
-                  <strong>{screen.name || screen.id}</strong>
-                  <span>{formatDeviceInfo(screen.deviceInfo)}</span>
-                </div>
-                <div className="screen-row-status">
-                  <em>{screen.status || "未知"}</em>
-                  <code>{screen.currentSiteCode || "空闲"}</code>
-                </div>
-              </div>
-            ))}
-            {!screens.length && <div className="empty-wide">还没有绑定屏幕。进入后台生成绑定码后，在 Android 屏幕 App 中完成绑定。</div>}
+
+        <aside className="screen-guide-card">
+          <div className="screen-section-head compact">
+            <div>
+              <span className="mini-label">OPERATIONS</span>
+              <h2>可远程操作</h2>
+            </div>
+            <ShieldCheck size={22} />
           </div>
-        )}
-      </div>
+          <div className="screen-command-list">
+            <div><strong>投放应用</strong><span>选择站点后下发到指定屏幕。</span></div>
+            <div><strong>刷新终端</strong><span>重新加载当前 WebView 页面。</span></div>
+            <div><strong>后台截图</strong><span>点击后等待终端压缩回传图片。</span></div>
+            <div><strong>休眠 / 唤醒</strong><span>无内容时显示时钟，保留远程控制通道。</span></div>
+          </div>
+          <div className="screen-cli-card">
+            <span>Skill / MCP / CLI</span>
+            <code>pagep screens list</code>
+            <code>pagep screens publish --site CODE</code>
+            <button className="button compact" type="button" onClick={() => void navigator.clipboard.writeText("pagep screens list\npagep screens publish --site CODE")}>
+              <Copy size={14} />复制命令
+            </button>
+          </div>
+        </aside>
+      </section>
     </section>
   );
 }

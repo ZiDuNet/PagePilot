@@ -1070,6 +1070,8 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 			COALESCE(s.security_mode, 'auto') AS security_mode,
 			COALESCE(s.category, '') AS category,
 			COALESCE(s.tags, '') AS tags,
+			COALESCE(cv.title, '') AS title,
+			COALESCE(cv.description, '') AS description,
 			COALESCE(cv.main_entry, '') AS main_entry,
 			CASE WHEN COALESCE(s.access_password_hash, '') <> '' THEN 1 ELSE 0 END AS access_protected,
 			COALESCE(s.is_pinned, 0) AS is_pinned,
@@ -1101,7 +1103,7 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 		if err := rows.Scan(
 			&item.Code, &item.PublicID, &item.OwnerTokenID, &cur, &item.CreatedAt, &updatedAt, &item.Source,
 			&item.ViewCount, &item.LikeCount, &item.ReuseCount, &item.TemplateSourceCode, &templateSourceVersion, &item.Status,
-			&item.Visibility, &item.ReusePolicy, &item.SourceDownloadPolicy, &item.SecurityMode, &item.Category, &item.Tags, &item.MainEntry, &accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
+			&item.Visibility, &item.ReusePolicy, &item.SourceDownloadPolicy, &item.SecurityMode, &item.Category, &item.Tags, &item.Title, &item.Description, &item.MainEntry, &accessProtected, &isPinned, &pinnedAt, &item.VersionCount, &item.TotalSize, &lastVStr,
 		); err != nil {
 			return nil, fmt.Errorf("scan site row: %w", err)
 		}

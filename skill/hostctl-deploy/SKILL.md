@@ -36,11 +36,11 @@ python scripts/pagep.py doctor --server https://pagepilot.example.com
 ## 入口优先级
 
 1. 能执行本地命令时，优先使用 `pagep` 或 `python scripts/pagep.py`。
-2. 上传目录、ZIP、图片、字体、Reveal.js 演示或大文件时，优先走命令行 multipart 上传，避免把大段 base64 放进模型上下文。
+2. 发布、追加或覆盖版本时，只要来源是目录、ZIP、图片、字体、Reveal.js 演示或大文件，优先走命令行 multipart 上传，避免把大段 base64 放进模型上下文。
 3. 不能执行本地命令、只能使用 MCP 时，再调用 `pagep-mcp` 工具。
 4. Skill、CLI、MCP 必须使用同一个 PagePilot 服务器地址和同一个用户 Token。
 5. 所有入口都只展示服务端返回的链接，不按本地 host、端口或域名规则自行拼接。
-6. 发布或追加版本成功后，优先把命令输出里的「访问 URL」「详情 URL」「版本 URL」交给用户；这些链接来自服务端返回，同时保留 JSON 供自动化解析。
+6. 发布、追加或覆盖版本成功后，优先把命令输出里的「访问 URL」「详情 URL」「版本 URL」交给用户；这些链接来自服务端返回，同时保留 JSON 供自动化解析。
 
 ## 身份和权限
 
@@ -70,6 +70,7 @@ pagep claim-session
 - 新公开作品发布前，先调用 `market categories` 获取服务端分类 slug，不要按文件后缀臆造分类。
 - 访问密码只保护浏览器查看。匿名访客也可以输入密码访问；校验成功后获得 5 分钟、绑定目标版本的访问授权。站点改密码或切换当前版本后，旧授权需要重新验证。
 - 追加版本或 `--update` 沿用原站点公开性和访问密码，除非用户明确要求修改。
+- 覆盖版本只用于用户明确要求替换某个未锁定版本；默认更新使用追加版本。覆盖版本同样使用 multipart 上传本地文件、目录或 ZIP，目录会先临时打包成 ZIP；不要在覆盖版本时把文件塞进 JSON/base64。
 
 ## 内容生成规范
 
@@ -373,6 +374,14 @@ pagep deploy ./site-v2 \
 pagep append project-home ./site-v2 \
   --title "项目官网首页升级版" \
   --description "更新页面结构和文案。"
+```
+
+覆盖未锁定版本：
+
+```bash
+pagep overwrite project-home 2 ./site-fix \
+  --title "项目官网首页修正版" \
+  --description "替换第 2 个未锁定版本的页面文件。"
 ```
 
 后台诊断：

@@ -160,7 +160,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 单文件：粘贴或上传一个 HTML / Markdown 文件；如果上传 ZIP，会自动切到多文件模式并交给服务端识别真实入口。
 - 多文件项目：上传多个文件、目录或单个 ZIP 包，PagePilot 按相对路径保存 `HTML/CSS/JS/图片/字体/JSON` 等资源，并优先选择 `index.html`、`README.md` 或显式入口作为入口；如果没有优先入口，会选择第一个 HTML / Markdown 文件。
 
-`POST /api/deploy` 同时支持 `application/json` 和 `multipart/form-data`。CLI、MCP 和 Skill 发布本地文件、目录或 ZIP 时优先走 multipart：目录会临时打成 ZIP，ZIP 文件作为单个文件上传，服务端负责识别真实站点根目录、入口文件和文件树。旧 JSON/base64 请求仍保留兼容，但不再作为大包、多文件项目的首选链路。复用创作市场作品时，发布请求可以传 `templateSourceCode` / `templateSourceVersion`，CLI 对应 `--template-source-code` / `--template-source-version`，服务端会在新站点和新版本上记录来源，并增加来源作品的复用次数。前台作品复用面板会区分“新建二创”和“更新已有发布”：新建会生成新 code，更新模式要求先填写自己拥有的目标 code，并按追加版本处理。
+`POST /api/deploy` 同时支持 `application/json` 和 `multipart/form-data`；`PATCH /api/deploys/{code}/versions/{version}` 覆盖版本也支持 `multipart/form-data`。CLI 和 Skill 发布、追加或覆盖本地文件、目录、ZIP 时优先走 multipart；MCP 发布/追加同样走 multipart：目录会临时打成 ZIP，ZIP 文件作为单个文件上传，服务端负责识别真实站点根目录、入口文件和文件树。旧 JSON/base64 请求仍保留兼容，但不再作为大包、多文件项目的首选链路。复用创作市场作品时，发布请求可以传 `templateSourceCode` / `templateSourceVersion`，CLI 对应 `--template-source-code` / `--template-source-version`，服务端会在新站点和新版本上记录来源，并增加来源作品的复用次数。前台作品复用面板会区分“新建二创”和“更新已有发布”：新建会生成新 code，更新模式要求先填写自己拥有的目标 code，并按追加版本处理。
 
 ZIP 入口识别规则会剥离单一外层目录，优先选择 `index.html`、`index.htm`、`README.md` 或 `README.markdown`；如果包里存在多个彼此独立的网站根，服务端会拒绝并返回友好错误，避免误把批量文件包发布成一个坏站点。ZIP 中的绝对路径、盘符、`..`、空路径段和路径穿越都会被拒绝。ZIP/Bundle 失败会返回 `stage=zip_bundle`，常见错误包括 `ZIP_UNSAFE_PATH`、`ZIP_AMBIGUOUS_ENTRY`、`ZIP_ENTRY_MISSING`、`ZIP_FILE_TOO_LARGE`、`ZIP_TOTAL_TOO_LARGE` 和 `ZIP_TOO_MANY_FILES`；前台手动部署页和后台发布页会展示错误阶段、稳定错误码、服务端 `hint`、本地排查建议和可复制诊断信息，避免用户猜目录结构。
 

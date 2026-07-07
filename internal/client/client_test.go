@@ -155,6 +155,87 @@ func TestDeployMultipartSendsFileAndCurrentOriginHeader(t *testing.T) {
 	}
 }
 
+func TestOverwriteMultipartSendsPatchFileAndCurrentOriginHeader(t *testing.T) {
+	tmp := t.TempDir()
+	source := filepath.Join(tmp, "index.html")
+	if err := os.WriteFile(source, []byte("<!doctype html><title>Overwrite</title>"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	var gotMethod string
+	var gotPath string
+	var gotOrigin string
+	var gotContentType string
+	var gotFile string
+	var gotUploadName string
+	var gotDescription string
+	var gotTitle string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotOrigin = r.Header.Get(currentOriginHeader)
+		gotContentType = r.Header.Get("Content-Type")
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse multipart: %v", err)
+		}
+		gotDescription = r.FormValue("description")
+		gotTitle = r.FormValue("title")
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("form file: %v", err)
+		}
+		defer file.Close()
+		gotUploadName = header.Filename
+		data, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatalf("read file: %v", err)
+		}
+		gotFile = string(data)
+		_ = json.NewEncoder(w).Encode(api.DeployResponse{
+			Success:       true,
+			Code:          "demo-site",
+			URL:           serverURL(r) + "/agent/demo-site/",
+			DetailURL:     serverURL(r) + "/market/demo-site",
+			VersionURL:    serverURL(r) + "/agent/demo-site/versions/7/",
+			VersionID:     "version-7",
+			VersionNumber: 7,
+		})
+	}))
+	defer server.Close()
+
+	c := New(server.URL+"/", "")
+	_, err := c.OverwriteMultipart(context.Background(), "demo-site", 7, MultipartOverwriteRequest{
+		SourcePath:  source,
+		UploadName:  "overwrite.zip",
+		Filename:    "index.html",
+		Description: "overwrite with multipart",
+		Title:       "Overwrite",
+	})
+	if err != nil {
+		t.Fatalf("multipart overwrite: %v", err)
+	}
+	if gotMethod != http.MethodPatch {
+		t.Fatalf("method = %s, want PATCH", gotMethod)
+	}
+	if gotPath != "/api/deploys/demo-site/versions/7" {
+		t.Fatalf("path = %s", gotPath)
+	}
+	if gotOrigin != server.URL {
+		t.Fatalf("current origin header = %q, want %q", gotOrigin, server.URL)
+	}
+	if !strings.HasPrefix(gotContentType, "multipart/form-data") {
+		t.Fatalf("content-type = %q, want multipart/form-data", gotContentType)
+	}
+	if gotUploadName != "overwrite.zip" {
+		t.Fatalf("upload filename = %q, want overwrite.zip", gotUploadName)
+	}
+	if gotDescription != "overwrite with multipart" || gotTitle != "Overwrite" {
+		t.Fatalf("metadata description=%q title=%q", gotDescription, gotTitle)
+	}
+	if !strings.Contains(gotFile, "Overwrite") {
+		t.Fatalf("uploaded file = %q", gotFile)
+	}
+}
+
 func TestSetSiteReusePolicySendsAdminPatch(t *testing.T) {
 	var gotOrigin string
 	var gotAuth string

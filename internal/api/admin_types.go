@@ -110,6 +110,8 @@ type SiteListItem struct {
 	TemplateSourceVersion *int64     `json:"templateSourceVersion,omitempty"`
 	Category              string     `json:"category,omitempty"`
 	Tags                  []string   `json:"tags,omitempty"`
+	Title                 string     `json:"title,omitempty"`
+	Description           string     `json:"description,omitempty"`
 	Filename              string     `json:"filename,omitempty"`
 	AccessProtected       bool       `json:"accessProtected"`
 	IsPinned              bool       `json:"isPinned"`

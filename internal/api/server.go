@@ -2325,49 +2325,65 @@ func (s *Server) handlePatchVersion(w http.ResponseWriter, r *http.Request) {
 	actorType, actorID, actorRole := s.auditActorFromRequest(r)
 	targetID := strconv.FormatInt(version, 10)
 
-	if ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))); !strings.HasPrefix(ct, "application/json") {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "content_type",
-			"Content-Type must be application/json"), reqID))
-		return
-	}
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxRequestBodyBytes())
 
-	var raw map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json",
-			fmt.Sprintf("invalid JSON body: %v", err)), reqID))
-		return
-	}
-
-	if statusVal, hasStatus := raw["status"]; hasStatus {
-		status, ok := statusVal.(string)
-		detail := map[string]any{"status": status}
-		if !ok {
-			detail["statusType"] = fmt.Sprintf("%T", statusVal)
-			apiErr := NewError(CodeInvalidInput, "validate", "'status' must be a string")
-			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "version.status", code, "version", targetID, detail, apiErr)
-			writeError(w, apiErrWithReqID(apiErr, reqID))
-			return
-		}
-		resp, apiErr := s.deployer.SetVersionStatus(r.Context(), code, version, status)
-		if apiErr != nil {
-			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "version.status", code, "version", targetID, detail, apiErr)
-			writeError(w, apiErrWithReqID(apiErr, reqID))
-			return
-		}
-		s.recordAuditLog(r, actorType, actorID, actorRole, "version.status", code, "version", targetID, detail)
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
-
-	// 覆盖模式：重新解析成结构化对象
-	body, _ := json.Marshal(raw)
 	var req OverwriteRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json",
-			fmt.Sprintf("invalid OverwriteRequest: %v", err)), reqID))
+	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if strings.HasPrefix(ct, "application/json") {
+		var raw map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json",
+				fmt.Sprintf("invalid JSON body: %v", err)), reqID))
+			return
+		}
+
+		if statusVal, hasStatus := raw["status"]; hasStatus {
+			status, ok := statusVal.(string)
+			detail := map[string]any{"status": status}
+			if !ok {
+				detail["statusType"] = fmt.Sprintf("%T", statusVal)
+				apiErr := NewError(CodeInvalidInput, "validate", "'status' must be a string")
+				s.recordFailedAuditLog(r, actorType, actorID, actorRole, "version.status", code, "version", targetID, detail, apiErr)
+				writeError(w, apiErrWithReqID(apiErr, reqID))
+				return
+			}
+			resp, apiErr := s.deployer.SetVersionStatus(r.Context(), code, version, status)
+			if apiErr != nil {
+				s.recordFailedAuditLog(r, actorType, actorID, actorRole, "version.status", code, "version", targetID, detail, apiErr)
+				writeError(w, apiErrWithReqID(apiErr, reqID))
+				return
+			}
+			s.recordAuditLog(r, actorType, actorID, actorRole, "version.status", code, "version", targetID, detail)
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+
+		// 覆盖模式：重新解析成结构化对象
+		body, _ := json.Marshal(raw)
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json",
+				fmt.Sprintf("invalid OverwriteRequest: %v", err)), reqID))
+			return
+		}
+	} else if strings.HasPrefix(ct, "multipart/form-data") {
+		parsed, apiErr := s.decodeDeployMultipart(r)
+		if apiErr != nil {
+			writeError(w, apiErrWithReqID(apiErr, reqID))
+			return
+		}
+		req = OverwriteRequest{
+			Description: parsed.Description,
+			Title:       parsed.Title,
+			Filename:    parsed.Filename,
+			Content:     parsed.Content,
+			Files:       parsed.Files,
+		}
+	} else {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "content_type",
+			"Content-Type must be application/json or multipart/form-data"), reqID))
 		return
 	}
+
 	overwriteDetail := map[string]any{
 		"description":  req.Description,
 		"title":        req.Title,
@@ -4909,6 +4925,8 @@ func (s *Server) handleAdminListSites(w http.ResponseWriter, r *http.Request) {
 			SecurityMode:         normalizeSiteSecurityMode(site.SecurityMode),
 			Category:             site.Category,
 			Tags:                 splitSiteTags(site.Tags),
+			Title:                site.Title,
+			Description:          site.Description,
 			Filename:             site.MainEntry,
 			AccessProtected:      site.AccessProtected,
 			IsPinned:             site.IsPinned,

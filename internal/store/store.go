@@ -283,6 +283,8 @@ type SiteWithMeta struct {
 	SecurityMode          string
 	Category              string
 	Tags                  string
+	Title                 string
+	Description           string
 	MainEntry             string
 	AccessProtected       bool
 	IsPinned              bool

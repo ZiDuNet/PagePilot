@@ -24,7 +24,7 @@
 ## 已落地
 
 - 发布链路支持单 HTML、Markdown、ZIP 和多文件静态站点。
-- `POST /api/deploy` 同时支持 JSON 和 `multipart/form-data`，CLI、MCP、Skill 发布本地文件、目录或 ZIP 时优先走 multipart。
+- `POST /api/deploy` 同时支持 JSON 和 `multipart/form-data`；`PATCH /api/deploys/{code}/versions/{version}` 覆盖版本也支持 `multipart/form-data`。CLI 和 Skill 发布、追加、覆盖本地文件、目录或 ZIP 时优先走 multipart，MCP 发布/追加同样走 multipart。
 - ZIP 入口识别已拆到 `internal/bundle`，支持剥离单一外层目录、识别 HTML/Markdown 入口、拒绝路径穿越和疑似批量包；失败会返回 `stage=zip_bundle`、稳定 Bundle 错误码和面向用户的 `hint`，前后台部署页已把这些结构化信息展示为可操作的错误面板，`runtime-qa` 已锁定真实部署接口的 `ZIP_AMBIGUOUS_ENTRY` / `ZIP_ENTRY_MISSING` / `ZIP_UNSAFE_PATH` 返回。
 - 后台“发布应用”已与手动部署页对齐：单文件上传接受 HTML / Markdown / ZIP，单 ZIP 会自动进入多文件发布并交由服务端 Bundle 识别；多文件本地校验接受 HTML、Markdown 或单 ZIP，避免在前端误拦截合法 ZIP 包。
 - 新建发布和覆盖版本都会写入 `version_bundles`，Bundle `kind` 稳定为 `single_html`、`markdown`、`zip_site`、`static_site`，详情接口会返回中文类型、入口、ZIP 根目录、文件树、入口说明和安全模式；旧数据缺少 Bundle 元数据时会按入口和文件数兜底推断。

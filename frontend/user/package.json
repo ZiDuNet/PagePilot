@@ -8,6 +8,13 @@
     "typecheck": "tsc --noEmit",
     "test:preview-sandbox": "node scripts/previewSandbox.test.mjs",
     "test:template-reuse": "node scripts/templateReuse.test.mjs",
+    "test:deploy-errors": "node scripts/deployErrorFriendly.test.mjs",
+    "test:deploy-protocol": "node scripts/deployProtocol.test.mjs",
+    "test:market-performance": "node scripts/marketPerformance.test.mjs",
+    "test:market-detail-layout": "node scripts/marketDetailLayout.test.mjs",
+    "test:page-background": "node scripts/pageBackground.test.mjs",
+    "test:agents-layout": "node scripts/agentsLayout.test.mjs",
+    "test:screens-layout": "node scripts/screensLayout.test.mjs",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },

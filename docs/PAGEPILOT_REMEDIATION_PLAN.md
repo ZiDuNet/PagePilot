@@ -250,7 +250,7 @@ OSS_PUBLIC_BASE_URL=
 - 已新增 `internal/bundle`，ZIP 会识别真实站点根目录、入口文件、Markdown 包、嵌套目录和批量包误传，并拒绝路径穿越；ZIP/Bundle 失败会返回 `stage=zip_bundle`、稳定错误码和可直接展示的 `hint`。
 - 已新增 `internal/render`，Markdown 托管页支持相对图片、表格、任务列表、代码块、Mermaid/数学公式语义块和渲染缓存。
 - 已新增 SQLite FTS5 市场搜索、中文 `LIKE` 回退、渲染缓存、Bundle 元数据表和审计日志表；老数据库启动时自动补齐并回填索引。审计日志已具备后台列表 API、OpenAPI、全局审计 UI、站点详情最近审计摘要、分页筛选、用户 / 站点下拉、动作预设、操作者类型、对象 ID 过滤、RFC3339 时间过滤、IP/UA/详情关键字搜索、CLI/MCP/Skill 查询和发布失败日志。
-- `POST /api/deploy` 已支持 multipart；Go CLI、MCP 和 Python Skill 发布文件/目录/ZIP 时优先走 multipart，旧 JSON/base64 仍保留兼容。Python Skill 发布/追加成功后会输出服务端返回 URL 摘要，并保留 JSON 供自动化解析。
+- `POST /api/deploy` 已支持 multipart，`PATCH /api/deploys/{code}/versions/{version}` 覆盖版本也支持 multipart；Go CLI 和 Python Skill 发布、追加、覆盖文件/目录/ZIP 时优先走 multipart，MCP 发布/追加同样走 multipart，旧 JSON/base64 仍保留兼容。Python Skill 发布/追加/覆盖成功后会输出服务端返回 URL 摘要，并保留 JSON 供自动化解析。
 
 ### 仍需补齐
 

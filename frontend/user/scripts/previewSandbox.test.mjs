@@ -19,4 +19,7 @@ test("前台预览 iframe 使用集中 sandbox 策略", () => {
   assert.equal(match[1].includes("allow-same-origin"), false);
   assert.equal(snapshotMatch[1].includes("allow-scripts"), false);
   assert.equal(snapshotMatch[1].includes("allow-same-origin"), false);
+  assert.match(source, /script,iframe,object,embed,portal/);
+  assert.match(source, /pp-market-snapshot-stage/);
+  assert.match(source, /previewDoc && \(/);
 });

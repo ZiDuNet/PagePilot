@@ -371,7 +371,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 				"patch": map[string]any{
 					"summary":     "Overwrite an unlocked version or change its status",
 					"parameters":  []map[string]any{pathParam("code", "string"), pathParam("version", "integer")},
-					"requestBody": jsonBodyRef("OverwriteRequest"),
+					"requestBody": versionPatchBodyRef(),
 					"responses":   map[string]any{"200": map[string]any{"description": "Version updated"}, "423": errorResponse()},
 				},
 				"delete": map[string]any{
@@ -580,6 +580,25 @@ func jsonBodyRef(name string) map[string]any {
 		"required": true,
 		"content": map[string]any{
 			"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/" + name}},
+		},
+	}
+}
+
+func versionPatchBodyRef() map[string]any {
+	return map[string]any{
+		"required": true,
+		"content": map[string]any{
+			"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/OverwriteRequest"}},
+			"multipart/form-data": map[string]any{"schema": map[string]any{
+				"type":     "object",
+				"required": []string{"description", "file"},
+				"properties": map[string]any{
+					"description": map[string]any{"type": "string", "description": "覆盖说明，最多 240 字符"},
+					"title":       map[string]any{"type": "string", "description": "版本标题"},
+					"filename":    map[string]any{"type": "string", "description": "入口文件提示，如 index.html；ZIP/目录可自动识别"},
+					"file":        map[string]any{"type": "string", "format": "binary", "description": "HTML、Markdown、ZIP 或目录临时打包后的 ZIP"},
+				},
+			}},
 		},
 	}
 }

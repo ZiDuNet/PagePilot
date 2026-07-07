@@ -83,6 +83,16 @@ func TestOpenAPIIncludesAuditAndSiteDetailContracts(t *testing.T) {
 	if !accessParamNames["code"] || !accessParamNames["version"] {
 		t.Fatalf("site access params = %+v; want code and version", accessParamNames)
 	}
+	versionPath := doc.Paths["/api/deploys/{code}/versions/{version}"]
+	if versionPath == nil || versionPath["patch"] == nil {
+		t.Fatalf("openapi missing PATCH /api/deploys/{code}/versions/{version}")
+	}
+	versionPatch := versionPath["patch"].(map[string]any)
+	versionBody, _ := versionPatch["requestBody"].(map[string]any)
+	versionContent, _ := versionBody["content"].(map[string]any)
+	if versionContent["application/json"] == nil || versionContent["multipart/form-data"] == nil {
+		t.Fatalf("version patch content = %+v; want json and multipart", versionContent)
+	}
 	sitePath := doc.Paths["/api/admin/sites/{code}"]
 	if sitePath == nil || sitePath["get"] == nil || sitePath["delete"] == nil {
 		t.Fatalf("openapi /api/admin/sites/{code} = %+v; want both GET and DELETE", sitePath)

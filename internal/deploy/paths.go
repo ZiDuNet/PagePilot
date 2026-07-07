@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/yourorg/hostctl/internal/api"
 )
-
-// 文件路径白名单：允许字母、数字、-、_、.、/，1-255 字符。
-var filePathRe = regexp.MustCompile(`^[a-zA-Z0-9\-_./]{1,255}$`)
 
 // maxFileDepth 限制路径深度，防止过深嵌套。
 const maxFileDepth = 16
@@ -37,10 +35,10 @@ func validateFilePath(p string) *api.APIError {
 		return api.NewError(api.CodeInvalidFilePath, "validate",
 			fmt.Sprintf("file path too long (max 255 chars): %s", truncate(p, 50)))
 	}
-	if !filePathRe.MatchString(p) {
+	if !filePathCharsSafe(p) {
 		return api.NewError(api.CodeInvalidFilePath, "validate",
 			fmt.Sprintf("file path contains invalid characters: %s", truncate(p, 50))).
-			WithHint("Only letters, digits, hyphen, underscore, dot, and slash are allowed.")
+			WithHint("Only letters, digits, Unicode letters, hyphen, underscore, dot, and slash are allowed.")
 	}
 	if strings.HasPrefix(p, "/") {
 		return api.NewError(api.CodeInvalidFilePath, "validate",
@@ -81,6 +79,22 @@ func validateFilePath(p string) *api.APIError {
 		}
 	}
 	return nil
+}
+
+func filePathCharsSafe(p string) bool {
+	if !utf8.ValidString(p) {
+		return false
+	}
+	for _, r := range p {
+		if r == '/' || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // resolveFileContent 把 DeployFile 解码成原始字节 + 是否二进制。

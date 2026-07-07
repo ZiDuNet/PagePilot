@@ -10,10 +10,20 @@ import zipfile
 
 
 SCRIPT = pathlib.Path(__file__).with_name("hostctl_deploy.py")
+SKILL_DOC = SCRIPT.parent.parent / "SKILL.md"
 SPEC = importlib.util.spec_from_file_location("hostctl_deploy", SCRIPT)
 hostctl_deploy = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(hostctl_deploy)
+
+
+class SkillDocumentationTests(unittest.TestCase):
+    def test_skill_documents_multipart_overwrite_contract(self):
+        text = SKILL_DOC.read_text(encoding="utf-8")
+
+        self.assertIn("覆盖版本", text)
+        self.assertIn("multipart", text)
+        self.assertIn("不要在覆盖版本时把文件塞进 JSON/base64", text)
 
 
 class ScreenOrientationTests(unittest.TestCase):
@@ -223,6 +233,53 @@ class DeployOptionTests(unittest.TestCase):
 
         self.assertEqual(payload["templateSourceCode"], "source-demo")
         self.assertEqual(payload["templateSourceVersion"], 3)
+
+    def test_cmd_overwrite_uses_multipart_patch(self):
+        captured = {}
+        args = types.SimpleNamespace(
+            server="https://pagepilot.example.com",
+            token="user-token",
+            code="demo site",
+            version=2,
+            source="site",
+            filename="",
+            description="覆盖版本",
+            title="覆盖版本标题",
+            visibility="",
+            category="",
+            create_version=False,
+            access_password="",
+            template_source_code="",
+            template_source_version=None,
+        )
+
+        def fake_request_multipart(base, token, path, fields, source_path, upload_name, session_id="", agent=None, method="POST"):
+            captured["base"] = base
+            captured["token"] = token
+            captured["path"] = path
+            captured["fields"] = fields
+            captured["source_path"] = source_path
+            captured["upload_name"] = upload_name
+            captured["session_id"] = session_id
+            captured["method"] = method
+            return 200, {"success": True, "code": "demo-site"}
+
+        with mock.patch.object(hostctl_deploy, "_ensure_unlocked"):
+            with mock.patch.object(hostctl_deploy, "source_entry_hint", return_value="index.html"):
+                with mock.patch.object(hostctl_deploy, "prepare_multipart_source", return_value=(pathlib.Path("site.zip"), "site.zip", lambda: None)):
+                    with mock.patch.object(hostctl_deploy, "request_multipart", fake_request_multipart):
+                        with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                            code = hostctl_deploy.cmd_overwrite(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["base"], "https://pagepilot.example.com")
+        self.assertEqual(captured["token"], "user-token")
+        self.assertEqual(captured["path"], "/api/deploys/demo%20site/versions/2")
+        self.assertEqual(captured["method"], "PATCH")
+        self.assertEqual(captured["upload_name"], "site.zip")
+        self.assertEqual(captured["fields"]["description"], "覆盖版本")
+        self.assertEqual(captured["fields"]["title"], "覆盖版本标题")
+        self.assertEqual(captured["fields"]["filename"], "index.html")
 
 
 class AdminCommandTests(unittest.TestCase):

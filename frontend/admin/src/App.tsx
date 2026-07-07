@@ -119,6 +119,8 @@ interface SiteItem {
   publicId?: string;
   ownerTokenId?: string;
   ownerUsername?: string;
+  title?: string;
+  description?: string;
   currentVersion?: number;
   versionCount?: number;
   totalSize?: number;
@@ -483,6 +485,31 @@ function plainErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function friendlyAuthErrorMessage(err: unknown): string {
+  const payload = structuredAPIError(err);
+  const fallback = plainErrorMessage(err);
+  const detail = String(payload?.detail || fallback || "").toLowerCase();
+  const code = String(payload?.errorCode || "").toUpperCase();
+  const stage = String(payload?.stage || "").toLowerCase();
+
+  if (detail.includes("username or password is incorrect") || (code === "UNAUTHORIZED" && stage === "auth")) {
+    return "用户名或密码不正确，请检查后重新输入。";
+  }
+  if (detail.includes("captcha is incorrect or expired") || stage === "captcha") {
+    return "验证码不正确或已过期，请刷新后重试。";
+  }
+  if (detail.includes("email verification code is incorrect or expired") || stage === "email") {
+    return "邮箱验证码不正确或已过期，请重新获取。";
+  }
+  if (detail.includes("username already exists or password is invalid") || stage === "register") {
+    return "用户名已存在，或密码不符合要求。请换一个用户名并使用至少 8 位密码。";
+  }
+  if (detail.includes("login required")) {
+    return "请先登录后再继续操作。";
+  }
+  return fallback || "操作失败，请稍后重试。";
+}
+
 function errorStageLabel(stage?: string): string {
   const normalized = String(stage || "").toLowerCase();
   const labels: Record<string, string> = {
@@ -500,6 +527,7 @@ function deployErrorTitle(payload: StructuredAPIErrorPayload | null): string {
   const code = String(payload?.errorCode || "").toUpperCase();
   const stage = String(payload?.stage || "").toLowerCase();
   if (code.startsWith("ZIP_") || stage === "zip_bundle") return "ZIP / 多文件包需要调整";
+  if (code === "INVALID_DESCRIPTION") return "请补充应用描述";
   if (code === "CONTENT_TOO_LARGE") return "上传内容超过限制";
   if (code === "INVALID_FILE_PATH") return "文件路径不符合要求";
   if (code === "INVALID_CUSTOM_CODE") return "自定义 code 不可用";
@@ -507,10 +535,28 @@ function deployErrorTitle(payload: StructuredAPIErrorPayload | null): string {
   return "发布失败";
 }
 
+function isCommonDeployValidationError(payload: StructuredAPIErrorPayload | null): boolean {
+  const code = String(payload?.errorCode || "").toUpperCase();
+  return code === "INVALID_DESCRIPTION";
+}
+
+function friendlyDeployErrorMessage(payload: StructuredAPIErrorPayload | null, fallback: string): string {
+  const code = String(payload?.errorCode || "").toUpperCase();
+  if (code === "INVALID_DESCRIPTION") {
+    return "请填写一句话描述，说明这个应用是做什么的。";
+  }
+  return payload?.detail || fallback;
+}
+
 function deployErrorHints(payload: StructuredAPIErrorPayload | null): string[] {
   const hints = new Set<string>();
   const code = String(payload?.errorCode || "").toUpperCase();
   const stage = String(payload?.stage || "").toLowerCase();
+  if (code === "INVALID_DESCRIPTION") {
+    hints.add("描述会展示在创作市场和后台列表里，请控制在 240 个字符以内。");
+    hints.add("例如：面向门店大屏展示的新品活动页。");
+    return Array.from(hints);
+  }
   if (payload?.hint) hints.add(String(payload.hint));
   if (stage === "zip_bundle" || code.startsWith("ZIP_")) {
     hints.add("请确认 ZIP 里只有一个可发布的网站根目录，优先放置 index.html 或 README.md。");
@@ -537,6 +583,7 @@ function deployErrorHints(payload: StructuredAPIErrorPayload | null): string[] {
 function DeployErrorPanel({ message, error }: { message: string; error: StructuredAPIErrorPayload | null }) {
   const [copied, setCopied] = useState(false);
   const hints = deployErrorHints(error);
+  const displayMessage = friendlyDeployErrorMessage(error, message);
   const diagnostics = JSON.stringify({ message, ...(error || {}) }, null, 2);
   const copyDiagnostics = async () => {
     await navigator.clipboard.writeText(diagnostics);
@@ -550,10 +597,10 @@ function DeployErrorPanel({ message, error }: { message: string; error: Structur
         <span className="deploy-error-icon"><AlertTriangle size={18} /></span>
         <div>
           <strong>{deployErrorTitle(error)}</strong>
-          <p>{error?.detail || message}</p>
+          <p>{displayMessage}</p>
         </div>
       </div>
-      {error && (
+      {error && !isCommonDeployValidationError(error) && (
         <div className="deploy-error-badges">
           {error.errorCode && <code>{error.errorCode}</code>}
           {error.stage && <span>{errorStageLabel(error.stage)}</span>}
@@ -605,6 +652,10 @@ function isTextFile(name: string) {
 
 function isZipFile(name: string) {
   return /\.zip$/i.test(name);
+}
+
+function normalizeUploadedZipPath(name: string) {
+  return isZipFile(name) ? "site.zip" : name;
 }
 
 function isDeployEntrypointFile(name: string) {
@@ -994,7 +1045,7 @@ function LoginScreen({
       onAuthed(session);
     } catch (err) {
       localStorage.removeItem("hostctl-admin-token");
-      setError(err instanceof Error ? err.message : String(err));
+      setError(friendlyAuthErrorMessage(err));
       void loadCaptcha();
     } finally {
       setBusy(false);
@@ -1026,7 +1077,7 @@ function LoginScreen({
       setError("邮箱验证码已发送，10 分钟内有效");
       await loadCaptcha();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(friendlyAuthErrorMessage(err));
       void loadCaptcha();
     } finally {
       setEmailBusy(false);
@@ -1233,6 +1284,11 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
     setDeployErrorDetail(null);
     setGlobalError("");
   };
+  const setValidationError = (message: string, errorCode = "INVALID_INPUT") => {
+    setDeployError(message);
+    setDeployErrorDetail({ errorCode, stage: "validate" });
+    setGlobalError("");
+  };
 
   useEffect(() => {
     api<MarketCategoriesResponse>("/api/market/categories")
@@ -1248,7 +1304,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
         setMode("multi");
         setEntry("");
         setFiles([{
-          path: file.name || "site.zip",
+          path: normalizeUploadedZipPath(file.name),
           content: "",
           contentBase64: toBase64(await file.arrayBuffer()),
           isText: false,
@@ -1281,9 +1337,10 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
     const valid = files.filter((file) => file.path.trim());
     const mainEntry = preferredDeployEntryPath(valid, entry);
     const isSingleZip = valid.length === 1 && isZipFile(valid[0].path);
+    const effectiveDescription = description.trim() || (append && code.trim() ? `更新 ${code.trim()} 的新版本` : "");
     const body: any = {
       title: title.trim() || undefined,
-      description: description.trim(),
+      description: effectiveDescription,
       enableCustomCode: append || !!code.trim(),
       customCode: append || code.trim() ? code.trim() : undefined,
       createVersion: append,
@@ -1311,8 +1368,9 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
 
   async function submit() {
     setError("");
-    if (!description.trim()) return setError("请填写一句话描述");
     if (append && !code.trim()) return setError("更新现有发布必须填写已有 code");
+    const effectiveDescription = description.trim() || (append && code.trim() ? `更新 ${code.trim()} 的新版本` : "");
+    if (!effectiveDescription) return setValidationError("请填写一句话描述，说明这个应用是做什么的。", "INVALID_DESCRIPTION");
     if (mode === "single" && !content.trim()) return setError("请粘贴或上传 HTML 内容");
     if (mode === "multi" && !files.length) return setError("请上传多文件项目");
     const isSingleZipUpload = mode === "multi" && files.length === 1 && isZipFile(files[0].path);
@@ -1353,7 +1411,19 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
         {append && <div className="hint-box">更新必须填写已有 <code>code</code>。它不会创建新链接，只给原站点追加版本；公开方式和访问密码沿用原设置。</div>}
         <div className="form-grid">
           <label className="field"><span>可见性</span><select value={visibility} disabled={append} onChange={(event) => setVisibility(event.target.value)}><option value="public">公开进创作市场</option><option value="unlisted">未公开，仅链接访问</option></select></label>
-          <label className="field"><span>访问密码</span><input type="password" value={password} disabled={append} onChange={(event) => setPassword(event.target.value)} placeholder="可选，至少 4 位" /></label>
+          <label className="field">
+            <span>访问密码</span>
+            <input
+              type="password"
+              value={password}
+              disabled={append}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="可选，至少 4 位"
+              autoComplete="new-password"
+              data-lpignore="true"
+              name="pagepilot-admin-access-password"
+            />
+          </label>
         </div>
         <div className="form-grid">
           <label className="field">
@@ -1365,7 +1435,15 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
           </label>
           <label className="field">
             <span>作品标签</span>
-            <input value={tagsInput} disabled={append} onChange={(event) => setTagsInput(event.target.value)} placeholder="官网, 看板, 活动页" />
+            <input
+              value={tagsInput}
+              disabled={append}
+              onChange={(event) => setTagsInput(event.target.value)}
+              placeholder="官网, 看板, 活动页"
+              autoComplete="off"
+              data-lpignore="true"
+              name="pagepilot-admin-tags"
+            />
           </label>
         </div>
 

@@ -101,6 +101,33 @@ func TestResolveContentZipRespectsFilenameHint(t *testing.T) {
 	}
 }
 
+func TestResolveContentAcceptsUnicodeZipUploadName(t *testing.T) {
+	d := New(config.Default(), nil)
+	d.cfg.MaxSingleFileBytes = 1 << 20
+	d.cfg.MaxSiteTotalBytes = 2 << 20
+	d.cfg.MaxFilesPerSite = 50
+
+	zipBytes := makeTestZip(t, map[string]string{
+		"site/index.html": "<!doctype html><html><body><div>中文 ZIP 容器名</div></body></html>",
+	})
+
+	files, mainEntry, apiErr := d.resolveContent(api.DeployRequest{
+		Files: []api.DeployFile{{
+			Path:          "2026-07-03_王关飞.zip",
+			ContentBase64: base64.StdEncoding.EncodeToString(zipBytes),
+		}},
+	}, "")
+	if apiErr != nil {
+		t.Fatalf("resolveContent returned error: %v", apiErr.Detail)
+	}
+	if mainEntry != "index.html" {
+		t.Fatalf("mainEntry = %q, want index.html", mainEntry)
+	}
+	if !hasResolvedPath(files, "index.html") {
+		t.Fatalf("expected ZIP to be expanded, got %#v", files)
+	}
+}
+
 func TestResolveContentRejectsZipTraversal(t *testing.T) {
 	d := New(config.Default(), nil)
 	d.cfg.MaxSingleFileBytes = 1 << 20

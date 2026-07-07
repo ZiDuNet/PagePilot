@@ -283,6 +283,7 @@ def request_multipart(
     upload_name: str,
     session_id: str = "",
     agent: dict | None = None,
+    method: str = "POST",
 ) -> tuple[int, dict]:
     boundary = "----PagePilotSkill" + uuid.uuid4().hex
     body = bytearray()
@@ -330,7 +331,7 @@ def request_multipart(
     elif session_id:
         headers["X-Hostctl-Session"] = session_id
 
-    req = urllib.request.Request(base + path, data=bytes(body), headers=headers, method="POST")
+    req = urllib.request.Request(base + path, data=bytes(body), headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             resp_body = resp.read().decode("utf-8")
@@ -506,6 +507,28 @@ def deploy_multipart(args, fields: dict, source_arg: str) -> tuple[int, dict]:
     source_path, upload_name, cleanup = prepare_multipart_source(source_arg)
     try:
         return request_multipart(base, token, "/api/deploy", fields, source_path, upload_name, sid)
+    finally:
+        cleanup()
+
+
+def overwrite_multipart(args, fields: dict, source_arg: str) -> tuple[int, dict]:
+    base = server_url(args)
+    token = auth_token(args)
+    sid = "" if token else ensure_session(base)
+    source_path, upload_name, cleanup = prepare_multipart_source(source_arg)
+    code = urllib.parse.quote(args.code, safe="")
+    version = urllib.parse.quote(str(args.version), safe="")
+    try:
+        return request_multipart(
+            base,
+            token,
+            f"/api/deploys/{code}/versions/{version}",
+            fields,
+            source_path,
+            upload_name,
+            sid,
+            method="PATCH",
+        )
     finally:
         cleanup()
 
@@ -723,12 +746,10 @@ def cmd_overwrite(args) -> int:
     ensure_description(args)
     ensure_title(args)
     _ensure_unlocked(args, "overwrite")
-    files, main_entry = read_source(args.source)
-    payload = {"description": args.description, "filename": args.filename or main_entry, "files": files}
+    main_entry = source_entry_hint(args.source)
+    payload = {"description": args.description, "filename": args.filename or main_entry}
     add_deploy_options(payload, args)
-    code = urllib.parse.quote(args.code, safe="")
-    version = urllib.parse.quote(str(args.version), safe="")
-    status, data = request_write(args, f"/api/deploys/{code}/versions/{version}", "PATCH", payload)
+    status, data = overwrite_multipart(args, payload, args.source)
     return print_result(status, data)
 
 
