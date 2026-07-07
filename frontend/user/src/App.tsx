@@ -684,7 +684,7 @@ export function App() {
   return (
     <div className="app-shell">
       <TopNav page={page} session={session} onNavigate={navigate} />
-      <main className={`page-main ${page === "market" ? "market-main" : ""}`}>
+      <main className={`page-main page-${page}-main ${page === "market" ? "market-main" : ""}`}>
         {page === "home" && <HomePage config={config} onNavigate={navigate} />}
         {page === "market" && <MarketPage config={config} session={session} />}
         {page === "deploy" && <DeployPage config={config} session={session} />}

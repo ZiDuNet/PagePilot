@@ -7904,3 +7904,68 @@ body::before,
     max-width: 100% !important;
   }
 }
+
+/* Page-scoped shell background: keep atmosphere on the homepage only. */
+html,
+body {
+  background: #ffffff !important;
+}
+
+body::before {
+  display: none !important;
+}
+
+.app-shell {
+  min-height: 100vh;
+  background: #ffffff;
+}
+
+.page-main {
+  position: relative;
+  isolation: isolate;
+  background: #ffffff;
+}
+
+.page-home-main {
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 16% 0%, rgba(34, 211, 238, 0.12), transparent 28%),
+    radial-gradient(circle at 88% 4%, rgba(147, 197, 253, 0.10), transparent 30%),
+    linear-gradient(180deg, #f7fbff 0%, #ffffff 34%, #f8fbff 100%);
+}
+
+.page-home-main::before {
+  content: "";
+  position: fixed;
+  inset: 76px 0 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.10;
+  background:
+    linear-gradient(90deg, rgba(14, 116, 144, 0.10) 1px, transparent 1px),
+    linear-gradient(rgba(14, 116, 144, 0.08) 1px, transparent 1px);
+  background-size: 92px 92px;
+  mask-image: linear-gradient(180deg, #000 0%, transparent 88%);
+}
+
+.page-market-main,
+.page-deploy-main,
+.page-agents-main,
+.page-screens-main {
+  background: #ffffff;
+}
+
+.page-market-main .market-page,
+.page-deploy-main .tool-layout,
+.page-agents-main .content-page,
+.page-screens-main .content-page {
+  background: #ffffff;
+}
+
+.page-market-main .preview-pane,
+.page-market-main .market-detail-preview,
+.page-deploy-main .preview-box,
+.page-deploy-main .preview-box iframe,
+.page-deploy-main .result-modal iframe {
+  background: #ffffff;
+}
