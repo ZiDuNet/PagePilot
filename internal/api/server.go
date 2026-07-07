@@ -32,6 +32,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/yourorg/hostctl/internal/auth"
@@ -97,6 +98,7 @@ type DeployerPort interface {
 	SetSiteCategory(ctx context.Context, code, category string) error
 	SetSiteTags(ctx context.Context, code string, tags []string) error
 	SetSiteAccessPassword(ctx context.Context, code, password string) error
+	RevealSiteAccessPassword(ctx context.Context, code string) (string, error)
 
 	CreateScreenPairing(ctx context.Context, pairing store.ScreenPairing) error
 	BindScreenPairing(ctx context.Context, code, ownerUserID, name string) (store.Screen, error)
@@ -403,6 +405,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/category", s.handleAdminSetSiteCategory)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/tags", s.handleAdminSetSiteTags)
 	s.mux.HandleFunc("DELETE /api/admin/sites/{code}", s.handleAdminDeleteSite)
+	s.mux.HandleFunc("POST /api/admin/sites/{code}/access/reveal", s.handleAdminRevealSiteAccessPassword)
 
 	// admin 后台单页
 	s.mux.HandleFunc("GET /admin", s.handleAdminUI)
@@ -617,6 +620,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	consumesSiteQuota := s.deployRequestConsumesSiteQuota(r.Context(), req)
 	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
 		tok, authErr := s.authenticateToken(r)
 		if authErr != nil {
@@ -631,7 +635,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				writeDeployError(NewError(CodeForbidden, "user", "token owner is inactive or missing"))
 				return
 			}
-			if !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
+			if consumesSiteQuota && !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
 				writeDeployError(NewError(CodeUnauthorized, "user_quota",
 					fmt.Sprintf("user deploy limit reached (%d/%d)", user.DeployCount, user.DeployLimit)).
 					WithHint("Ask an admin to raise your deploy quota."))
@@ -643,7 +647,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		userID = user.ID
 		actorIsAdmin = user.IsAdmin
 		ownerTokenID = "user:" + user.ID
-		if !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
+		if consumesSiteQuota && !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
 			writeDeployError(NewError(CodeUnauthorized, "user_quota",
 				fmt.Sprintf("user deploy limit reached (%d/%d)", user.DeployCount, user.DeployLimit)).
 				WithHint("Ask an admin to raise your deploy quota."))
@@ -657,7 +661,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 		anonymousSessionID = sess.ID
 		ownerTokenID = "anon:" + sess.ID
-		if s.cfg.AnonymousDeployLimit >= 0 && sess.DeployCount >= s.cfg.AnonymousDeployLimit {
+		if consumesSiteQuota && s.cfg.AnonymousDeployLimit >= 0 && sess.DeployCount >= s.cfg.AnonymousDeployLimit {
 			writeDeployError(NewError(CodeUnauthorized, "anonymous_quota",
 				fmt.Sprintf("anonymous deploy limit reached (%d/%d)", sess.DeployCount, s.cfg.AnonymousDeployLimit)).
 				WithHint("Ask the user to register or sign in, create a user token, then claim this anonymous session."))
@@ -677,13 +681,13 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		writeDeployError(apiErr)
 		return
 	}
-	if anonymousSessionID != "" {
+	if resp.Created && anonymousSessionID != "" {
 		_, err := s.deployer.IncrementAnonymousSessionDeployCount(r.Context(), anonymousSessionID)
 		if err != nil {
 			s.logger.Printf("failed to increment anonymous session %s: %v", anonymousSessionID, err)
 		}
 	}
-	if userID != "" {
+	if resp.Created && userID != "" {
 		if _, err := s.auth.IncrementUserDeployCount(r.Context(), userID); err != nil {
 			s.logger.Printf("failed to increment user deploy count %s: %v", userID, err)
 		}
@@ -710,6 +714,22 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) deployRequestConsumesSiteQuota(ctx context.Context, req DeployRequest) bool {
+	if !req.CreateVersion {
+		return true
+	}
+	code := strings.TrimSpace(req.CustomCode)
+	if !req.EnableCustomCode || code == "" {
+		return true
+	}
+	exists, err := s.deployer.SiteExists(ctx, code)
+	if err != nil {
+		s.logger.Printf("failed to check site existence for quota code=%s: %v", code, err)
+		return true
+	}
+	return !exists
 }
 
 func (s *Server) decodeDeployMultipart(r *http.Request) (DeployRequest, *APIError) {
@@ -759,9 +779,6 @@ func (s *Server) decodeDeployMultipart(r *http.Request) (DeployRequest, *APIErro
 		return DeployRequest{}, apiErr
 	}
 	req.Files = files
-	if req.Filename == "" && len(files) == 1 {
-		req.Filename = files[0].Path
-	}
 	return req, nil
 }
 
@@ -819,10 +836,7 @@ func deployFilesFromMultipart(form *multipart.Form) ([]DeployFile, *APIError) {
 			return nil, NewError(CodeInvalidInput, "multipart_file",
 				fmt.Sprintf("read multipart file %s: %v", header.Filename, err))
 		}
-		path := filepath.ToSlash(strings.TrimSpace(header.Filename))
-		if path == "" {
-			path = "index.html"
-		}
+		path := sanitizeMultipartDeployPath(header.Filename, "upload")
 		item := DeployFile{Path: path}
 		if looksMultipartBinary(data) {
 			item.ContentBase64 = base64.StdEncoding.EncodeToString(data)
@@ -832,6 +846,88 @@ func deployFilesFromMultipart(form *multipart.Form) ([]DeployFile, *APIError) {
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+func sanitizeMultipartDeployPath(name, fallbackStem string) string {
+	name = filepath.ToSlash(strings.TrimSpace(name))
+	name = strings.TrimLeft(name, "/")
+	rawParts := strings.Split(name, "/")
+	parts := make([]string, 0, len(rawParts))
+	for i, part := range rawParts {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "." || part == ".." {
+			continue
+		}
+		fallback := "folder"
+		if i == len(rawParts)-1 {
+			fallback = fallbackStem
+		}
+		parts = append(parts, sanitizeMultipartPathSegment(part, fallback))
+	}
+	if len(parts) == 0 {
+		return fallbackStem
+	}
+	return strings.Join(parts, "/")
+}
+
+func sanitizeMultipartPathSegment(name, fallbackStem string) string {
+	name = strings.TrimSpace(name)
+	ext := ""
+	if dot := strings.LastIndex(name, "."); dot > 0 && dot < len(name)-1 {
+		candidate := name[dot:]
+		if multipartExtensionSafe(candidate) {
+			ext = strings.ToLower(candidate)
+			name = name[:dot]
+		}
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range name {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '.':
+			b.WriteRune(r)
+			lastDash = false
+		case r == '-' || unicode.IsSpace(r):
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		default:
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	base := strings.Trim(b.String(), ".-")
+	if base == "" || multipartWindowsReservedName(base) {
+		base = fallbackStem
+	}
+	return base + ext
+}
+
+func multipartExtensionSafe(ext string) bool {
+	if len(ext) < 2 || len(ext) > 17 || ext[0] != '.' {
+		return false
+	}
+	for _, r := range ext[1:] {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func multipartWindowsReservedName(name string) bool {
+	name = strings.ToUpper(name)
+	switch name {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	default:
+		return false
+	}
 }
 
 func looksMultipartBinary(data []byte) bool {
@@ -1733,14 +1829,14 @@ func (s *Server) reuseDetailForContent(r *http.Request, code, title string, cont
 }
 
 func reusePolicy(policy detailReusePolicy) (allowDownload, allowReuse bool, note string) {
+	if policy.CanManage {
+		return true, true, "你是站点所有者或管理员，可以下载源码并复用为新发布。"
+	}
 	if strings.TrimSpace(policy.Status) != "" && policy.Status != "active" {
 		return false, false, "站点当前未上架，源码下载和模板复用仅限所有者或管理员。"
 	}
 	if policy.AccessProtected {
 		return false, false, "加密作品不提供源码下载和模板复用；如需复用，请先关闭访问密码后再下载。"
-	}
-	if policy.CanManage {
-		return true, true, "你是站点所有者或管理员，可以下载源码并复用为新发布。"
 	}
 	if !policy.Authenticated {
 		return false, false, "源码下载和模板复用需要先登录；已登录用户或用户 Token 可按站点策略下载。"
@@ -2904,10 +3000,21 @@ func (s *Server) siteAccessAllowed(r *http.Request, code string, versionPtr *int
 	if s.validScreenAccessCookie(r, code, versionPtr, time.Now()) {
 		return true
 	}
-	if authErr := s.authorizeSiteWrite(r, code); authErr == nil {
+	if s.registeredOwnerAccessAllowed(r, site) {
 		return true
 	}
 	return false
+}
+
+func (s *Server) registeredOwnerAccessAllowed(r *http.Request, site store.Site) bool {
+	actor, isAdmin, authErr := s.optionalActor(r)
+	if authErr != nil {
+		return false
+	}
+	if isAdmin {
+		return true
+	}
+	return authenticatedUserActor(actor) && actor == site.OwnerTokenID
 }
 
 func (s *Server) renderAccessPasswordPage(w http.ResponseWriter, code string) {
@@ -2938,7 +3045,7 @@ func (s *Server) renderAccessPasswordPageV2(w http.ResponseWriter, code string, 
 <div class="brand"><div class="logo">P</div><span>PagePilot</span></div>
 <div class="lock"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg></div>
 <h1>这个网页已加密</h1>
-<p>请输入访问密码后继续查看。验证通过后，本浏览器会在一段时间内记住访问权限。</p>
+<p>请输入访问密码后继续查看。验证通过后，本浏览器会在 5 分钟内记住访问权限。</p>
 <div class="field">
 <label for="p">访问密码</label>
 <input id="p" type="password" autocomplete="current-password" placeholder="输入访问密码" autofocus>
@@ -3026,17 +3133,17 @@ func (s *Server) authorizeSourceContentRead(r *http.Request, code string) *APIEr
 	if err != nil {
 		return NewError(CodeInternal, "site", err.Error())
 	}
-	if strings.TrimSpace(site.AccessPasswordHash) != "" {
-		return NewError(CodeForbidden, "source_download",
-			"encrypted sites do not allow source download").
-			WithHint("Remove the access password before downloading or reusing the source.")
-	}
 	actor, isAdmin, authErr := s.sourceDownloadActor(r)
 	if authErr != nil {
 		return authErr
 	}
 	if isAdmin || (actor != "" && actor == site.OwnerTokenID) {
 		return nil
+	}
+	if strings.TrimSpace(site.AccessPasswordHash) != "" {
+		return NewError(CodeForbidden, "source_download",
+			"encrypted sites only allow source download for owner or admin").
+			WithHint("源码下载需要站点所有者或管理员权限；访问密码只允许浏览页面，不授予源码下载权限。")
 	}
 	allowDownload, _, _ := reusePolicy(detailReusePolicy{
 		Authenticated:        true,
@@ -5333,6 +5440,34 @@ func (s *Server) handleAdminDeleteSite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, SiteDeleteResponse{Success: true, Code: code})
 }
 
+// handleAdminRevealSiteAccessPassword 返回站点访问密码的明文（仅管理员可用）。
+func (s *Server) handleAdminRevealSiteAccessPassword(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	code := r.PathValue("code")
+	if code == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "path",
+			"missing code in path"), reqID))
+		return
+	}
+	// 仅管理员可调用
+	actor, isAdmin, authErr := s.authenticateActor(r)
+	if authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	if !isAdmin {
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "admin", "admin privileges required"), reqID))
+		return
+	}
+	password, err := s.deployer.RevealSiteAccessPassword(r.Context(), code)
+	if err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeNotFound, "access_password", err.Error()), reqID))
+		return
+	}
+	s.recordAuditLog(r, "admin", actor, "admin", "site.access_reveal", code, "site", code, map[string]any{"accessRevealed": true})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "password": password})
+}
+
 // ===== OpenAPI 兼容端点 =====
 
 // handleGetPrimaryStrategy 处理 GET /api/deploys/{code}/primary-strategy。
@@ -5429,12 +5564,6 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 	var userID string
 	if user, ok := s.adminUserFromCookie(r); ok {
 		actorIsAdmin = user.IsAdmin
-		if !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
-			writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "user_quota",
-				fmt.Sprintf("user deploy limit reached (%d/%d)", user.DeployCount, user.DeployLimit)).
-				WithHint("Ask an admin to raise your deploy quota."), reqID))
-			return
-		}
 		ownerTokenID = "user:" + user.ID
 		userID = user.ID
 	} else if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
@@ -5451,12 +5580,6 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 				writeError(w, apiErrWithReqID(NewError(CodeForbidden, "user", "token owner is inactive or missing"), reqID))
 				return
 			}
-			if !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
-				writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "user_quota",
-					fmt.Sprintf("user deploy limit reached (%d/%d)", user.DeployCount, user.DeployLimit)).
-					WithHint("Ask an admin to raise your deploy quota."), reqID))
-				return
-			}
 			userID = user.ID
 		}
 	} else {
@@ -5464,11 +5587,8 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 	}
 	clientIP := clientIPFromRequest(r)
 
-	// 转换成 DeployRequest，强制 createVersion=true
+	// 转换成 DeployRequest，强制 createVersion=true。filename 只是入口提示，可留空交给部署层识别。
 	filename := strings.TrimSpace(req.Filename)
-	if filename == "" {
-		filename = "index.html"
-	}
 	deployReq := DeployRequest{
 		Filename:         filename,
 		Description:      req.Description,
@@ -5484,7 +5604,7 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
-	if userID != "" {
+	if resp.Created && userID != "" {
 		if _, err := s.auth.IncrementUserDeployCount(r.Context(), userID); err != nil {
 			s.logger.Printf("failed to increment user deploy count %s: %v", userID, err)
 		}

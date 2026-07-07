@@ -88,6 +88,16 @@ func TestDeployPersistsBundleMetadataForContentModes(t *testing.T) {
 			wantSecurity: "standard",
 		},
 		{
+			name: "single html without filename",
+			code: "single-html-no-filename",
+			req: api.DeployRequest{
+				Content: "<!doctype html><html><body><h1>Single HTML</h1></body></html>",
+			},
+			wantKind:     "single_html",
+			wantEntry:    "index.html",
+			wantSecurity: "standard",
+		},
+		{
 			name: "single markdown",
 			code: "single-md",
 			req: api.DeployRequest{
@@ -97,6 +107,60 @@ func TestDeployPersistsBundleMetadataForContentModes(t *testing.T) {
 			wantKind:     "markdown",
 			wantEntry:    "README.md",
 			wantSecurity: "strict",
+		},
+		{
+			name: "single markdown without filename",
+			code: "single-md-no-filename",
+			req: api.DeployRequest{
+				Content: "# 单文件 Markdown\n\n这是一个文档入口。",
+			},
+			wantKind:     "markdown",
+			wantEntry:    "README.md",
+			wantSecurity: "strict",
+		},
+		{
+			name: "single markdown inferred from default html filename",
+			code: "single-md-inferred",
+			req: api.DeployRequest{
+				Filename: "index.html",
+				Content:  "# Inferred Markdown\n\n- item one\n- item two",
+			},
+			wantKind:     "markdown",
+			wantEntry:    "index.md",
+			wantSecurity: "strict",
+		},
+		{
+			name: "single markdown appends missing extension",
+			code: "single-md-no-ext",
+			req: api.DeployRequest{
+				Filename: "demo",
+				Content:  "# Demo Markdown\n\nThis document has no filename suffix.",
+			},
+			wantKind:     "markdown",
+			wantEntry:    "demo.md",
+			wantSecurity: "strict",
+		},
+		{
+			name: "single html inferred from markdown filename",
+			code: "single-html-inferred",
+			req: api.DeployRequest{
+				Filename: "README.md",
+				Content:  "<!doctype html><html><body><main>HTML wins by content</main></body></html>",
+			},
+			wantKind:     "single_html",
+			wantEntry:    "README.html",
+			wantSecurity: "standard",
+		},
+		{
+			name: "single html appends missing extension",
+			code: "single-html-no-ext",
+			req: api.DeployRequest{
+				Filename: "demo",
+				Content:  "<!doctype html><html><body><main>HTML document without suffix</main></body></html>",
+			},
+			wantKind:     "single_html",
+			wantEntry:    "demo.html",
+			wantSecurity: "standard",
 		},
 		{
 			name: "multi file static site",

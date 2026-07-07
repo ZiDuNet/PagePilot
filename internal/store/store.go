@@ -466,4 +466,10 @@ type Store interface {
 
 	// SetSiteAccessPasswordHash sets or clears the site access password hash.
 	SetSiteAccessPasswordHash(ctx context.Context, code, hash string) error
+
+	// SetSiteAccessPasswordWithCipher sets both the password hash and the AES-encrypted cipher.
+	SetSiteAccessPasswordWithCipher(ctx context.Context, code, hash, cipher string) error
+
+	// GetSiteAccessPasswordCipher returns the AES-encrypted password cipher for a site.
+	GetSiteAccessPasswordCipher(ctx context.Context, code string) (string, error)
 }

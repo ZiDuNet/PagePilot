@@ -8,18 +8,16 @@ const expectedSandbox =
 
 test("前台预览 iframe 使用集中 sandbox 策略", () => {
   const match = source.match(/const PREVIEW_IFRAME_SANDBOX\s*=\s*"([^"]+)";/);
-  const snapshotMatch = source.match(/const MARKET_SNAPSHOT_SANDBOX\s*=\s*"([^"]+)";/);
+  const marketMatch = source.match(/const MARKET_CARD_IFRAME_SANDBOX\s*=\s*"([^"]+)";/);
   assert.ok(match, "PREVIEW_IFRAME_SANDBOX 常量缺失");
-  assert.ok(snapshotMatch, "MARKET_SNAPSHOT_SANDBOX 常量缺失");
+  assert.ok(marketMatch, "MARKET_CARD_IFRAME_SANDBOX 常量缺失");
   assert.equal(match[1], expectedSandbox);
-  assert.equal(snapshotMatch[1], "allow-popups allow-popups-to-escape-sandbox");
+  assert.equal(marketMatch[1], "allow-scripts");
   assert.equal((source.match(/sandbox=\{PREVIEW_IFRAME_SANDBOX\}/g) || []).length, 2);
-  assert.equal((source.match(/sandbox=\{MARKET_SNAPSHOT_SANDBOX\}/g) || []).length, 1);
+  assert.equal((source.match(/sandbox=\{MARKET_CARD_IFRAME_SANDBOX\}/g) || []).length, 1);
   assert.equal((source.match(/sandbox="allow-scripts/g) || []).length, 0);
   assert.equal(match[1].includes("allow-same-origin"), false);
-  assert.equal(snapshotMatch[1].includes("allow-scripts"), false);
-  assert.equal(snapshotMatch[1].includes("allow-same-origin"), false);
-  assert.match(source, /script,iframe,object,embed,portal/);
-  assert.match(source, /pp-market-snapshot-stage/);
-  assert.match(source, /previewDoc && \(/);
+  assert.equal(marketMatch[1].includes("allow-same-origin"), false);
+  assert.match(source, /previewSrc && \(/);
+  assert.match(source, /src=\{previewSrc\}/);
 });

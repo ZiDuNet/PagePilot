@@ -10,6 +10,7 @@
     "test:template-reuse": "node scripts/templateReuse.test.mjs",
     "test:deploy-errors": "node scripts/deployErrorFriendly.test.mjs",
     "test:deploy-protocol": "node scripts/deployProtocol.test.mjs",
+    "test:market-card-layout": "node scripts/marketCardLayout.test.mjs",
     "test:market-performance": "node scripts/marketPerformance.test.mjs",
     "test:market-detail-layout": "node scripts/marketDetailLayout.test.mjs",
     "test:page-background": "node scripts/pageBackground.test.mjs",

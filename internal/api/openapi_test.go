@@ -121,6 +121,16 @@ func TestOpenAPIIncludesAuditAndSiteDetailContracts(t *testing.T) {
 			t.Fatalf("openapi missing schema %s", name)
 		}
 	}
+	deploySchema, _ := doc.Components.Schemas["DeployRequest"].(map[string]any)
+	deployRequired, _ := deploySchema["required"].([]any)
+	for _, raw := range deployRequired {
+		if raw == "filename" {
+			t.Fatalf("DeployRequest required = %+v; filename must be optional", deployRequired)
+		}
+	}
+	if len(deployRequired) != 1 || deployRequired[0] != "description" {
+		t.Fatalf("DeployRequest required = %+v; want only description", deployRequired)
+	}
 	reuseSchema, _ := doc.Components.Schemas["ReuseDetail"].(map[string]any)
 	reuseProps, _ := reuseSchema["properties"].(map[string]any)
 	if reuseProps["policyNote"] == nil {
@@ -141,5 +151,27 @@ func TestOpenAPIIncludesAuditAndSiteDetailContracts(t *testing.T) {
 	}
 	if len(wantKinds) != 0 {
 		t.Fatalf("BundleDetail kind enum missing values: %+v in %+v", wantKinds, kindSchema)
+	}
+}
+
+func TestSanitizeMultipartDeployPath(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		fallback string
+		want     string
+	}{
+		{name: "keeps chinese letters", in: "2026-07-03_王关飞.zip", fallback: "upload", want: "2026-07-03_王关飞.zip"},
+		{name: "removes special characters", in: "my file(1).html", fallback: "upload", want: "my-file-1.html"},
+		{name: "cleans nested path", in: "../assets/app demo.css", fallback: "asset", want: "assets/app-demo.css"},
+		{name: "fallback keeps extension", in: "!!!.md", fallback: "upload", want: "upload.md"},
+		{name: "empty fallback", in: "", fallback: "upload", want: "upload"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeMultipartDeployPath(tc.in, tc.fallback); got != tc.want {
+				t.Fatalf("sanitizeMultipartDeployPath(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

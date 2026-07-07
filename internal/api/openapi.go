@@ -595,7 +595,7 @@ func versionPatchBodyRef() map[string]any {
 				"properties": map[string]any{
 					"description": map[string]any{"type": "string", "description": "覆盖说明，最多 240 字符"},
 					"title":       map[string]any{"type": "string", "description": "版本标题"},
-					"filename":    map[string]any{"type": "string", "description": "入口文件提示，如 index.html；ZIP/目录可自动识别"},
+					"filename":    map[string]any{"type": "string", "description": "可选入口文件提示；多入口或特殊入口时填写真实相对路径，省略则自动识别"},
 					"file":        map[string]any{"type": "string", "format": "binary", "description": "HTML、Markdown、ZIP 或目录临时打包后的 ZIP"},
 				},
 			}},
@@ -657,8 +657,12 @@ func openAPISchemas() map[string]any {
 		"DeployFile": map[string]any{"type": "object", "required": []string{"path"}, "properties": map[string]any{
 			"path": str, "content": str, "contentBase64": str,
 		}},
-		"DeployRequest": map[string]any{"type": "object", "required": []string{"filename", "description"}, "properties": map[string]any{
-			"filename": str, "description": str, "title": str, "content": str,
+		"DeployRequest": map[string]any{"type": "object", "required": []string{"description"}, "properties": map[string]any{
+			"filename": map[string]any{
+				"type":        "string",
+				"description": "可选入口文件提示。粘贴源码、目录和 ZIP 通常省略；只有多入口或特殊入口路径时填写。",
+			},
+			"description": str, "title": str, "content": str,
 			"files":            map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/DeployFile"}},
 			"enableCustomCode": boolSchema, "customCode": str, "createVersion": boolSchema, "source": str,
 			"templateSourceCode": map[string]any{

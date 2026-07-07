@@ -2063,47 +2063,60 @@ h1, h2, h3, p { margin-top: 0; }
 }
 .detail-preview-toolbar > div:first-child,
 .detail-toolbar-left {
-  display: grid;
-  gap: 2px;
-}
-.detail-toolbar-left {
-  grid-template-columns: auto minmax(0, 1fr);
+  display: flex;
   align-items: center;
   gap: 12px;
 }
+.detail-toolbar-left {
+  display: flex !important;
+  grid-template-columns: none !important;
+}
+.detail-toolbar-left > div {
+  display: grid;
+  gap: 2px;
+}
 .detail-back-button {
   white-space: nowrap;
+  font-weight: 700;
 }
 .detail-preview-toolbar strong {
   font-size: 14px;
+  color: var(--pp-navy, #0b1220);
 }
 .detail-preview-toolbar span {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 750;
+  font-weight: 700;
+  display: block;
 }
 .viewport-tabs {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  border: 1px solid rgba(186, 230, 253, 0.82);
-  border-radius: 12px;
-  background: rgba(240, 249, 255, 0.78);
-  padding: 4px;
+  gap: 4px;
+  border: 1px solid var(--pp-line, rgba(15,118,158,0.16));
+  border-radius: 10px;
+  background: rgba(255,255,255,0.82);
+  padding: 3px;
 }
 .viewport-tabs button {
-  width: 34px;
-  height: 32px;
-  display: inline-grid;
-  place-items: center;
+  width: 36px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
-  border-radius: 9px;
+  border-radius: 8px;
   background: transparent;
   color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+  transition: all 0.15s ease;
 }
+.viewport-tabs button:hover { background: rgba(14,165,233,0.06); color: #075985; }
 .viewport-tabs button.active {
-  background: #101828;
+  background: var(--pp-brand, #067fa9);
   color: #fff;
+  box-shadow: 0 2px 6px rgba(6,127,169,0.20);
 }
 .detail-preview-frame {
   overflow: hidden;
@@ -2146,9 +2159,74 @@ h1, h2, h3, p { margin-top: 0; }
   border-radius: 18px;
   box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.10), 0 18px 42px rgba(15, 23, 42, 0.16);
 }
-.market-detail-preview.is-locked {
+.market-detail-preview.is-access-gated {
   place-items: center;
-  background: linear-gradient(145deg, rgba(15, 23, 42, 0.94), rgba(14, 116, 144, 0.82));
+  background:
+    radial-gradient(circle at 18% 16%, rgba(34, 211, 238, 0.20), transparent 32%),
+    radial-gradient(circle at 82% 12%, rgba(99, 102, 241, 0.16), transparent 30%),
+    linear-gradient(180deg, #f8fafc, #eef4f7);
+}
+.detail-access-form {
+  width: min(440px, calc(100% - 36px));
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(203, 213, 225, 0.84);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.14);
+  padding: 24px;
+}
+.detail-access-icon {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: #ecfeff;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+.detail-access-form strong {
+  color: #111827;
+  font-size: 24px;
+  line-height: 1.18;
+  font-weight: 900;
+}
+.detail-access-form p {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.detail-access-form label {
+  display: grid;
+  gap: 7px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 850;
+}
+.detail-access-form input {
+  width: 100%;
+  height: 44px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #fff;
+  color: #0f172a;
+  padding: 0 12px;
+  font: inherit;
+  outline: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.detail-access-form input:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.16);
+}
+.detail-access-form em {
+  min-height: 18px;
+  color: var(--rose);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 760;
 }
 .market-detail-card {
   position: sticky;
@@ -3171,6 +3249,26 @@ h1, h2, h3, p { margin-top: 0; }
   color: #64748b;
   font-size: 12px;
 }
+
+.entry-field-toggle {
+  border: 1px dashed rgba(14, 116, 144, 0.24);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(240, 249, 255, 0.62);
+}
+
+.entry-field-toggle summary {
+  cursor: pointer;
+  color: #0f5f72;
+  font-size: 12px;
+  font-weight: 800;
+  list-style-position: inside;
+}
+
+.entry-field-toggle .field {
+  margin-top: 10px;
+}
+
 .error-box,
 .result-box {
   margin-top: 12px;
@@ -7770,6 +7868,261 @@ body::before,
   text-overflow: ellipsis;
 }
 
+/* 创作市场卡片最终排布：对齐 jpage 紧凑卡片，同时保留 PagePilot 扩展操作。 */
+.market-card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.market-page .app-card {
+  border: 0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.market-page .app-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.12);
+}
+
+.market-page .preview-pane {
+  aspect-ratio: 4 / 3;
+  border-radius: 12px 12px 0 0;
+  background: #e9edf3;
+}
+
+.market-card-top-actions {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.market-page .app-card:hover .market-card-top-actions,
+.market-page .app-card:focus-within .market-card-top-actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.market-icon-action {
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(17, 24, 39, 0.72);
+  color: #fff;
+  padding: 0;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.market-icon-action:hover,
+.market-icon-action:focus-visible {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(17, 24, 39, 0.88);
+  color: #fff;
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.market-icon-action.active {
+  border-color: #f59e0b;
+  color: #f59e0b;
+}
+
+.market-icon-action.active svg {
+  fill: #f59e0b;
+  stroke: #f59e0b;
+}
+
+.market-icon-action.danger:hover,
+.market-icon-action.danger:focus-visible {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: #dc2626;
+}
+
+.market-page .card-hover-actions {
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  max-width: calc(100% - 24px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  overflow: visible;
+}
+
+.market-page .card-hover-actions .button {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  min-height: 34px;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 850;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+  white-space: nowrap;
+}
+
+.market-page .card-hover-actions .button.dark {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(17, 24, 39, 0.78);
+  color: #fff;
+  backdrop-filter: blur(12px);
+}
+
+.market-page .card-hover-actions .button.dark:hover,
+.market-page .card-hover-actions .button.dark:focus-visible {
+  border-color: rgba(255, 255, 255, 0.26);
+  background: rgba(17, 24, 39, 0.9);
+  color: #fff;
+}
+
+.market-page .card-hover-actions .button.primary {
+  border-color: #00c853;
+  background: #00c853;
+  color: #fff;
+  box-shadow: 0 12px 24px rgba(0, 200, 83, 0.25);
+}
+
+.market-page .card-hover-actions .button.primary:hover,
+.market-page .card-hover-actions .button.primary:focus-visible {
+  border-color: #00b84d;
+  background: #00b84d;
+}
+
+.market-page .card-hover-actions .button em {
+  min-width: 22px;
+  max-width: 46px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  color: inherit;
+  font-style: normal;
+  font-size: 10px;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.market-page .card-body {
+  grid-template-rows: auto auto minmax(40px, auto) auto auto;
+  gap: 8px;
+  padding: 12px 12px 14px;
+}
+
+.market-card-tags.compact {
+  min-height: 22px;
+}
+
+.market-card-tags span {
+  min-height: 22px;
+  border-color: #e5e7eb;
+  background: #f3f4f6;
+  color: #374151;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.market-card-tags .featured,
+.market-card-tags .type {
+  border-color: #e5e7eb;
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.market-page .title-wrap h3 {
+  min-height: 40px;
+  color: #17181d;
+  font-size: 15px;
+  line-height: 1.32;
+}
+
+.market-page .card-body p {
+  min-height: 38px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.market-card-footer {
+  min-width: 0;
+  margin-top: 0;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.market-card-footer span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-card-footer time {
+  color: #7b8494;
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.market-card-stats {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 780;
+}
+
+.market-card-stats span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: inherit;
+}
+
+.market-card-stats strong {
+  max-width: 44px;
+  color: #4b5563;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-card-stats svg {
+  flex: 0 0 auto;
+  color: #9ca3af;
+}
+
 .market-load-more,
 .market-load-more .page-note {
   min-width: 0;
@@ -7778,7 +8131,7 @@ body::before,
 
 @media (min-width: 1720px) {
   .market-card-grid {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   }
 }
 
@@ -7948,14 +8301,20 @@ body::before {
   mask-image: linear-gradient(180deg, #000 0%, transparent 88%);
 }
 
-.page-market-main,
 .page-deploy-main,
 .page-agents-main,
 .page-screens-main {
   background: #ffffff;
 }
 
-.page-market-main .market-page,
+.page-market-main {
+  background: #f6f7f9;
+}
+
+.page-market-main .market-page {
+  background: #f6f7f9;
+}
+
 .page-deploy-main .tool-layout,
 .page-agents-main .content-page,
 .page-screens-main .content-page {

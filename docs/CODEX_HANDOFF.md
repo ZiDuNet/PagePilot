@@ -91,7 +91,7 @@ The work is not complete yet. The repository has made large progress and now has
 - 创作市场 search now uses FTS5 with Chinese `LIKE` fallback and startup backfill for existing sites.
 - Moved Markdown rendering into `internal/render` and added render-cache integration for hosted Markdown.
 - `POST /api/deploy` accepts multipart uploads in addition to JSON.
-- Go CLI and MCP deploy local files/directories/ZIPs via multipart, with upload filename separated from entry filename.
+- Go CLI and MCP deploy local files/directories/ZIPs via multipart, with upload filename separated from optional entry filename. They now omit `filename` by default and let the server infer the entry; pass an explicit entry only for multi-entry or special-path cases.
 - Python Skill deploy/append/overwrite/screen publish now use multipart for local files/directories/ZIPs. Directory sources are zipped locally and sent as a single upload; JSON/base64 is retained only for legacy compatibility.
 - Python Skill deploy/append now prints a Chinese success summary before JSON, including server-returned app URL, detail URL, version URL, template source, reuse count and the reminder not to synthesize URLs client-side.
 - Updated README, Docker docs, remediation plan, and Skill docs around multipart, ZIP entry detection, Markdown cache, FTS, and non-destructive Docker upgrade.

@@ -197,6 +197,7 @@ class DeployOptionTests(unittest.TestCase):
             template_source_version=None,
             update=False,
         )
+        captured = {}
         deploy_result = {
             "success": True,
             "code": "demo-site",
@@ -205,15 +206,19 @@ class DeployOptionTests(unittest.TestCase):
             "versionUrl": "https://pagepilot.example.com/agent/demo-site/?v=1",
         }
 
-        with mock.patch.object(hostctl_deploy, "source_entry_hint", return_value="index.html"):
-            with mock.patch.object(hostctl_deploy, "deploy_multipart", return_value=(201, deploy_result)):
-                with mock.patch.object(hostctl_deploy, "remember_project"):
-                    with mock.patch.object(hostctl_deploy, "apply_access_password_after_deploy"):
-                        with mock.patch.object(hostctl_deploy, "print_deploy_summary") as summary:
-                            with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
-                                code = hostctl_deploy.cmd_deploy(args)
+        def fake_deploy_multipart(args, payload, source):
+            captured["payload"] = payload
+            return 201, deploy_result
+
+        with mock.patch.object(hostctl_deploy, "deploy_multipart", fake_deploy_multipart):
+            with mock.patch.object(hostctl_deploy, "remember_project"):
+                with mock.patch.object(hostctl_deploy, "apply_access_password_after_deploy"):
+                    with mock.patch.object(hostctl_deploy, "print_deploy_summary") as summary:
+                        with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                            code = hostctl_deploy.cmd_deploy(args)
 
         self.assertEqual(code, 0)
+        self.assertNotIn("filename", captured["payload"])
         summary.assert_called_once()
         self.assertEqual(summary.call_args.args[0]["url"], deploy_result["url"])
 
@@ -265,11 +270,10 @@ class DeployOptionTests(unittest.TestCase):
             return 200, {"success": True, "code": "demo-site"}
 
         with mock.patch.object(hostctl_deploy, "_ensure_unlocked"):
-            with mock.patch.object(hostctl_deploy, "source_entry_hint", return_value="index.html"):
-                with mock.patch.object(hostctl_deploy, "prepare_multipart_source", return_value=(pathlib.Path("site.zip"), "site.zip", lambda: None)):
-                    with mock.patch.object(hostctl_deploy, "request_multipart", fake_request_multipart):
-                        with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
-                            code = hostctl_deploy.cmd_overwrite(args)
+            with mock.patch.object(hostctl_deploy, "prepare_multipart_source", return_value=(pathlib.Path("site.zip"), "site.zip", lambda: None)):
+                with mock.patch.object(hostctl_deploy, "request_multipart", fake_request_multipart):
+                    with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                        code = hostctl_deploy.cmd_overwrite(args)
 
         self.assertEqual(code, 0)
         self.assertEqual(captured["base"], "https://pagepilot.example.com")
@@ -279,7 +283,40 @@ class DeployOptionTests(unittest.TestCase):
         self.assertEqual(captured["upload_name"], "site.zip")
         self.assertEqual(captured["fields"]["description"], "覆盖版本")
         self.assertEqual(captured["fields"]["title"], "覆盖版本标题")
-        self.assertEqual(captured["fields"]["filename"], "index.html")
+        self.assertNotIn("filename", captured["fields"])
+
+    def test_cmd_deploy_keeps_explicit_filename(self):
+        args = types.SimpleNamespace(
+            server="https://pagepilot.example.com",
+            token="",
+            source="site",
+            code="demo-site",
+            filename="docs/README.md",
+            description="中文描述",
+            title="中文标题",
+            visibility="public",
+            category="",
+            create_version=False,
+            access_password="",
+            template_source_code="",
+            template_source_version=None,
+            update=False,
+        )
+        captured = {}
+
+        def fake_deploy_multipart(args, payload, source):
+            captured["payload"] = payload
+            return 201, {"success": True, "code": "demo-site"}
+
+        with mock.patch.object(hostctl_deploy, "deploy_multipart", fake_deploy_multipart):
+            with mock.patch.object(hostctl_deploy, "remember_project"):
+                with mock.patch.object(hostctl_deploy, "apply_access_password_after_deploy"):
+                    with mock.patch.object(hostctl_deploy, "print_deploy_summary"):
+                        with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                            code = hostctl_deploy.cmd_deploy(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["payload"]["filename"], "docs/README.md")
 
 
 class AdminCommandTests(unittest.TestCase):
@@ -435,16 +472,6 @@ class MultipartSourceTests(unittest.TestCase):
             finally:
                 cleanup()
             self.assertFalse(source_path.exists())
-
-    def test_source_entry_hint_reads_zip_entries(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            zip_path = pathlib.Path(tmp) / "site.zip"
-            with zipfile.ZipFile(zip_path, "w") as zf:
-                zf.writestr("docs/readme.md", "# demo")
-                zf.writestr("index.html", "<!doctype html>")
-
-            self.assertEqual(hostctl_deploy.source_entry_hint(str(zip_path)), "index.html")
-
 
 if __name__ == "__main__":
     unittest.main()

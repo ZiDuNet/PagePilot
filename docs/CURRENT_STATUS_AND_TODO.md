@@ -6,13 +6,13 @@
 
 ## 2026-07-07 验证补充
 
-- 已用临时独立 SQLite 数据库和真实 HTTP 服务完成一轮 Playwright 深度 QA：覆盖 `/admin?mode=register`、后台登录后全部 tab、`/market`、`/market/{code}` 详情直达、模板复用弹窗、ZIP 相对资源执行、Markdown KaTeX / Mermaid / 表格 / 代码高亮、匿名输入访问密码查看加密站点、加密站点源码下载 403。
+- 已用临时独立 SQLite 数据库和真实 HTTP 服务完成一轮 Playwright 深度 QA：覆盖 `/admin?mode=register`、后台登录后全部 tab、`/market`、`/market/{code}` 详情直达、模板复用弹窗、ZIP 相对资源执行、Markdown KaTeX / Mermaid / 表格 / 代码高亮、匿名输入访问密码查看加密站点、普通访客下载加密站点源码受限。
 - 已修复 QA 暴露的后台注册入口问题：`/admin?mode=register` 现在会直接打开注册模式。
 - 已修复创作市场详情和模板复用弹窗的视觉问题：右侧详情栏改为可滚动纵向栏，模板复用弹窗改为清晰的两种模式 + 两列步骤布局，长命令独立横向滚动。
 - 已补旧库迁移回归测试：模拟旧 `audit_logs` 缺少 `actor_role` / `result` 字段的 SQLite 数据库，验证新版本启动会自动补列、保留旧日志，并避免旧库启动时报 `no such column: result`。同时新增生产近似旧库组合测试，把旧站点、版本、文件、用户、Token、匿名 session、屏幕和审计日志放在同一个旧库里升级，验证新字段补齐、旧业务数据保留、FTS 回填和新增表创建。
 - 已补 MCP 工具清单回归测试：锁住 `set_site_reuse_policy`、`set_site_security_mode`、`get_admin_site_detail`、`query_audit_logs`、源码读取和屏幕工具入口，并验证无效复用策略 / 安全模式会在本地参数校验阶段被拒绝。
 - 已收紧 CORS 边界：后台配置的 `CORSAllowOrigins` 只作用于 `/api/*` 和 `/openapi.json`，用于外部网站调用 PagePilot API；托管应用内容不再继承 API CORS 白名单。外部 iframe 是否能嵌入应用由嵌入策略 / `frame-ancestors` 控制，二者不混用。
-- 已新增可复现运行时 QA：`node scripts/runtime-qa.mjs` / `make runtime-qa` 会自动编译临时服务、启动临时 SQLite 和 hosted 目录，验证注册成功 / 失败、管理员登录、账号改密、登出、Token 创建和吊销、匿名发布显式认领与归属迁移、已认领匿名 session 拒绝继续发布、Markdown 高级渲染、真实 ZIP 站点发布、ZIP Bundle 详情、ZIP 相对资源访问、市场详情、后台 Bundle 文件树、登录用户公开未加密站点源码下载及 `source_download` 成功审计、匿名源码下载登录提示、加密站点对发布者 Token / 管理员 Cookie / 匿名访问密码 Cookie 的源码下载禁用及 `source_download` 失败审计、加密访问、访问密码票据绑定版本和切换当前版本后的失效、模板复用来源记录、屏幕绑定 / 投放 / 截图 / 指令 / 解绑、认证 / 账号 / 匿名认领 / 访问密码 / 站点管理 / 版本锁定 / 下架 / 切换当前 / 覆盖 / 删除 / Token 管理 / 运行设置 / 市场分类 / Skill 包上传 / 用户管理 / 屏幕操作审计日志、审计分页与用户 / 站点 / 动作 / 角色 / 时间 / 详情关键字过滤、传统 CSP report 与 Reporting API 审计、CORS 边界、OpenAPI 和 Skill ZIP 下载。
+- 已新增可复现运行时 QA：`node scripts/runtime-qa.mjs` / `make runtime-qa` 会自动编译临时服务、启动临时 SQLite 和 hosted 目录，验证注册成功 / 失败、管理员登录、账号改密、登出、Token 创建和吊销、匿名发布显式认领与归属迁移、已认领匿名 session 拒绝继续发布、Markdown 高级渲染、真实 ZIP 站点发布、ZIP Bundle 详情、ZIP 相对资源访问、市场详情、后台 Bundle 文件树、登录用户公开未加密站点源码下载及 `source_download` 成功审计、匿名源码下载登录提示、访问密码 Cookie 不能下载加密站点源码、站点所有者和管理员可下载加密站点源码及 `source_download` 审计、加密访问、访问密码票据绑定版本和切换当前版本后的失效、模板复用来源记录、屏幕绑定 / 投放 / 截图 / 指令 / 解绑、认证 / 账号 / 匿名认领 / 访问密码 / 站点管理 / 版本锁定 / 下架 / 切换当前 / 覆盖 / 删除 / Token 管理 / 运行设置 / 市场分类 / Skill 包上传 / 用户管理 / 屏幕操作审计日志、审计分页与用户 / 站点 / 动作 / 角色 / 时间 / 详情关键字过滤、传统 CSP report 与 Reporting API 审计、CORS 边界、OpenAPI 和 Skill ZIP 下载。
 - 已新增真实浏览器视觉 QA：`node scripts/visual-qa.mjs` / `make visual-qa` 会启动临时服务和真实浏览器，覆盖首页、创作市场、市场详情、手动部署、Skill/MCP、屏幕介绍、HTML/Markdown 运行页、加密访问页、后台主要 tab、审计日志筛选和翻页的桌面/移动端横向溢出、空白页和浏览器错误。该脚本会发布多文件站点、加密站点和超过一页的市场批量样本，并检查创作市场加载更多、市场详情 Bundle 信息、折叠文件树、模板复用弹窗、后台站点详情完整文件树和复用参数，以及加密作品的源码下载 / 模板复用受限提示。该脚本本轮暴露并修复了创作市场移动端溢出、Skill/MCP 内容页移动端溢出、后台移动端布局溢出，以及 Markdown nonce 页面缓存导致的 CSP 误拦截。
 - 已新增旧库升级演练 QA：`node scripts/legacy-upgrade-qa.mjs` / `make legacy-upgrade-qa` 会构造旧 SQLite + hosted 目录，覆盖公开站点、加密站点、旧管理员、Token、匿名 session、屏幕绑定、审计日志和托管文件；随后启动当前服务触发迁移，并通过后台 API、创作市场搜索、`/agent/{code}/`、访问密码和源码下载权限检查确认升级后仍可用。
 - 已新增真实 Docker Compose 旧库升级演练脚本：`node scripts/docker-upgrade-qa.mjs` / `make docker-upgrade-qa` 会在临时目录构造旧库和 hosted，生成临时 compose override，执行 `docker compose up -d --build`，并通过容器 HTTP 接口和直接 SQLite 校验站点、版本、用户、Token、匿名 session、屏幕、访问密码、FTS、Bundle、审计表和 Skill ZIP。该脚本需要服务器具备 Docker Compose 和 Go。
@@ -69,13 +69,13 @@
 
 4. 创作市场“模板复用”体验
 
-   现状：前台已有“使用/复用”抽屉，可给出源码下载、CLI 命令、Agent 指令和独立 MCP 参数；抽屉已展示源文件结构摘要，包括 Bundle 类型、入口、根目录、下载形态、文件数量、总大小和前几个文件路径，并区分“新建二创”和“更新已有发布”。更新模式自动带入当前作品 code，只有所有者或管理员可复制追加版本语义的 CLI / Agent 指令。详情 API 已返回 `allowDownload`、`allowReuse`、`policyNote`、`templateSourceCode` 和 `templateSourceVersion`，并区分访问密码浏览权限和源码下载 / 模板复用权限；源码下载需要登录用户或已绑定注册用户的 Token，匿名点击下载只给友好登录提示。发布 API、CLI、MCP 和 Skill 支持 `templateSourceCode` / `templateSourceVersion`，复用后会记录来源站点、来源版本并增加来源作品的 `reuseCount`。后台站点详情已支持管理员设置源码下载和模板复用策略；加密作品即使策略为 `allow`，也不会提供源码下载，必须先清除访问密码。
+   现状：前台已有“使用/复用”抽屉，可给出源码下载、CLI 命令、Agent 指令和独立 MCP 参数；抽屉已展示源文件结构摘要，包括 Bundle 类型、入口、根目录、下载形态、文件数量、总大小和前几个文件路径，并区分“新建二创”和“更新已有发布”。更新模式自动带入当前作品 code，只有所有者或管理员可复制追加版本语义的 CLI / Agent 指令。详情 API 已返回 `allowDownload`、`allowReuse`、`policyNote`、`templateSourceCode` 和 `templateSourceVersion`，并区分访问密码浏览权限和源码下载 / 模板复用权限；源码下载需要登录用户或已绑定注册用户的 Token，匿名点击下载只给友好登录提示。发布 API、CLI、MCP 和 Skill 支持 `templateSourceCode` / `templateSourceVersion`，复用后会记录来源站点、来源版本并增加来源作品的 `reuseCount`。后台站点详情已支持管理员设置源码下载和模板复用策略；加密作品对普通用户默认不提供源码下载，但站点所有者和管理员可直接下载用于审计、备份或二次修改。
 
    待办：继续打磨模板市场级体验的视觉 QA 和批量策略操作；复用后的新建/更新边界已在 Skill、CLI 示例和详情页参数中约束，站点详情可查看最近审计摘要。
 
 5. 运行时视觉 QA
 
-   现状：已用临时干净库启动真实服务并跑过一轮 Playwright smoke。验证链路包括：登录管理员、创建 Token、用 Token 发布公开样例、`/api/deploys` 返回市场作品；页面覆盖 `/`、`/market`、`/deploy`、`/agents/`、`/screens/`、`/agent/{code}/`、`/admin`、`/openapi.json`、`/skill/pagep.zip`，桌面 1440px 和手机 390px 首页均无横向溢出。后续又用临时库验证了 `/market/{code}` 详情直达、ZIP 文件树展示、ZIP 运行页相对资源执行、Markdown KaTeX / Mermaid / 表格 / 代码高亮渲染、加密站点访问密码查看、发布者 Token / 管理员 Cookie / 访问密码 Cookie 都不能下载加密站点源码，以及后台登录态和总览页渲染。现已沉淀为 `scripts/runtime-qa.mjs` 和 `scripts/visual-qa.mjs`：前者复现注册成功 / 失败、管理员登录、账号改密、登出、Token 创建和吊销、Markdown/真实 ZIP/加密/复用/屏幕绑定投放截图指令解绑/审计/CORS/OpenAPI/Skill 包下载链路，并检查 ZIP Bundle 详情、相对资源访问、访问密码票据绑定版本和切换当前版本后的失效、认证审计、账号密码审计、访问密码审计、CSP report 审计、Token 管理审计、站点管理审计、普通用户删除自己的站点、管理员删除站点、版本锁定 / 下架 / 切换当前 / 覆盖 / 删除审计、屏幕操作审计和审计查询分页 / 筛选；后者用真实浏览器覆盖前台主要页面、HTML/Markdown 运行页、加密访问页、后台主要 tab、审计日志筛选和翻页、市场详情 Bundle / 折叠文件树 / 模板复用弹窗、后台站点详情 Bundle / 文件树 / 复用参数，以及加密作品的源码下载 / 模板复用受限提示的桌面/移动端溢出与浏览器错误。本轮已修复手机首页 hero、创作市场移动端、Skill/MCP 内容页、后台移动端布局以及 Markdown nonce 缓存导致的 CSP 问题。
+   现状：已用临时干净库启动真实服务并跑过一轮 Playwright smoke。验证链路包括：登录管理员、创建 Token、用 Token 发布公开样例、`/api/deploys` 返回市场作品；页面覆盖 `/`、`/market`、`/deploy`、`/agents/`、`/screens/`、`/agent/{code}/`、`/admin`、`/openapi.json`、`/skill/pagep.zip`，桌面 1440px 和手机 390px 首页均无横向溢出。后续又用临时库验证了 `/market/{code}` 详情直达、ZIP 文件树展示、ZIP 运行页相对资源执行、Markdown KaTeX / Mermaid / 表格 / 代码高亮渲染、加密站点访问密码查看、访问密码 Cookie 不能下载加密站点源码、站点所有者和管理员可下载加密站点源码，以及后台登录态和总览页渲染。现已沉淀为 `scripts/runtime-qa.mjs` 和 `scripts/visual-qa.mjs`：前者复现注册成功 / 失败、管理员登录、账号改密、登出、Token 创建和吊销、Markdown/真实 ZIP/加密/复用/屏幕绑定投放截图指令解绑/审计/CORS/OpenAPI/Skill 包下载链路，并检查 ZIP Bundle 详情、相对资源访问、访问密码票据绑定版本和切换当前版本后的失效、认证审计、账号密码审计、访问密码审计、CSP report 审计、Token 管理审计、站点管理审计、普通用户删除自己的站点、管理员删除站点、版本锁定 / 下架 / 切换当前 / 覆盖 / 删除审计、屏幕操作审计和审计查询分页 / 筛选；后者用真实浏览器覆盖前台主要页面、HTML/Markdown 运行页、加密访问页、后台主要 tab、审计日志筛选和翻页、市场详情 Bundle / 折叠文件树 / 模板复用弹窗、后台站点详情 Bundle / 文件树 / 复用参数，以及加密作品的普通用户源码下载 / 模板复用受限提示的桌面/移动端溢出与浏览器错误。本轮已修复手机首页 hero、创作市场移动端、Skill/MCP 内容页、后台移动端布局以及 Markdown nonce 缓存导致的 CSP 问题。
 
    待办：继续用真实生产数据量复核视觉 QA，并补充更多空状态、长中文标题、超长命令、预览卡片慢加载和模板复用批量策略场景。
 
@@ -87,7 +87,7 @@
 
 7. OSS、SMTP 和安全专项验证
 
-   现状：代码和单元测试覆盖了 OSS 适配、邮箱验证基础流程、访问密码票据、ZIP 路径防护等核心逻辑；源码内容接口已与页面访问权限拆开，访问密码 cookie 不能直接下载加密站点源码，所有者和管理员也不能绕过加密状态下载源码；访问密码 cookie 已绑定目标版本，站点切换当前版本后旧浏览票据失效；后台 `/admin` 与 `/admin/assets/*` 已使用独立严格 CSP、禁止 iframe 嵌入并接入 CSP report-uri；站点级安全模式已影响 HTML 运行时 CSP/sandbox；前台和后台预览 iframe 已统一使用不含 `allow-same-origin` 的 `PREVIEW_IFRAME_SANDBOX`，只额外允许弹窗逃逸和用户触发顶层导航；托管页 CSP 响应已接入 report-uri，违规报告会落入审计日志；Markdown 脚本 CSP 使用 nonce-only `script-src`，不依赖 `script-src 'self'` 且不允许 `unsafe-inline` / `unsafe-eval`，KaTeX / Mermaid 所需的运行时样式通过受控的 `style-src-elem` / `style-src-attr` 放行；CORS 白名单只作用于 API / OpenAPI，外部嵌入托管应用改由嵌入策略控制，避免把 API 跨域授权误扩散到用户上传内容。
+   现状：代码和单元测试覆盖了 OSS 适配、邮箱验证基础流程、访问密码票据、ZIP 路径防护等核心逻辑；源码内容接口已与页面访问权限拆开，访问密码 cookie 不能直接下载加密站点源码，只有站点所有者或管理员可下载加密站点源码；访问密码 cookie 已绑定目标版本，站点切换当前版本后旧浏览票据失效；后台 `/admin` 与 `/admin/assets/*` 已使用独立严格 CSP、禁止 iframe 嵌入并接入 CSP report-uri；站点级安全模式已影响 HTML 运行时 CSP/sandbox；前台和后台预览 iframe 已统一使用不含 `allow-same-origin` 的 `PREVIEW_IFRAME_SANDBOX`，只额外允许弹窗逃逸和用户触发顶层导航；托管页 CSP 响应已接入 report-uri，违规报告会落入审计日志；Markdown 脚本 CSP 使用 nonce-only `script-src`，不依赖 `script-src 'self'` 且不允许 `unsafe-inline` / `unsafe-eval`，KaTeX / Mermaid 所需的运行时样式通过受控的 `style-src-elem` / `style-src-attr` 放行；CORS 白名单只作用于 API / OpenAPI，外部嵌入托管应用改由嵌入策略控制，避免把 API 跨域授权误扩散到用户上传内容。
 
    待办：用真实阿里云 OSS、真实 SMTP、生产反向代理、泛域名/路径模式、CORS/iframe 嵌入策略做端到端验证；同时复查用户上传 JS、HTML sandbox/CSP、源码下载权限和匿名认领边界。
 

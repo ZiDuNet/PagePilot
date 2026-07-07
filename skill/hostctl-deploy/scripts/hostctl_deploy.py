@@ -7,11 +7,11 @@ token management, site administration, and production readiness checks.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import pathlib
 import platform
+import re
 import sys
 import tempfile
 import time
@@ -349,8 +349,16 @@ def request_multipart(
 
 def safe_multipart_filename(name: str) -> str:
     cleaned = pathlib.Path(str(name).replace("\\", "/")).name
-    cleaned = cleaned.replace("\r", "_").replace("\n", "_").replace('"', "_")
-    return cleaned or "site.zip"
+    cleaned = cleaned.replace("\r", "-").replace("\n", "-").replace('"', "-").strip()
+    suffix = pathlib.Path(cleaned).suffix
+    if suffix and not re.fullmatch(r"\.[A-Za-z0-9]{1,16}", suffix):
+        suffix = ""
+    stem = cleaned[: -len(suffix)] if suffix else cleaned
+    safe_stem = re.sub(r"[^\w.\-\u4e00-\u9fff]+", "-", stem, flags=re.UNICODE)
+    safe_stem = re.sub(r"-+", "-", safe_stem).strip(".-")
+    if not safe_stem or re.fullmatch(r"(con|prn|aux|nul|com[1-9]|lpt[1-9])", safe_stem, re.IGNORECASE):
+        safe_stem = "upload"
+    return safe_stem + suffix.lower()
 
 
 def registered_token(args, action: str = "screen command") -> str:
@@ -364,97 +372,11 @@ def die(msg: str) -> None:
     raise SystemExit(msg)
 
 
-def looks_binary(data: bytes) -> bool:
-    if not data:
-        return False
-    sample = data[:512]
-    if b"\x00" in sample:
-        return True
-    nonprint = sum(1 for c in sample if c < 0x09 or (0x0d < c < 0x20))
-    return nonprint * 8 > len(sample)
-
-
 def rel_path(root: pathlib.Path, p: pathlib.Path) -> str:
     rel = p.relative_to(root).as_posix()
     if rel.startswith("/") or ".." in rel.split("/"):
         die(f"Refusing unsafe path: {rel}")
     return rel
-
-
-def read_source(source_arg: str) -> tuple[list[dict], str]:
-    root = pathlib.Path(source_arg)
-    if not root.exists():
-        die(f"Source not found: {source_arg}")
-    if root.is_file():
-        data = root.read_bytes()
-        if len(data) > MAX_SINGLE_FILE_BYTES:
-            die(f"File too large ({len(data)} bytes); limit is {MAX_SINGLE_FILE_BYTES}.")
-        entry = root.name
-        if looks_binary(data):
-            return [{"path": entry, "contentBase64": base64.b64encode(data).decode("ascii")}], entry
-        return [{"path": entry, "content": data.decode("utf-8", "replace")}], entry
-
-    files_payload: list[dict] = []
-    total_size = 0
-    main_entry = ""
-    readme_entry = ""
-    page_entry = ""
-    walked = sorted(p for p in root.rglob("*") if p.is_file())
-    if len(walked) > MAX_FILES_PER_SITE:
-        die(f"Too many files ({len(walked)}); limit is {MAX_FILES_PER_SITE}.")
-    for p in walked:
-        rel = rel_path(root, p)
-        data = p.read_bytes()
-        if len(data) > MAX_SINGLE_FILE_BYTES:
-            die(f"File too large: {rel} ({len(data)} bytes); limit is {MAX_SINGLE_FILE_BYTES}.")
-        total_size += len(data)
-        if total_size > MAX_SITE_TOTAL_BYTES:
-            die(f"Site total exceeds {MAX_SITE_TOTAL_BYTES} bytes; aborting at {rel}.")
-        if looks_binary(data) or p.suffix.lstrip(".").lower() in ALLOWED_BINARY_EXT:
-            files_payload.append({"path": rel, "contentBase64": base64.b64encode(data).decode("ascii")})
-        else:
-            files_payload.append({"path": rel, "content": data.decode("utf-8", "replace")})
-        lower_rel = rel.lower()
-        if lower_rel in ("index.html", "index.htm"):
-            main_entry = rel
-        elif lower_rel in ("readme.md", "readme.markdown") and not readme_entry:
-            readme_entry = rel
-        elif (lower_rel.endswith((".html", ".htm", ".md", ".markdown"))) and not page_entry:
-            page_entry = rel
-    return files_payload, main_entry or readme_entry or page_entry or "index.html"
-
-
-def choose_main_entry(paths: list[str]) -> str:
-    lowered = {p.lower(): p for p in paths}
-    for preferred in ("index.html", "index.htm", "readme.md", "readme.markdown"):
-        if preferred in lowered:
-            return lowered[preferred]
-    for p in paths:
-        if p.lower().endswith((".html", ".htm", ".md", ".markdown")):
-            return p
-    return "index.html"
-
-
-def zip_entry_names(zip_path: pathlib.Path) -> list[str]:
-    try:
-        with zipfile.ZipFile(zip_path) as zf:
-            return sorted(name for name in zf.namelist() if not name.endswith("/"))
-    except zipfile.BadZipFile:
-        return []
-
-
-def source_entry_hint(source_arg: str) -> str:
-    root = pathlib.Path(source_arg)
-    if not root.exists():
-        die(f"Source not found: {source_arg}")
-    if root.is_file():
-        if root.suffix.lower() == ".zip":
-            return choose_main_entry(zip_entry_names(root))
-        return root.name
-    paths = sorted(rel_path(root, p) for p in root.rglob("*") if p.is_file())
-    if len(paths) > MAX_FILES_PER_SITE:
-        die(f"Too many files ({len(paths)}); limit is {MAX_FILES_PER_SITE}.")
-    return choose_main_entry(paths)
 
 
 def prepare_multipart_source(source_arg: str) -> tuple[pathlib.Path, str, callable]:
@@ -642,8 +564,9 @@ def cmd_deploy(args) -> int:
     base = server_url(args)
     token = auth_token(args)
     code = args.code or remembered_code(base, args.source)
-    main_entry = source_entry_hint(args.source)
-    payload = {"description": args.description, "filename": args.filename or main_entry}
+    payload = {"description": args.description}
+    if args.filename:
+        payload["filename"] = args.filename
     add_deploy_options(payload, args)
     if code:
         payload["enableCustomCode"] = True
@@ -666,14 +589,14 @@ def cmd_append(args) -> int:
     ensure_title(args)
     base = server_url(args)
     token = auth_token(args)
-    main_entry = source_entry_hint(args.source)
     payload = {
         "description": args.description,
-        "filename": args.filename or main_entry,
         "enableCustomCode": True,
         "customCode": args.code,
         "createVersion": True,
     }
+    if args.filename:
+        payload["filename"] = args.filename
     add_deploy_options(payload, args)
     status, data = deploy_multipart(args, payload, args.source)
     if 200 <= status < 300 and data.get("code"):
@@ -746,8 +669,9 @@ def cmd_overwrite(args) -> int:
     ensure_description(args)
     ensure_title(args)
     _ensure_unlocked(args, "overwrite")
-    main_entry = source_entry_hint(args.source)
-    payload = {"description": args.description, "filename": args.filename or main_entry}
+    payload = {"description": args.description}
+    if args.filename:
+        payload["filename"] = args.filename
     add_deploy_options(payload, args)
     status, data = overwrite_multipart(args, payload, args.source)
     return print_result(status, data)
@@ -1061,8 +985,9 @@ def cmd_screen_publish(args) -> int:
         if not args.description:
             die("--description is required when publishing a local path to a screen.")
         ensure_title(args)
-        main_entry = source_entry_hint(args.source)
-        payload = {"description": args.description, "filename": args.filename or main_entry}
+        payload = {"description": args.description}
+        if args.filename:
+            payload["filename"] = args.filename
         add_deploy_options(payload, args)
         deploy_status, deploy_data = deploy_multipart(args, payload, args.source)
         if not (200 <= deploy_status < 300 and deploy_data.get("code")):
@@ -1164,7 +1089,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("source", help="Path to an HTML file, Markdown file, website ZIP, or site directory")
         p.add_argument("--description", "-d", required=True, help="Required concise description, max 240 chars")
         p.add_argument("--title", "-t", required=True, help="Required meaningful Chinese site/version title")
-        p.add_argument("--filename", "-f", help="Main entry filename (default: source or index.html)")
+        p.add_argument("--filename", "-f", help="Optional explicit entry path; omit for automatic server detection")
         if with_code:
             p.add_argument("--code", "-c", help="Stable custom short code. If it exists, deploy appends a new version.")
             p.add_argument("--update", action="store_true", help="Require updating an existing remembered/explicit code; refuse to create a new link.")
@@ -1333,7 +1258,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--source", default="", help="Optional local HTML file or site directory to deploy before publishing")
     ps.add_argument("--description", "-d", default="", help="Required when --source is used")
     ps.add_argument("--title", "-t", default="", help="Required meaningful Chinese title when --source is used")
-    ps.add_argument("--filename", "-f", default="", help="Main entry filename when --source is used")
+    ps.add_argument("--filename", "-f", default="", help="Optional explicit entry path when --source is used")
     ps.add_argument("--visibility", choices=["public", "unlisted"], default="", help="Visibility for --source deploy")
     ps.add_argument("--access-password", default="", help="Optional visit password for --source deploy")
     ps.add_argument("--version-number", type=int, help="Optional version number for an existing app")

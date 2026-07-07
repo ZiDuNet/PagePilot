@@ -60,6 +60,11 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate sites marketplace: %w", err)
 	}
+	// 补齐访问密码密文字段（用于管理员查看明文）
+	if err := migrateSitesAddPasswordCipher(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate sites password cipher: %w", err)
+	}
 	if err := migrateSitesEnsureIndexes(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate sites indexes: %w", err)
@@ -233,6 +238,7 @@ func migrateSitesAddMarketplaceColumns(db *sql.DB) error {
 		{"category", "TEXT NOT NULL DEFAULT ''"},
 		{"tags", "TEXT NOT NULL DEFAULT ''"},
 		{"access_password_hash", "TEXT NOT NULL DEFAULT ''"},
+		{"access_password_cipher", "TEXT NOT NULL DEFAULT ''"},
 		{"is_pinned", "BOOLEAN NOT NULL DEFAULT 0"},
 		{"pinned_at", "DATETIME"},
 		{"expires_at", "DATETIME"},
@@ -247,6 +253,14 @@ func migrateSitesAddMarketplaceColumns(db *sql.DB) error {
 				return fmt.Errorf("alter add %s: %w", c.name, err)
 			}
 		}
+	}
+	return nil
+}
+
+func migrateSitesAddPasswordCipher(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE sites ADD COLUMN access_password_cipher TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
+		return fmt.Errorf("alter add access_password_cipher: %w", err)
 	}
 	return nil
 }
@@ -1741,6 +1755,33 @@ func (s *SQLiteStore) SetSiteAccessPasswordHash(ctx context.Context, code, hash 
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SetSiteAccessPasswordCipher 同时更新 access_password_hash 和 access_password_cipher。
+// cipher 为空字符串表示清除密码。
+func (s *SQLiteStore) SetSiteAccessPasswordWithCipher(ctx context.Context, code, hash, cipher string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sites SET access_password_hash = ?, access_password_cipher = ?, updated_at = ? WHERE code = ?`,
+		hash, cipher, time.Now().UTC(), code)
+	if err != nil {
+		return fmt.Errorf("set site access password with cipher: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetSiteAccessPasswordCipher 获取站点的密码密文。
+func (s *SQLiteStore) GetSiteAccessPasswordCipher(ctx context.Context, code string) (string, error) {
+	var cipher string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT access_password_cipher FROM sites WHERE code = ?`, code).Scan(&cipher)
+	if err != nil {
+		return "", err
+	}
+	return cipher, nil
 }
 
 func parseSQLiteTime(value string) (time.Time, error) {

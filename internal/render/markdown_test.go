@@ -66,10 +66,80 @@ E = mc^2
 	}
 }
 
+func TestMarkdownToHTMLIncludesRenderedAndSourceViews(t *testing.T) {
+	source := "# Title\n\n<script>alert(1)</script>\n\nInline math $a+b$."
+
+	rendered := MarkdownToHTML([]byte(source))
+
+	mustContain := []string{
+		`<div class="markdown-body">`,
+		`class="markdown-source"`,
+		`class="markdown-floating-tools"`,
+		`class="markdown-view-toggle"`,
+		`class="markdown-theme-toggle"`,
+		`data-markdown-view`,
+		`ignoredClasses:['markdown-source']`,
+		`# Title`,
+		`&lt;script&gt;alert(1)&lt;/script&gt;`,
+		`查看 Markdown 原文`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered markdown missing source toggle marker %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, `<pre class="markdown-source" aria-label="Markdown 原文"><script>`) {
+		t.Fatalf("raw markdown source must be HTML-escaped:\n%s", rendered)
+	}
+}
+
+func TestMarkdownPageUsesJpageCompatibleTemplateShape(t *testing.T) {
+	rendered := MarkdownToHTML([]byte("# Title\n\n```mermaid\nflowchart LR\n  A-->B\n```\n\n$$E=mc^2$$\n"))
+
+	mustContain := []string{
+		`<!DOCTYPE html>`,
+		`<div class="markdown-body">`,
+		`body {`,
+		`background: var(--bg);`,
+		`pre.mermaid`,
+		`<pre class="mermaid"`,
+		`<div class="katex-display" data-pagepilot-math-block>`,
+		`mermaid.initialize`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("markdown page should follow the jpage-compatible template shape, missing %q:\n%s", want, rendered)
+		}
+	}
+	for _, bad := range []string{
+		`<figure class="markdown-diagram">`,
+		`<figcaption>Mermaid</figcaption>`,
+		`radial-gradient`,
+	} {
+		if strings.Contains(rendered, bad) {
+			t.Fatalf("markdown page should not use the old decorated wrapper %q:\n%s", bad, rendered)
+		}
+	}
+}
+
+func TestMarkdownPageUsesSolidBackgroundAndVisibleJSONCodeBlock(t *testing.T) {
+	rendered := MarkdownToHTML([]byte("```json\n{\"code\":\"project-home\"}\n```\n"))
+
+	if strings.Contains(rendered, "radial-gradient") {
+		t.Fatalf("markdown page should use a solid background, not gradients:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, `class="chroma"`) ||
+		!strings.Contains(rendered, `pre.chroma`) ||
+		!strings.Contains(rendered, `background: var(--code) !important`) ||
+		!strings.Contains(rendered, `project-home`) {
+		t.Fatalf("json fenced code block should render as a visible highlighted block:\n%s", rendered)
+	}
+}
+
 func TestMarkdownToHTMLSupportsSingleLineBlockMath(t *testing.T) {
 	rendered := MarkdownToHTML([]byte("Before\n\n$$E = mc^2$$\n\nAfter"))
 
-	if !strings.Contains(rendered, `class="markdown-math"`) ||
+	if !strings.Contains(rendered, `class="katex-display"`) ||
 		!strings.Contains(rendered, `data-pagepilot-math-block`) {
 		t.Fatalf("single-line block math was not rendered as a KaTeX block:\n%s", rendered)
 	}
@@ -97,6 +167,22 @@ func TestMarkdownSpecialFenceAcceptsInfoStringOptions(t *testing.T) {
 	}
 	if !strings.Contains(rendered, `data-pagepilot-math-block`) {
 		t.Fatalf("katex fence with info string options was not recognized:\n%s", rendered)
+	}
+}
+
+func TestMarkdownMermaidThemeToggleRestoresOriginalSource(t *testing.T) {
+	rendered := MarkdownToHTML([]byte("```mermaid\nflowchart LR\n  A-->B\n```\n"))
+
+	mustContain := []string{
+		`data-pagepilot-mermaid-source=`,
+		`function restoreMermaidSource`,
+		`el.textContent=source`,
+		`el.removeAttribute('data-processed')`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("markdown Mermaid theme toggle missing %q:\n%s", want, rendered)
+		}
 	}
 }
 
@@ -170,6 +256,7 @@ func TestMarkdownToHTMLAppliesExplicitTheme(t *testing.T) {
 	dark := MarkdownToHTMLWithTheme([]byte("# Theme"), "dark")
 	auto := MarkdownToHTMLWithTheme([]byte("# Theme"), "auto")
 	invalid := MarkdownToHTMLWithTheme([]byte("# Theme"), "unknown")
+	defaultRendered := MarkdownToHTML([]byte("# Theme"))
 
 	if !strings.Contains(dark, `<html lang="zh-CN" data-theme="dark">`) ||
 		!strings.Contains(dark, `html[data-theme="dark"]`) {
@@ -178,7 +265,10 @@ func TestMarkdownToHTMLAppliesExplicitTheme(t *testing.T) {
 	if !strings.Contains(auto, `<html lang="zh-CN" data-theme="auto">`) {
 		t.Fatalf("auto themed markdown missing theme marker:\n%s", auto)
 	}
-	if !strings.Contains(invalid, `<html lang="zh-CN" data-theme="auto">`) {
-		t.Fatalf("invalid theme should normalize to auto:\n%s", invalid)
+	if !strings.Contains(invalid, `<html lang="zh-CN" data-theme="dark">`) {
+		t.Fatalf("invalid theme should normalize to default dark:\n%s", invalid)
+	}
+	if !strings.Contains(defaultRendered, `<html lang="zh-CN" data-theme="dark">`) {
+		t.Fatalf("default theme should be dark:\n%s", defaultRendered)
 	}
 }

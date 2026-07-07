@@ -57,13 +57,15 @@ type PreviewViewport = "desktop" | "tablet" | "mobile";
 
 const PREVIEW_IFRAME_SANDBOX =
   "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-top-navigation-by-user-activation";
-const MARKET_SNAPSHOT_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
-const MARKET_PREVIEW_CONCURRENCY = 2;
+const MARKET_CARD_IFRAME_SANDBOX = "allow-scripts";
+const MARKET_PREVIEW_CONCURRENCY = 3;
 const MARKET_PREVIEW_TIMEOUT_MS = 3600;
-const MARKET_PREVIEW_IDLE_DELAY_MS = 160;
-const marketPreviewCache = new Map<string, string>();
-const marketPreviewPending = new Map<string, Promise<string>>();
-const marketPreviewQueue: Array<() => void> = [];
+type MarketPreviewQueueItem = {
+  cancelled: boolean;
+  release?: () => void;
+  start: (release: () => void) => void;
+};
+const marketPreviewQueue: MarketPreviewQueueItem[] = [];
 let activeMarketPreviewJobs = 0;
 
 interface EditableDeployFile {
@@ -430,6 +432,33 @@ function normalizeUploadedZipPath(name: string): string {
   return isZipUpload(name) ? "site.zip" : name;
 }
 
+function normalizeUploadedFilePath(path: string, fallbackStem: string): string {
+  const rawParts = path
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..");
+  const parts = rawParts.map((part, index) =>
+    normalizeUploadedPathSegment(part, index === rawParts.length - 1 ? fallbackStem : "folder")
+  );
+  return parts.join("/") || fallbackStem;
+}
+
+function normalizeUploadedPathSegment(name: string, fallbackStem: string): string {
+  const normalized = name.normalize("NFKC").trim().replace(/\s+/g, "-");
+  const extMatch = normalized.match(/(\.[A-Za-z0-9]{1,16})$/);
+  const ext = extMatch?.[1] || "";
+  const rawBase = ext ? normalized.slice(0, -ext.length) : normalized;
+  let base = rawBase
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[.-]+|[.-]+$/g, "");
+  if (!base || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(base)) {
+    base = fallbackStem;
+  }
+  return `${base}${ext.toLowerCase()}`;
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = "";
@@ -524,117 +553,71 @@ async function downloadSourceFile(url: string, fallbackName: string) {
   window.setTimeout(() => URL.revokeObjectURL(objectURL), 2500);
 }
 
-function buildMarketPreviewSnapshot(html: string, baseURL: string): string {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  doc.documentElement.dataset.pagepilotSnapshot = "market";
-  doc.querySelectorAll("script,iframe,object,embed,portal").forEach((node) => node.remove());
-  doc.querySelectorAll("meta[http-equiv]").forEach((node) => {
-    if ((node.getAttribute("http-equiv") || "").toLowerCase() === "refresh") {
-      node.remove();
-    }
-  });
-  doc.querySelectorAll("link").forEach((node) => {
-    const rel = (node.getAttribute("rel") || "").toLowerCase();
-    const as = (node.getAttribute("as") || "").toLowerCase();
-    if (rel.includes("modulepreload") || rel.includes("prefetch") || rel.includes("prerender") || (rel.includes("preload") && as === "script")) {
-      node.remove();
-    }
-  });
-  doc.querySelectorAll("base").forEach((node) => node.remove());
-  doc.querySelectorAll("*").forEach((node) => {
-    for (const attr of Array.from(node.attributes)) {
-      const name = attr.name.toLowerCase();
-      const value = attr.value.trim().toLowerCase();
-      if (name.startsWith("on") || value.startsWith("javascript:") || name === "autofocus") {
-        node.removeAttribute(attr.name);
-      }
-    }
-  });
-  const viewport = doc.createElement("meta");
-  viewport.name = "viewport";
-  viewport.content = "width=device-width, initial-scale=1";
-  doc.head.prepend(viewport);
-  const base = doc.createElement("base");
-  base.href = baseURL;
-  doc.head.prepend(base);
-  const stage = doc.createElement("div");
-  stage.className = "pp-market-snapshot-stage";
-  for (const child of Array.from(doc.body.childNodes)) {
-    stage.append(child);
-  }
-  doc.body.append(stage);
-  const style = doc.createElement("style");
-  style.textContent = `
-html,body{width:100%;height:100%;min-height:100%;margin:0;overflow:hidden;background:#fff!important;}
-html{color-scheme:light;}
-body{pointer-events:none;transform-origin:left top;}
-.pp-market-snapshot-stage{position:relative;width:100%;height:100%;min-width:960px;min-height:600px;overflow:hidden;background:#fff;isolation:isolate;}
-:where(a,button,input,select,textarea,label){pointer-events:none!important;}
-:where(img,svg,canvas,video){max-width:100%;}
-:where(*){scrollbar-width:none!important;}
-*::-webkit-scrollbar{display:none!important;}
-`;
-  doc.head.append(style);
-  return `<!doctype html>${doc.documentElement.outerHTML}`;
+function acquireMarketPreviewSlot(item: MarketPreviewQueueItem) {
+  marketPreviewQueue.push(item);
+  runMarketPreviewQueue();
 }
 
-function enqueueMarketPreview<T>(job: () => Promise<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const run = () => {
-      activeMarketPreviewJobs += 1;
-      job()
-        .then(resolve, reject)
-        .finally(() => {
-          activeMarketPreviewJobs = Math.max(0, activeMarketPreviewJobs - 1);
-          runMarketPreviewQueue();
-        });
-    };
-    marketPreviewQueue.push(run);
-    runMarketPreviewQueue();
-  });
+function releaseMarketPreviewSlot(item: MarketPreviewQueueItem) {
+  if (item.release) {
+    item.release();
+    return;
+  }
+  const index = marketPreviewQueue.indexOf(item);
+  if (index >= 0) {
+    marketPreviewQueue.splice(index, 1);
+  }
 }
 
 function runMarketPreviewQueue() {
   while (activeMarketPreviewJobs < MARKET_PREVIEW_CONCURRENCY && marketPreviewQueue.length) {
     const next = marketPreviewQueue.shift();
-    next?.();
+    if (!next || next.cancelled) continue;
+    activeMarketPreviewJobs += 1;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      activeMarketPreviewJobs = Math.max(0, activeMarketPreviewJobs - 1);
+      next.release = undefined;
+      runMarketPreviewQueue();
+    };
+    next.release = release;
+    next.start(release);
   }
 }
 
-function waitForMarketPreviewIdle(signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.reject(new Error("preview aborted"));
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(resolve, MARKET_PREVIEW_IDLE_DELAY_MS);
-    signal.addEventListener("abort", () => {
-      window.clearTimeout(timer);
-      reject(new Error("preview aborted"));
-    }, { once: true });
-  });
+function buildAppURL(config: RuntimeConfig | null, code: string, version?: number): string {
+  const encodedCode = encodeURIComponent(code);
+  const appURL = config?.appURL;
+  const versionPath = version && version > 0 ? `versions/${version}/` : "";
+  if (appURL?.appURLMode === "domain" && appURL.appDomainSuffix) {
+    const scheme = appURL.appURLScheme || "https";
+    const suffix = appURL.appDomainSuffix.replace(/^\*\./, "").replace(/^\./, "").replace(/\.$/, "");
+    const host = `${encodedCode}.${suffix}`;
+    const port = appURL.appURLPort && !((scheme === "https" && appURL.appURLPort === "443") || (scheme === "http" && appURL.appURLPort === "80"))
+      ? `:${appURL.appURLPort}`
+      : "";
+    return `${scheme}://${host}${port}/${versionPath}`;
+  }
+  const pathBase = (appURL?.appPathBase || "/agent").replace(/\/+$/, "") || "/agent";
+  return sameSiteURL(`${pathBase}/${encodedCode}/${versionPath}`);
 }
 
-async function fetchMarketPreviewSnapshot(appURL: string, cacheKey: string, signal: AbortSignal): Promise<string> {
-  const cached = marketPreviewCache.get(cacheKey);
-  if (cached) return cached;
-  const pending = marketPreviewPending.get(cacheKey);
-  if (pending) return pending;
-  const task = enqueueMarketPreview(async () => {
-    await waitForMarketPreviewIdle(signal);
-    const response = await fetch(`${appURL}?preview=1`, {
-      credentials: "same-origin",
-      cache: "force-cache",
-      signal
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const html = await response.text();
-    await waitForMarketPreviewIdle(signal);
-    const snapshot = buildMarketPreviewSnapshot(html, appURL);
-    marketPreviewCache.set(cacheKey, snapshot);
-    return snapshot;
-  }).finally(() => {
-    marketPreviewPending.delete(cacheKey);
-  });
-  marketPreviewPending.set(cacheKey, task);
-  return task;
+function appURLForDeploy(config: RuntimeConfig | null, item: MarketplaceDeploy, version?: number): string {
+  if (!version && item.filePath) return sameSiteURL(item.filePath);
+  return buildAppURL(config, item.code, version);
+}
+
+function withPreviewParam(appURL: string): string {
+  try {
+    const url = new URL(appURL, currentOrigin());
+    url.searchParams.set("preview", "1");
+    return url.toString();
+  } catch {
+    const separator = appURL.includes("?") ? "&" : "?";
+    return `${appURL}${separator}preview=1`;
+  }
 }
 
 function useRuntime() {
@@ -1313,7 +1296,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
           </nav>
           <div className="market-sidebar-note">
             <strong>提示</strong>
-            <span>加密作品可以凭访问密码浏览；源码下载和模板复用会被禁用。</span>
+            <span>加密作品可以凭访问密码浏览；普通访客不能下载源码或复用。</span>
           </div>
         </aside>
 
@@ -1377,6 +1360,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
             <MarketDetailViewFull
               item={detail}
               loading={detailLoading}
+              config={config}
               session={session}
               onBack={backToList}
               onUse={setSelected}
@@ -1399,6 +1383,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
                       key={item.code}
                       item={item}
                       previewIndex={index}
+                      config={config}
                       session={session}
                       onChanged={refresh}
                       onUse={setSelected}
@@ -1442,6 +1427,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
 function MarketplaceCard({
   item,
   previewIndex,
+  config,
   session,
   onChanged,
   onUse,
@@ -1449,48 +1435,52 @@ function MarketplaceCard({
 }: {
   item: MarketplaceDeploy;
   previewIndex: number;
+  config: RuntimeConfig | null;
   session: SessionInfo | null;
   onChanged: () => void;
   onUse: (item: MarketplaceDeploy) => void;
   onDetail: (item: MarketplaceDeploy) => void;
 }) {
   const cardRef = useRef<HTMLElement | null>(null);
-  const cachedPreview = marketPreviewCache.get(item.code) || "";
-  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>(cachedPreview ? "loaded" : "idle");
-  const [previewDoc, setPreviewDoc] = useState(cachedPreview);
+  const previewReleaseRef = useRef<(() => void) | null>(null);
+  const previewTimeoutRef = useRef<number | undefined>(undefined);
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
+  const [previewSrc, setPreviewSrc] = useState("");
   const title = item.title || item.code || "未命名作品";
-  const appURL = sameSiteURL(`/agent/${encodeURIComponent(item.code)}/`);
+  const appURL = appURLForDeploy(config, item);
   const isLocked = Boolean(item.accessProtected);
   const displayTags = (item.tags || []).slice(0, 3);
   const heat = getMarketHeat(item);
 
   useEffect(() => {
     const node = cardRef.current;
-    if (!node || isLocked || previewDoc) return;
+    if (!node || isLocked || previewSrc) return;
 
     let cancelQueued = false;
-    let controller: AbortController | null = null;
     let delayID: number | undefined;
-    let timeoutID: number | undefined;
     let scheduled = false;
+    let queueItem: MarketPreviewQueueItem | null = null;
 
     const loadPreview = () => {
-      if (cancelQueued || previewDoc) return;
+      if (cancelQueued || previewSrc) return;
       setPreviewStatus("loading");
-      controller = new AbortController();
-      timeoutID = window.setTimeout(() => controller?.abort(), MARKET_PREVIEW_TIMEOUT_MS);
-      fetchMarketPreviewSnapshot(appURL, item.code, controller.signal)
-        .then((snapshot) => {
-          if (cancelQueued) return;
-          setPreviewDoc(snapshot);
-          setPreviewStatus("loaded");
-        })
-        .catch(() => {
-          if (!cancelQueued) setPreviewStatus("failed");
-        })
-        .finally(() => {
-          if (timeoutID) window.clearTimeout(timeoutID);
-        });
+      queueItem = {
+        cancelled: false,
+        start: (release) => {
+          if (cancelQueued) {
+            release();
+            return;
+          }
+          previewReleaseRef.current = release;
+          setPreviewSrc(withPreviewParam(appURL));
+          previewTimeoutRef.current = window.setTimeout(() => {
+            if (!cancelQueued) setPreviewStatus("failed");
+            release();
+            previewReleaseRef.current = null;
+          }, MARKET_PREVIEW_TIMEOUT_MS);
+        }
+      };
+      acquireMarketPreviewSlot(queueItem);
     };
 
     const observer = new IntersectionObserver((entries) => {
@@ -1503,12 +1493,17 @@ function MarketplaceCard({
     observer.observe(node);
     return () => {
       cancelQueued = true;
-      controller?.abort();
+      if (queueItem) {
+        queueItem.cancelled = true;
+        releaseMarketPreviewSlot(queueItem);
+      }
       if (delayID) window.clearTimeout(delayID);
-      if (timeoutID) window.clearTimeout(timeoutID);
+      if (previewTimeoutRef.current) window.clearTimeout(previewTimeoutRef.current);
+      previewReleaseRef.current?.();
+      previewReleaseRef.current = null;
       observer.disconnect();
     };
-  }, [appURL, isLocked, item.code, previewDoc, previewIndex]);
+  }, [appURL, isLocked, previewIndex]);
 
   const like = async () => {
     try {
@@ -1556,13 +1551,25 @@ function MarketplaceCard({
             <span>输入访问密码后才能查看内容</span>
           </div>
         ) : (
-          previewDoc && (
+          previewSrc && (
             <iframe
               title={`${title} 预览`}
               loading="lazy"
               scrolling="no"
-              sandbox={MARKET_SNAPSHOT_SANDBOX}
-              srcDoc={previewDoc}
+              sandbox={MARKET_CARD_IFRAME_SANDBOX}
+              src={previewSrc}
+              onLoad={() => {
+                setPreviewStatus("loaded");
+                if (previewTimeoutRef.current) window.clearTimeout(previewTimeoutRef.current);
+                previewReleaseRef.current?.();
+                previewReleaseRef.current = null;
+              }}
+              onError={() => {
+                setPreviewStatus("failed");
+                if (previewTimeoutRef.current) window.clearTimeout(previewTimeoutRef.current);
+                previewReleaseRef.current?.();
+                previewReleaseRef.current = null;
+              }}
             />
           )
         )}
@@ -1573,28 +1580,35 @@ function MarketplaceCard({
             <span>预览资源较慢，打开应用查看完整效果</span>
           </div>
         )}
-        <div className="card-quickbar" aria-label="作品数据">
-          <span title="访问量"><Eye size={13} />{compactNumber(item.viewCount || 0)}</span>
-          <span title="复用次数"><Workflow size={13} />{compactNumber(item.reuseCount || 0)}</span>
-          <span title="版本数"><Layers size={13} />v{item.versionCount || 1}</span>
-        </div>
-        <div className="card-hover-actions">
-          <button className="button compact dark" type="button" onClick={() => onDetail(item)}><Eye size={14} />查看详情</button>
-          <button className="button compact primary" type="button" onClick={() => onUse(item)}><Workflow size={14} />使用模板</button>
-          <button className="quick-action" type="button" aria-label="点赞" onClick={like}>
-            <Heart size={15} /><span>{compactNumber(item.likeCount || 0)}</span>
+        <div className="market-card-top-actions" aria-label="作品快捷操作">
+          <button className="market-icon-action" type="button" title="点赞" aria-label="点赞" onClick={like}>
+            <Heart size={16} />
           </button>
-          <button className={`quick-action ${item.favorited ? "active" : ""}`} type="button" aria-label="收藏" onClick={toggleFavorite}>
-            <Bookmark size={15} /><span>{compactNumber(item.favoriteCount || 0)}</span>
+          <button
+            className={`market-icon-action ${item.favorited ? "active" : ""}`}
+            type="button"
+            title={item.favorited ? "取消收藏" : "收藏"}
+            aria-label={item.favorited ? "取消收藏" : "收藏"}
+            onClick={toggleFavorite}
+          >
+            <Bookmark size={16} />
           </button>
-          <a className="quick-action" href={appURL} target="_blank" rel="noreferrer" aria-label="打开应用">
-            <ExternalLink size={15} /><span>打开</span>
+          <a className="market-icon-action" href={appURL} target="_blank" rel="noreferrer" title="打开应用" aria-label="打开应用">
+            <ExternalLink size={16} />
           </a>
           {item.canManage && (
-            <button className="quick-action danger" type="button" onClick={() => void deleteSite()}>
-              <Trash2 size={15} /><span>删除</span>
+            <button className="market-icon-action danger" type="button" title="删除作品" aria-label="删除作品" onClick={() => void deleteSite()}>
+              <Trash2 size={16} />
             </button>
           )}
+        </div>
+        <div className="card-hover-actions">
+          <button className="button compact dark" type="button" onClick={() => onDetail(item)}>
+            <Eye size={14} /><span>查看详情</span><em>{compactNumber(item.viewCount || 0)}</em>
+          </button>
+          <button className="button compact primary" type="button" onClick={() => onUse(item)}>
+            <Workflow size={14} /><span>使用模板</span>
+          </button>
         </div>
       </div>
       <div className="card-body">
@@ -1617,6 +1631,13 @@ function MarketplaceCard({
           <span>{item.owned ? "我的发布" : "PagePilot 创作者"}</span>
           <time>{formatDateTime(item.updatedAt || item.createdAt)}</time>
         </div>
+        <div className="market-card-stats" aria-label="作品数据">
+          <span title="访问量"><Eye size={13} /><strong>{compactNumber(item.viewCount || 0)}</strong></span>
+          <span title="点赞数"><Heart size={13} /><strong>{compactNumber(item.likeCount || 0)}</strong></span>
+          <span title="收藏数"><Bookmark size={13} /><strong>{compactNumber(item.favoriteCount || 0)}</strong></span>
+          <span title="复用次数"><Workflow size={13} /><strong>{compactNumber(item.reuseCount || 0)}</strong></span>
+          <span title="版本数"><Layers size={13} /><strong>v{item.versionCount || 1}</strong></span>
+        </div>
       </div>
     </article>
   );
@@ -1632,17 +1653,19 @@ function compactNumber(value: number): string {
 function MarketDetailViewFull({
   item,
   loading,
+  config,
   session,
   onBack,
   onUse
 }: {
   item: MarketplaceDeploy;
   loading: boolean;
+  config: RuntimeConfig | null;
   session: SessionInfo | null;
   onBack: () => void;
   onUse: (item: MarketplaceDeploy) => void;
 }) {
-  const appURL = sameSiteURL(`/agent/${encodeURIComponent(item.code)}/`);
+  const appURL = appURLForDeploy(config, item);
   const isLocked = Boolean(item.accessProtected);
   const loginRequiredForReuse = !isLocked && item.visibility === "public" && !!item.reuse?.policyNote?.includes("登录");
   const canOpenTemplate = item.reuse ? item.reuse.allowReuse !== false || loginRequiredForReuse : !isLocked && item.visibility === "public";
@@ -1650,6 +1673,10 @@ function MarketDetailViewFull({
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [versions, setVersions] = useState<VersionItem[]>([]);
   const [viewport, setViewport] = useState<PreviewViewport>("desktop");
+  const [accessPassword, setAccessPassword] = useState("");
+  const [accessError, setAccessError] = useState("");
+  const [accessBusy, setAccessBusy] = useState(false);
+  const [accessUnlocked, setAccessUnlocked] = useState(() => !isLocked || canManage);
   const [busyVersion, setBusyVersion] = useState<number | null>(null);
   const [showAllVersions, setShowAllVersions] = useState(false);
   const [showFileTree, setShowFileTree] = useState(false);
@@ -1670,10 +1697,17 @@ function MarketDetailViewFull({
 
   useEffect(() => {
     setDetailPreviewReady(false);
-    if (isLocked) return;
+    if (isLocked && !accessUnlocked) return;
     const timer = window.setTimeout(() => setDetailPreviewReady(true), 220);
     return () => window.clearTimeout(timer);
-  }, [appURL, isLocked]);
+  }, [accessUnlocked, appURL, isLocked]);
+
+  useEffect(() => {
+    setAccessPassword("");
+    setAccessError("");
+    setAccessBusy(false);
+    setAccessUnlocked(!isLocked || canManage);
+  }, [canManage, isLocked, item.code]);
 
   const copyText = async (text: string) => {
     await navigator.clipboard.writeText(text);
@@ -1690,6 +1724,35 @@ function MarketDetailViewFull({
       await loadVersions();
     } finally {
       setBusyVersion(null);
+    }
+  };
+
+  const submitAccessPassword = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const password = accessPassword.trim();
+    if (!password) {
+      setAccessError("请输入访问密码。");
+      return;
+    }
+    setAccessBusy(true);
+    setAccessError("");
+    try {
+      await api(`/api/deploys/${encodeURIComponent(item.code)}/access`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password })
+      });
+      setAccessPassword("");
+      setAccessUnlocked(true);
+      toast("访问密码验证通过。");
+    } catch (err) {
+      if (err instanceof APIError && err.status === 401) {
+        setAccessError("密码不正确，请重新输入。");
+      } else {
+        setAccessError(err instanceof Error ? err.message : "验证失败，请稍后再试。");
+      }
+    } finally {
+      setAccessBusy(false);
     }
   };
 
@@ -1741,26 +1804,40 @@ function MarketDetailViewFull({
               <button className="button compact detail-back-button" type="button" onClick={onBack}><ChevronLeft size={15} />返回列表</button>
               <div>
                 <strong>v{currentVersion?.versionNumber || item.versionCount || 1} 预览</strong>
-                <span>{isLocked ? "已加密，打开后输入访问密码" : "桌面、平板、手机三端查看"}</span>
+                <span>{isLocked ? "已加密，打开后输入访问密码" : "桌面 · 平板 · 手机三端查看"}</span>
               </div>
             </div>
             <div className="viewport-tabs" role="group" aria-label="预览尺寸">
-              <button className={viewport === "desktop" ? "active" : ""} type="button" title="桌面端" onClick={() => setViewport("desktop")}><Monitor size={15} /></button>
-              <button className={viewport === "tablet" ? "active" : ""} type="button" title="平板端" onClick={() => setViewport("tablet")}><Tablet size={15} /></button>
-              <button className={viewport === "mobile" ? "active" : ""} type="button" title="手机端" onClick={() => setViewport("mobile")}><Smartphone size={15} /></button>
+              <button className={viewport === "desktop" ? "active" : ""} type="button" title="桌面端" onClick={() => setViewport("desktop")}><Monitor size={14} /></button>
+              <button className={viewport === "tablet" ? "active" : ""} type="button" title="平板端" onClick={() => setViewport("tablet")}><Tablet size={14} /></button>
+              <button className={viewport === "mobile" ? "active" : ""} type="button" title="手机端" onClick={() => setViewport("mobile")}><Smartphone size={14} /></button>
             </div>
           </div>
-          <div className={`market-detail-preview viewport-${viewport} ${isLocked ? "is-locked" : ""}`}>
-            {isLocked ? (
-              <div className="locked-preview">
-                <Lock size={36} />
-                <strong>网页已加密</strong>
-                <span>打开应用并输入访问密码后才能查看内容。</span>
-              </div>
+          <div className={`market-detail-preview viewport-${viewport} ${isLocked && !accessUnlocked ? "is-access-gated" : ""}`}>
+            {isLocked && !accessUnlocked ? (
+              <form className="detail-access-form" onSubmit={(event) => void submitAccessPassword(event)}>
+                <span className="detail-access-icon"><Lock size={26} /></span>
+                <strong>输入访问密码</strong>
+                <p>这个作品设置了访问密码。验证通过后，预览区会加载真实页面；知道密码的匿名用户也可以访问。</p>
+                <label>
+                  <span>访问密码</span>
+                  <input
+                    type="password"
+                    value={accessPassword}
+                    onChange={(event) => setAccessPassword(event.target.value)}
+                    placeholder="输入访问密码"
+                    autoComplete="current-password"
+                  />
+                </label>
+                <button className="button primary full" type="submit" disabled={accessBusy}>
+                  {accessBusy ? "验证中..." : "进入预览"}
+                </button>
+                {accessError && <em>{accessError}</em>}
+              </form>
             ) : detailPreviewReady ? (
               <iframe
                 ref={previewFrameRef}
-                src={`${appURL}?preview=1`}
+                src={withPreviewParam(appURL)}
                 title={`${item.title || item.code} 预览`}
                 loading="lazy"
                 sandbox={PREVIEW_IFRAME_SANDBOX}
@@ -1856,7 +1933,7 @@ function MarketDetailViewFull({
             <span>{versions.length} 个版本</span>
           </div>
           {visibleVersions.map((version) => {
-            const versionURL = sameSiteURL(`/agent/${encodeURIComponent(item.code)}/versions/${version.versionNumber}/`);
+            const versionURL = buildAppURL(config, item.code, version.versionNumber);
             return (
               <div className={`detail-version-item ${version.isCurrent ? "current" : ""}`} key={version.versionNumber}>
                 <div>
@@ -2120,9 +2197,9 @@ function UseCard({ icon, title, text, children }: { icon: React.ReactNode; title
 
 function DeployPage({ config, session }: { config: RuntimeConfig | null; session: SessionInfo | null }) {
   const [mode, setMode] = useState<"single" | "multi">("single");
-  const [filename, setFilename] = useState("index.html");
+  const [filename, setFilename] = useState("");
   const [content, setContent] = useState("<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>PagePilot App</title>\n</head>\n<body>\n  <h1>Hello PagePilot</h1>\n</body>\n</html>");
-  const [files, setFiles] = useState<EditableDeployFile[]>([{ path: "index.html", content: "<h1>Hello PagePilot</h1>", isText: true, size: 24 }]);
+  const [files, setFiles] = useState<EditableDeployFile[]>([]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState<"public" | "unlisted">("unlisted");
@@ -2144,7 +2221,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
 
   const totalSize = mode === "single" ? fileTextSize(content) : files.reduce((sum, file) => sum + (file.size ?? fileTextSize(file.content)), 0);
   const ready = mode === "single"
-    ? content.trim() && filename.trim()
+    ? content.trim()
     : files.length > 0 && files.every((file) => file.path.trim() && (file.contentBase64 || file.content.trim()));
   const selectedUpdatableSite = createVersion
     ? updatableSites.find((site) => site.code === customCode.trim())
@@ -2211,7 +2288,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
         setFiles([{ path: normalizeUploadedZipPath(file.name), content: "", contentBase64: arrayBufferToBase64(await file.arrayBuffer()), isText: false, size: file.size }]);
         return;
       }
-      setFilename(file.name || "index.html");
+      setFilename(normalizeUploadedFilePath(file.name, "upload"));
       setContent(await file.text());
       return;
     }
@@ -2219,7 +2296,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
     const next: EditableDeployFile[] = [];
     for (const file of Array.from(list)) {
       const rawPath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-      const path = rawPath.replace(/\\/g, "/").replace(/^\/+/, "");
+      const path = normalizeUploadedFilePath(rawPath, "asset");
       if (isTextUpload(file.name)) {
         const text = await file.text();
         next.push({ path, content: text, isText: true, size: fileTextSize(text) });
@@ -2267,7 +2344,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
       }
       if (createVersion) payload.createVersion = true;
       if (mode === "single") {
-        payload.filename = filename.trim() || "index.html";
+        if (filename.trim()) payload.filename = filename.trim();
         payload.content = content;
       } else {
         if (filename.trim()) payload.filename = filename.trim();
@@ -2418,22 +2495,21 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
 
         {mode === "single" ? (
           <>
-            <label className="field">
-              <span>入口文件名</span>
-              <input value={filename} onChange={(event) => setFilename(event.target.value)} placeholder="index.html 或 README.md" />
-            </label>
             <label className="upload-line">
               <input type="file" accept=".html,.htm,.md,.markdown,.txt,.zip" onChange={(event) => void readUploaded(event.target.files)} />
               <Upload size={18} />上传 HTML / Markdown / ZIP
             </label>
             <textarea className="code-input" value={content} onChange={(event) => setContent(event.target.value)} placeholder="<!doctype html>..." />
+            <details className="entry-field-toggle">
+              <summary>{filename ? `入口提示：${filename}` : "指定入口文件（高级）"}</summary>
+              <label className="field">
+                <span>入口文件名（可选）</span>
+                <input value={filename} onChange={(event) => setFilename(event.target.value)} placeholder="留空自动识别；多入口时填写真实相对路径" />
+              </label>
+            </details>
           </>
         ) : (
           <>
-            <label className="field">
-              <span>入口文件名（可选）</span>
-              <input value={filename} onChange={(event) => setFilename(event.target.value)} placeholder="留空自动识别 index.html 或 README.md" />
-            </label>
             <label className="upload-line">
               <input type="file" multiple webkitdirectory="" onChange={(event) => void readUploaded(event.target.files)} />
               <Upload size={18} />上传目录
@@ -2456,6 +2532,13 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
               ))}
               <button className="button" type="button" onClick={() => setFiles((prev) => [...prev, { path: "", content: "", isText: true, size: 0 }])}>新增文件</button>
             </div>
+            <details className="entry-field-toggle">
+              <summary>{filename ? `入口提示：${filename}` : "指定入口文件（高级）"}</summary>
+              <label className="field">
+                <span>入口文件名（可选）</span>
+                <input value={filename} onChange={(event) => setFilename(event.target.value)} placeholder="留空由服务端自动识别；多入口时填写真实相对路径" />
+              </label>
+            </details>
           </>
         )}
 
@@ -2629,7 +2712,7 @@ function MCPGuide({ baseURL }: { baseURL: string }) {
           lines={[
             "市场详情页会生成下载源文件、CLI、Agent/MCP 三种复用方式。",
             "Agent 复用公开作品时默认发布为新作品，并传 template_source_code 记录来源。",
-            "加密作品只能授权浏览，不提供源码下载和模板复用。"
+            "加密作品只给普通访客授权浏览；源码下载和模板复用需站点所有者或管理员权限。"
           ]}
         />
         <DocBlock

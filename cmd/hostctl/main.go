@@ -537,7 +537,7 @@ func cmdDeploy() *cobra.Command {
 				UploadName:            source.Name,
 				Description:           description,
 				Title:                 title,
-				Filename:              mainEntry,
+				Filename:              filename,
 				Source:                "cli",
 				AccessPassword:        accessPass,
 				Category:              category,
@@ -563,7 +563,7 @@ func cmdDeploy() *cobra.Command {
 	c.Flags().StringVarP(&description, "description", "d", "", "deployment description (required, max 240 chars)")
 	c.Flags().StringVarP(&title, "title", "t", "", "site title (optional metadata)")
 	c.Flags().StringVarP(&customCode, "code", "c", "", "custom short code (^[a-z0-9-]{3,32}$)")
-	c.Flags().StringVarP(&filename, "filename", "f", "", "main entry filename; optional for ZIP/directories")
+	c.Flags().StringVarP(&filename, "filename", "f", "", "optional explicit entry path; omit for automatic server detection")
 	c.Flags().StringVar(&accessPass, "access-password", "", "optional visit password for a new user-owned site")
 	c.Flags().StringVar(&category, "category", "", "marketplace category slug, e.g. landing/dashboard/docs/tool/game/screen")
 	c.Flags().StringVar(&templateSourceCode, "template-source-code", "", "record that this deploy is derived from a marketplace site code")
@@ -606,7 +606,6 @@ func cmdAppend() *cobra.Command {
 				UploadName:            source.Name,
 				Description:           description,
 				Title:                 title,
-				Filename:              mainEntry,
 				EnableCustomCode:      true,
 				CustomCode:            args[0],
 				CreateVersion:         true,
@@ -803,10 +802,6 @@ func cmdOverwrite() *cobra.Command {
 			if _, err := fmt.Sscanf(args[1], "%d", &version); err != nil {
 				return fmt.Errorf("invalid version %q: %v", args[1], err)
 			}
-			mainEntry, err := sourceEntryHint(args[2])
-			if err != nil {
-				return err
-			}
 			source, err := prepareMultipartSource(args[2])
 			if err != nil {
 				return err
@@ -816,7 +811,6 @@ func cmdOverwrite() *cobra.Command {
 				SourcePath:  source.Path,
 				UploadName:  source.Name,
 				Description: description,
-				Filename:    mainEntry,
 			}
 			ctx, cancel := withSignalCancel()
 			defer cancel()

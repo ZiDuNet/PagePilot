@@ -24,7 +24,7 @@ const (
 //   - 每个文件 path 走严格白名单（HTML/CSS/JS/字体/图片/任意静态资源均可）
 type DeployRequest struct {
 	// filename 可选；主入口文件名，支持 .html/.htm/.md/.markdown。ZIP/目录可留空自动识别。
-	Filename string `json:"filename"`
+	Filename string `json:"filename,omitempty"`
 
 	// description 必填，≤240 字符
 	Description string `json:"description"`
@@ -158,6 +158,9 @@ type DeployResponse struct {
 
 	// versionCount 部署完成后该 site 累计版本数
 	VersionCount int `json:"versionCount"`
+
+	// Created 仅供服务端内部判断额度消耗；true 表示本次创建了新站点，追加版本不计入已发布站点额度。
+	Created bool `json:"-"`
 
 	// 兼容字段：旧版 admin / CLI 用的简短形式
 	Size      int64  `json:"size"`

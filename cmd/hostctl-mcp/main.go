@@ -609,14 +609,9 @@ func toolDeploySite(ctx context.Context, c *client.Client, args map[string]any) 
 		return "", err
 	}
 	defer sourceFile.Cleanup()
-	filename := sourceFile.Name
-	if !strings.HasSuffix(strings.ToLower(filename), ".zip") && len(files) > 0 {
-		filename = files[0].Path
-	}
 	req := client.MultipartDeployRequest{
 		SourcePath:            sourceFile.Path,
 		UploadName:            sourceFile.Name,
-		Filename:              filename,
 		Description:           desc,
 		Title:                 title,
 		CustomCode:            customCode,

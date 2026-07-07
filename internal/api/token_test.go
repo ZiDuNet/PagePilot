@@ -214,6 +214,193 @@ func TestAnonymousDeployWithoutExistingSessionIsTracked(t *testing.T) {
 	}
 }
 
+func TestAnonymousVersionDeployDoesNotConsumeSiteQuota(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.cfg.AnonymousDeployLimit = 1
+	stub := newTrackingAnonymousDeployStub()
+	stub.siteExists = true
+	stub.created = false
+	stub.siteOwnerTokenID = "anon:anon-existing"
+	now := time.Now()
+	stub.sessions["anon-existing"] = store.AnonymousSession{
+		ID:          "anon-existing",
+		DeployCount: 1,
+		CreatedAt:   now,
+		LastUsedAt:  now,
+	}
+	srv.deployer = stub
+
+	body, _ := json.Marshal(DeployRequest{
+		Filename:         "index.html",
+		Title:            "匿名版本更新",
+		Description:      "匿名用户在额度满额后追加版本",
+		Content:          "<!doctype html><title>update</title>",
+		EnableCustomCode: true,
+		CustomCode:       "anon-track-test",
+		CreateVersion:    true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Hostctl-Session", "anon-existing")
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("deploy status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+	}
+	if !stub.deployCalled {
+		t.Fatal("deploy was not called for existing-site version update")
+	}
+	if got := stub.sessions["anon-existing"].DeployCount; got != 1 {
+		t.Fatalf("deploy count = %d, want unchanged 1", got)
+	}
+}
+
+func TestUserVersionDeployDoesNotConsumeSiteQuota(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	user, err := authSvc.CreateUser(ctx, "alice", "password123", false, 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := authSvc.IncrementUserDeployCount(ctx, user.ID); err != nil {
+		t.Fatalf("seed deploy count: %v", err)
+	}
+	session, err := authSvc.LoginAdmin(ctx, "alice", "password123", time.Hour)
+	if err != nil {
+		t.Fatalf("login user: %v", err)
+	}
+	stub := newTrackingAnonymousDeployStub()
+	stub.siteExists = true
+	stub.created = false
+	stub.siteOwnerTokenID = "user:" + user.ID
+	srv.deployer = stub
+
+	body, _ := json.Marshal(DeployRequest{
+		Filename:         "index.html",
+		Title:            "注册用户版本更新",
+		Description:      "注册用户在额度满额后追加版本",
+		Content:          "<!doctype html><title>update</title>",
+		EnableCustomCode: true,
+		CustomCode:       "user-update-test",
+		CreateVersion:    true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "hostctl_admin_session", Value: session.Plaintext})
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("deploy status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+	}
+	if !stub.deployCalled {
+		t.Fatal("deploy was not called for existing-site version update")
+	}
+	got, err := authSvc.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.DeployCount != 1 {
+		t.Fatalf("user deploy count = %d, want unchanged 1", got.DeployCount)
+	}
+}
+
+func TestCreateVersionForMissingSiteStillConsumesSiteQuota(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	user, err := authSvc.CreateUser(ctx, "alice", "password123", false, 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := authSvc.IncrementUserDeployCount(ctx, user.ID); err != nil {
+		t.Fatalf("seed deploy count: %v", err)
+	}
+	session, err := authSvc.LoginAdmin(ctx, "alice", "password123", time.Hour)
+	if err != nil {
+		t.Fatalf("login user: %v", err)
+	}
+	stub := newTrackingAnonymousDeployStub()
+	srv.deployer = stub
+
+	body, _ := json.Marshal(DeployRequest{
+		Filename:         "index.html",
+		Title:            "满额新站点",
+		Description:      "目标 code 不存在时仍按新站点额度处理",
+		Content:          "<!doctype html><title>new</title>",
+		EnableCustomCode: true,
+		CustomCode:       "missing-site-test",
+		CreateVersion:    true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "hostctl_admin_session", Value: session.Plaintext})
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("deploy status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusUnauthorized)
+	}
+	if stub.deployCalled {
+		t.Fatal("deploy was called even though missing-site createVersion should consume quota")
+	}
+}
+
+func TestLegacyContentPatchDoesNotConsumeSiteQuota(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	user, err := authSvc.CreateUser(ctx, "alice", "password123", false, 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := authSvc.IncrementUserDeployCount(ctx, user.ID); err != nil {
+		t.Fatalf("seed deploy count: %v", err)
+	}
+	session, err := authSvc.LoginAdmin(ctx, "alice", "password123", time.Hour)
+	if err != nil {
+		t.Fatalf("login user: %v", err)
+	}
+	stub := newTrackingAnonymousDeployStub()
+	stub.siteExists = true
+	stub.created = false
+	stub.siteOwnerTokenID = "user:" + user.ID
+	srv.deployer = stub
+
+	body, _ := json.Marshal(ContentPatchRequest{
+		Code:        "legacy-update-test",
+		Title:       "旧接口版本更新",
+		Description: "旧更新接口在额度满额后追加版本",
+		Content:     "<!doctype html><title>legacy update</title>",
+	})
+	req := httptest.NewRequest(http.MethodPatch, "/api/deploy/content", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "hostctl_admin_session", Value: session.Plaintext})
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+	}
+	if !stub.deployCalled {
+		t.Fatal("deploy was not called for legacy content patch")
+	}
+	got, err := authSvc.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.DeployCount != 1 {
+		t.Fatalf("user deploy count = %d, want unchanged 1", got.DeployCount)
+	}
+}
+
 func TestDeployAcceptsMultipartFileUpload(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
@@ -335,11 +522,16 @@ type trackingAnonymousDeployStub struct {
 	createdSessionID string
 	deployOwner      string
 	lastReq          DeployRequest
+	siteExists       bool
+	siteOwnerTokenID string
+	created          bool
+	deployCalled     bool
 }
 
 func newTrackingAnonymousDeployStub() *trackingAnonymousDeployStub {
 	return &trackingAnonymousDeployStub{
 		sessions: map[string]store.AnonymousSession{},
+		created:  true,
 	}
 }
 
@@ -421,25 +613,56 @@ func (s *trackingAnonymousDeployStub) ListAnonymousSessions(
 	return out, nil
 }
 
+func (s *trackingAnonymousDeployStub) SiteExists(
+	context.Context,
+	string,
+) (bool, error) {
+	return s.siteExists, nil
+}
+
+func (s *trackingAnonymousDeployStub) GetSite(
+	_ context.Context,
+	code string,
+) (store.Site, error) {
+	if !s.siteExists {
+		return store.Site{}, store.ErrNotFound
+	}
+	return store.Site{
+		Code:         code,
+		OwnerTokenID: s.siteOwnerTokenID,
+		Status:       "active",
+	}, nil
+}
+
 func (s *trackingAnonymousDeployStub) Deploy(
 	_ context.Context,
 	req DeployRequest,
 	ownerTokenID string,
 	_ string,
 ) (*DeployResponse, *APIError) {
+	s.deployCalled = true
 	s.deployOwner = ownerTokenID
 	s.lastReq = req
+	versionNumber := 1
+	if !s.created {
+		versionNumber = 2
+	}
+	code := strings.TrimSpace(req.CustomCode)
+	if code == "" {
+		code = "anon-track-test"
+	}
 	return &DeployResponse{
 		Success:                true,
-		Code:                   "anon-track-test",
+		Code:                   code,
 		URL:                    "http://example.test/agent/anon-track-test/",
 		DetailURL:              "http://example.test/agent/anon-track-test/",
 		VersionURL:             "http://example.test/agent/anon-track-test/versions/1/",
 		VersionID:              "version-1",
 		CurrentVersionID:       "version-1",
-		VersionNumber:          1,
+		VersionNumber:          versionNumber,
 		PrimaryVersionStrategy: StrategyLikes,
 		Visibility:             "unlisted",
+		Created:                s.created,
 	}, nil
 }
 

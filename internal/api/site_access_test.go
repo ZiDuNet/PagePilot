@@ -145,6 +145,98 @@ func TestSiteAccessCookieExpiresAfterFiveMinutes(t *testing.T) {
 	}
 }
 
+func TestSiteAccessDoesNotBypassPasswordForAnonymousOwner(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	hash, err := auth.HashPassword("secret123")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	deployer := &siteAccessDeployerStub{
+		anonymous: store.AnonymousSession{ID: "anon-1"},
+		site: store.Site{
+			Code:               "demo",
+			OwnerTokenID:       "anon:anon-1",
+			AccessPasswordHash: hash,
+		},
+	}
+	srv.deployer = deployer
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/demo/", nil)
+	req.AddCookie(&http.Cookie{Name: "hostctl_anon_session", Value: "anon-1"})
+
+	if srv.siteAccessAllowed(req, "demo", nil) {
+		t.Fatal("anonymous owner bypassed encrypted site access; want password required")
+	}
+}
+
+func TestSiteAccessAllowsRegisteredOwnerWithoutPassword(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	hash, err := auth.HashPassword("secret123")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	owner, err := authSvc.CreateUser(t.Context(), "owner", "password123", false, 20)
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	token, err := authSvc.Generate(t.Context(), "owner-token", false, owner.ID, nil)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	srv.deployer = &siteAccessDeployerStub{
+		site: store.Site{
+			Code:               "demo",
+			OwnerTokenID:       "user:" + owner.ID,
+			AccessPasswordHash: hash,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/demo/", nil)
+	req.Header.Set("Authorization", "Bearer "+token.Plaintext)
+
+	if !srv.siteAccessAllowed(req, "demo", nil) {
+		t.Fatal("registered owner was asked for password; want direct access")
+	}
+}
+
+func TestSiteAccessAllowsAssignedScreenCookieWithoutPassword(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	hash, err := auth.HashPassword("secret123")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	version := int64(3)
+	screen := store.Screen{
+		ID:              "screen-1",
+		CurrentSiteCode: "demo",
+		CurrentVersion:  &version,
+		DeviceTokenHash: "screen-token-hash",
+	}
+	srv.deployer = &siteAccessDeployerStub{
+		site: store.Site{
+			Code:               "demo",
+			OwnerTokenID:       "user:owner",
+			CurrentVersion:     &version,
+			AccessPasswordHash: hash,
+		},
+		screen: screen,
+	}
+	accessCookie := srv.newScreenAccessCookie(screen, "demo", &version)
+	if accessCookie == nil {
+		t.Fatal("screen access cookie was nil")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/demo/", nil)
+	req.AddCookie(&http.Cookie{Name: accessCookie.Name, Value: accessCookie.Value})
+
+	if !srv.siteAccessAllowed(req, "demo", &version) {
+		t.Fatal("assigned screen access cookie was rejected; want direct access")
+	}
+}
+
 func TestSourceContentRejectsPasswordOnlyAccess(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
@@ -172,8 +264,8 @@ func TestSourceContentRejectsPasswordOnlyAccess(t *testing.T) {
 
 	srv.mux.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusForbidden)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusUnauthorized)
 	}
 	if deployer.streamed {
 		t.Fatal("source download stream was reached for unlisted password-only access")
@@ -190,8 +282,8 @@ func TestSourceContentRejectsPasswordOnlyAccess(t *testing.T) {
 		t.Fatalf("audit log = %+v; want failed source_download log for demo", log)
 	}
 	if !strings.Contains(log.DetailJSON, `"download":true`) ||
-		!strings.Contains(log.DetailJSON, `"errorCode":"FORBIDDEN"`) ||
-		!strings.Contains(log.DetailJSON, `"stage":"source_download"`) {
+		!strings.Contains(log.DetailJSON, `"errorCode":"UNAUTHORIZED"`) ||
+		!strings.Contains(log.DetailJSON, `"stage":"auth"`) {
 		t.Fatalf("detail = %s; want structured source download failure detail", log.DetailJSON)
 	}
 }
@@ -279,7 +371,7 @@ func TestSourceContentDownloadRecordsAuditLog(t *testing.T) {
 	}
 }
 
-func TestSourceContentRejectsEncryptedSiteEvenForOwner(t *testing.T) {
+func TestSourceContentAllowsEncryptedSiteForOwner(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
 	hash, err := auth.HashPassword("secret123")
@@ -311,18 +403,18 @@ func TestSourceContentRejectsEncryptedSiteEvenForOwner(t *testing.T) {
 
 	srv.mux.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusForbidden)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
 	}
-	if deployer.streamed {
-		t.Fatal("source download stream was reached for encrypted owner access")
+	if !deployer.streamed {
+		t.Fatal("source download stream was not reached for encrypted owner access")
 	}
-	if strings.Contains(rr.Body.String(), "SOURCE") {
-		t.Fatalf("body leaked source content: %s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "SOURCE") {
+		t.Fatalf("body = %s; want source content", rr.Body.String())
 	}
 }
 
-func TestSourceContentRejectsEncryptedSiteEvenForAdmin(t *testing.T) {
+func TestSourceContentAllowsEncryptedSiteForAdmin(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
 	hash, err := auth.HashPassword("secret123")
@@ -354,14 +446,14 @@ func TestSourceContentRejectsEncryptedSiteEvenForAdmin(t *testing.T) {
 
 	srv.mux.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusForbidden)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
 	}
-	if deployer.streamed {
-		t.Fatal("source download stream was reached for encrypted admin access")
+	if !deployer.streamed {
+		t.Fatal("source download stream was not reached for encrypted admin access")
 	}
-	if strings.Contains(rr.Body.String(), "SOURCE") {
-		t.Fatalf("body leaked source content: %s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "SOURCE") {
+		t.Fatalf("body = %s; want source content", rr.Body.String())
 	}
 }
 
@@ -493,6 +585,7 @@ func TestSetSiteAccessPasswordFailureRecordsAuditLog(t *testing.T) {
 type siteAccessDeployerStub struct {
 	DeployerPort
 	site      store.Site
+	screen    store.Screen
 	anonymous store.AnonymousSession
 	streamed  bool
 	auditLogs []store.AuditLog
@@ -517,6 +610,13 @@ func (s *siteAccessDeployerStub) GetAnonymousSession(_ context.Context, id strin
 		return store.AnonymousSession{}, store.ErrNotFound
 	}
 	return s.anonymous, nil
+}
+
+func (s *siteAccessDeployerStub) GetScreen(_ context.Context, id string) (store.Screen, error) {
+	if s.screen.ID != id {
+		return store.Screen{}, store.ErrNotFound
+	}
+	return s.screen, nil
 }
 
 func (s *siteAccessDeployerStub) RecordAuditLog(_ context.Context, log store.AuditLog) error {

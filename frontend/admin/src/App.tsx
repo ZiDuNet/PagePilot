@@ -6,6 +6,7 @@ import {
   Copy,
   Download,
   Eye,
+  EyeOff,
   FileArchive,
   FileText,
   FileUp,
@@ -658,6 +659,34 @@ function normalizeUploadedZipPath(name: string) {
   return isZipFile(name) ? "site.zip" : name;
 }
 
+function normalizeUploadedFilePath(path: string, fallbackStem: string) {
+  const rawParts = path
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/^\.\//, "")
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..");
+  const parts = rawParts.map((part, index) =>
+    normalizeUploadedPathSegment(part, index === rawParts.length - 1 ? fallbackStem : "folder")
+  );
+  return parts.join("/") || fallbackStem;
+}
+
+function normalizeUploadedPathSegment(name: string, fallbackStem: string) {
+  const normalized = name.normalize("NFKC").trim().replace(/\s+/g, "-");
+  const extMatch = normalized.match(/(\.[A-Za-z0-9]{1,16})$/);
+  const ext = extMatch?.[1] || "";
+  const rawBase = ext ? normalized.slice(0, -ext.length) : normalized;
+  let base = rawBase
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[.-]+|[.-]+$/g, "");
+  if (!base || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(base)) {
+    base = fallbackStem;
+  }
+  return `${base}${ext.toLowerCase()}`;
+}
+
 function isDeployEntrypointFile(name: string) {
   return /\.(html?|md|markdown)$/i.test(name);
 }
@@ -1220,6 +1249,7 @@ function AccountPanel({ session, showToast }: { session: SessionInfo; showToast:
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [error, setError] = useState("");
+  const [showPasswordForm, setShowPasswordForm] = useState(false);
 
   async function save() {
     setError("");
@@ -1231,6 +1261,7 @@ function AccountPanel({ session, showToast }: { session: SessionInfo; showToast:
       });
       setOldPassword("");
       setNewPassword("");
+      setShowPasswordForm(false);
       showToast("密码已修改");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1238,26 +1269,36 @@ function AccountPanel({ session, showToast }: { session: SessionInfo; showToast:
   }
 
   return (
-    <section className="two-col">
-      <div className="panel">
-        <div className="panel-head"><div><h2>账号信息</h2><p>当前登录身份。</p></div></div>
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>账号信息</h2>
+          <p>当前登录身份与密码管理。</p>
+        </div>
+        <button className={`button ${showPasswordForm ? "" : "primary"}`} type="button" onClick={() => setShowPasswordForm((v) => !v)}>
+          {showPasswordForm ? "收起" : "修改密码"}
+        </button>
+      </div>
+      <div className="account-info-grid">
         <InfoRow label="用户名" value={session.username || session.label || "-"} />
         <InfoRow label="角色" value={session.isAdmin ? "管理员" : "用户"} />
         <InfoRow label="登录方式" value={session.loginMethod || "token/dev"} />
         <InfoRow label="用户 ID" value={session.userId || session.tokenId || "-"} />
       </div>
-      <div className="panel">
-        <div className="panel-head"><div><h2>修改密码</h2><p>修改后请用新密码重新登录其他设备。</p></div></div>
-        <label className="field"><span>当前密码</span><input type="password" value={oldPassword} onChange={(event) => setOldPassword(event.target.value)} /></label>
-        <label className="field"><span>新密码</span><input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="至少 8 位" /></label>
-        {error && <div className="alert error">{error}</div>}
-        <button className="button primary" type="button" onClick={save}><Save size={16} />保存新密码</button>
-      </div>
+      {showPasswordForm && (
+        <div className="fold-body" style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--pp-line, rgba(15,118,158,0.16))" }}>
+          <label className="field"><span>当前密码</span><input type="password" value={oldPassword} onChange={(event) => setOldPassword(event.target.value)} /></label>
+          <label className="field"><span>新密码</span><input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="至少 8 位" /></label>
+          {error && <div className="alert error">{error}</div>}
+          <button className="button primary" type="button" onClick={save}><Save size={16} />保存新密码</button>
+        </div>
+      )}
     </section>
   );
 }
 
 function DeployPanel({ config, showToast, setError: setGlobalError }: { config: RuntimeConfig | null; showToast: (msg: string) => void; setError: (msg: string) => void }) {
+  const fold = useFoldState();
   const [mode, setMode] = useState<DeployMode>("single");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -1269,7 +1310,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
   const [categories, setCategories] = useState<MarketCategoryInfo[]>([]);
   const [password, setPassword] = useState("");
   const [content, setContent] = useState("");
-  const [entry, setEntry] = useState("index.html");
+  const [entry, setEntry] = useState("");
   const [files, setFiles] = useState<DeployFile[]>([]);
   const [result, setResult] = useState<any>(null);
   const [deployError, setDeployError] = useState("");
@@ -1312,14 +1353,15 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
         }]);
         return;
       }
-      setEntry(file.name || "index.html");
+      setEntry(normalizeUploadedFilePath(file.name, "upload"));
       setContent(await file.text());
       return;
     }
     const loaded = await Promise.all(Array.from(list).map(async (file) => {
       const text = isTextFile(file.name);
+      const rawPath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
       return {
-        path: ((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name).replace(/\\/g, "/").replace(/^\.\//, ""),
+        path: normalizeUploadedFilePath(rawPath, "asset"),
         content: text ? await file.text() : "",
         contentBase64: text ? undefined : toBase64(await file.arrayBuffer()),
         isText: text,
@@ -1335,7 +1377,6 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
 
   function payload() {
     const valid = files.filter((file) => file.path.trim());
-    const mainEntry = preferredDeployEntryPath(valid, entry);
     const isSingleZip = valid.length === 1 && isZipFile(valid[0].path);
     const effectiveDescription = description.trim() || (append && code.trim() ? `更新 ${code.trim()} 的新版本` : "");
     const body: any = {
@@ -1350,14 +1391,14 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
       accessPassword: !append && password.trim() ? password.trim() : undefined
     };
     if (mode === "single") {
-      body.filename = entry.trim() || "index.html";
+      if (entry.trim()) body.filename = entry.trim();
       body.content = content;
     } else {
       if (isSingleZip) {
         const zipEntryHint = entry.trim();
         if (zipEntryHint && isDeployEntrypointFile(zipEntryHint)) body.filename = zipEntryHint;
-      } else {
-        body.filename = mainEntry || "index.html";
+      } else if (entry.trim()) {
+        body.filename = entry.trim();
       }
       body.files = valid.map((file) => file.contentBase64
         ? { path: file.path.trim(), contentBase64: file.contentBase64 }
@@ -1371,7 +1412,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
     if (append && !code.trim()) return setError("更新现有发布必须填写已有 code");
     const effectiveDescription = description.trim() || (append && code.trim() ? `更新 ${code.trim()} 的新版本` : "");
     if (!effectiveDescription) return setValidationError("请填写一句话描述，说明这个应用是做什么的。", "INVALID_DESCRIPTION");
-    if (mode === "single" && !content.trim()) return setError("请粘贴或上传 HTML 内容");
+    if (mode === "single" && !content.trim()) return setError("请粘贴或上传 HTML / Markdown 内容");
     if (mode === "multi" && !files.length) return setError("请上传多文件项目");
     const isSingleZipUpload = mode === "multi" && files.length === 1 && isZipFile(files[0].path);
     if (mode === "multi" && !files.some((file) => isDeployEntrypointFile(file.path)) && !isSingleZipUpload) {
@@ -1397,7 +1438,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
   }
 
   return (
-    <section className="two-col deploy-layout">
+    <section className="single-col-layout">
       <div className="panel">
         <div className="panel-head"><div><h2>{append ? "更新现有发布" : "发布新应用"}</h2><p>支持 HTML、Markdown、ZIP、多文件目录、公开/未公开、访问密码和追加版本。</p></div></div>
         <div className="segmented">
@@ -1409,6 +1450,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
         <label className="field"><span>自定义 / 更新 code</span><input className="mono" value={code} onChange={(event) => setCode(event.target.value)} placeholder={append ? "填写已有 code，例如 my-landing" : "可选，例如 my-landing"} /></label>
         <label className="check-line"><input checked={append} type="checkbox" onChange={(event) => setAppend(event.target.checked)} />更新现有发布，追加为新版本</label>
         {append && <div className="hint-box">更新必须填写已有 <code>code</code>。它不会创建新链接，只给原站点追加版本；公开方式和访问密码沿用原设置。</div>}
+        <FoldSection id="advanced" label="高级选项 — 可见性、密码、分类与标签" defaultOpen={false} fold={fold}>
         <div className="form-grid">
           <label className="field"><span>可见性</span><select value={visibility} disabled={append} onChange={(event) => setVisibility(event.target.value)}><option value="public">公开进创作市场</option><option value="unlisted">未公开，仅链接访问</option></select></label>
           <label className="field">
@@ -1446,15 +1488,19 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
             />
           </label>
         </div>
+        </FoldSection>
 
         {mode === "single" ? (
           <>
-            <label className="field"><span>入口文件名</span><input value={entry} onChange={(event) => setEntry(event.target.value)} placeholder="index.html 或 README.md" /></label>
             <label className="upload-zone">
               <input type="file" accept=".html,.htm,.md,.markdown,.zip" onChange={(event) => void readFiles(event.target.files)} />
               <FileUp size={18} />上传 HTML / Markdown / ZIP
             </label>
-            <textarea className="code-input" value={content} onChange={(event) => setContent(event.target.value)} placeholder="<!doctype html>..." />
+            <textarea className="code-input" value={content} onChange={(event) => setContent(event.target.value)} placeholder="粘贴 HTML 或 Markdown 源码，服务端会自动识别格式" />
+            <details className="entry-field-toggle">
+              <summary>{entry ? `入口提示：${entry}` : "指定入口文件（高级）"}</summary>
+              <label className="field"><span>入口文件名（可选）</span><input value={entry} onChange={(event) => setEntry(event.target.value)} placeholder="留空自动识别；多入口时填写真实相对路径" /></label>
+            </details>
           </>
         ) : (
           <>
@@ -1462,7 +1508,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
             <input ref={dirInput} className="hidden" type="file" multiple webkitdirectory="" onChange={(event) => void readFiles(event.target.files)} />
             <div className="upload-box" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void readFiles(event.dataTransfer.files); }}>
               <strong>上传多文件静态站点</strong>
-              <span>保留 CSS、JS、图片、字体等相对路径，优先使用 index.html 或 README.md 作为入口；单 ZIP 会交给服务端识别。</span>
+              <span>保留 CSS、JS、图片、字体等相对路径；服务端会自动识别入口，单 ZIP 会先做安全检查。</span>
               <div className="actions">
                 <button className="button" type="button" onClick={() => fileInput.current?.click()}>选择多个文件</button>
                 <button className="button" type="button" onClick={() => dirInput.current?.click()}>选择目录</button>
@@ -1478,38 +1524,31 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
               ))}
               {!files.length && <div className="empty">还没有选择文件。</div>}
             </div>
+            <details className="entry-field-toggle">
+              <summary>{entry ? `入口提示：${entry}` : "指定入口文件（高级）"}</summary>
+              <label className="field"><span>入口文件名（可选）</span><input value={entry} onChange={(event) => setEntry(event.target.value)} placeholder="留空由服务端自动识别；多入口时填写真实相对路径" /></label>
+            </details>
           </>
         )}
         <div className="summary-line"><span>大小 {formatSize(totalSize)}</span><span>上限 {formatSize(config?.limits?.maxSiteTotalBytes)}</span></div>
         <button className="button primary full" type="button" disabled={busy} onClick={submit}><Upload size={16} />{busy ? "部署中..." : "立即部署"}</button>
         {deployError && <DeployErrorPanel message={deployError} error={deployErrorDetail} />}
       </div>
-      <div className="panel">
-        <div className="panel-head"><div><h2>结果与预览</h2><p>部署成功后可复制链接和进入版本管理。</p></div></div>
-        {result ? (
-          <div className="result-box">
-            {(() => {
-              const appURL = sameSiteURL(result.url);
-              return (
-                <>
+      {result && (
+        <Modal title="部署成功" onClose={() => setResult(null)}>
+          <div className="result-modal">
             <InfoRow label="Code" value={result.code} />
-            <InfoRow label="访问地址" value={appURL} copy />
+            <InfoRow label="访问地址" value={sameSiteURL(result.url)} copy />
             <InfoRow label="版本" value={`v${result.versionNumber || "-"}`} />
             <InfoRow label="大小" value={formatSize(result.size)} />
             <div className="actions">
-              <a className="button primary" href={appURL} target="_blank" rel="noreferrer"><Eye size={16} />打开</a>
-              <button className="button" type="button" onClick={() => navigator.clipboard.writeText(appURL)}><Copy size={16} />复制</button>
-              <a className="button" href={`/deploy/${encodeURIComponent(result.id || result.code)}`} target="_blank" rel="noreferrer">详情</a>
+              <a className="button primary" href={sameSiteURL(result.url)} target="_blank" rel="noreferrer"><Eye size={16} />打开</a>
+              <button className="button" type="button" onClick={() => navigator.clipboard.writeText(sameSiteURL(result.url))}><Copy size={16} />复制</button>
             </div>
-            <iframe title="部署预览" src={appURL} sandbox={PREVIEW_IFRAME_SANDBOX} />
-                </>
-              );
-            })()}
+            <p className="muted">部署预览已移至独立页面；可点击上方"打开"查看实际效果。</p>
           </div>
-        ) : (
-          <div className="empty tall">还没有部署结果。</div>
-        )}
-      </div>
+        </Modal>
+      )}
     </section>
   );
 }
@@ -1526,10 +1565,16 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
   const [ownerScope, setOwnerScope] = useState("");
   const [viewMode, setViewMode] = useState<SiteViewMode>("list");
   const [versions, setVersions] = useState<any[] | null>(null);
+  const [passwordTarget, setPasswordTarget] = useState<SiteItem | null>(null);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [deleteSiteTarget, setDeleteSiteTarget] = useState<SiteItem | null>(null);
+  const [deleteVersionTarget, setDeleteVersionTarget] = useState<{ site: SiteItem; version: number } | null>(null);
+  const [visibilityTarget, setVisibilityTarget] = useState<SiteItem | null>(null);
   const [versionCode, setVersionCode] = useState("");
   const [tagEditor, setTagEditor] = useState<{ site: SiteItem; value: string } | null>(null);
   const [detail, setDetail] = useState<SiteDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -1591,16 +1636,24 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
     setKind("");
   }
 
-  async function setPassword(site: SiteItem) {
-    const next = window.prompt(site.accessProtected ? "留空并确认即可清除访问密码。" : "设置访问密码，至少 4 位。");
-    if (next == null) return;
+  async function setPassword(site: SiteItem, password: string) {
     await api(`/api/deploys/${encodeURIComponent(site.code)}/access`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password: next })
+      body: JSON.stringify({ password })
     });
-    showToast(next ? "访问密码已设置" : "访问密码已清除");
+    showToast(password ? "访问密码已设置" : "访问密码已清除");
     await load();
+  }
+
+  async function revealPassword(site: SiteItem) {
+    try {
+      const data = await api<{ password: string }>(`/api/admin/sites/${encodeURIComponent(site.code)}/access/reveal`);
+      await navigator.clipboard.writeText(data.password);
+      showToast(`密码已复制（${site.code}）`);
+    } catch {
+      showToast("查看密码失败");
+    }
   }
 
   async function toggleVisibility(site: SiteItem) {
@@ -1611,6 +1664,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
       body: JSON.stringify({ visibility })
     });
     showToast(visibility === "public" ? "已公开进创作市场" : "已设为未公开");
+    setVisibilityTarget(null);
     await load();
   }
 
@@ -1671,7 +1725,6 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
   }
 
   async function deleteSite(site: SiteItem) {
-    if (!window.confirm(`确认删除 ${site.code} 及其全部版本？`)) return;
     await api(`/api/admin/sites/${encodeURIComponent(site.code)}`, { method: "DELETE" });
     showToast("站点已删除");
     await load();
@@ -1710,7 +1763,6 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
         body: JSON.stringify({ locked: !locked })
       });
     } else if (action === "delete") {
-      if (!window.confirm(`确认删除 v${version}？`)) return;
       await api(`/api/deploys/${encodeURIComponent(versionCode)}/versions/${version}`, { method: "DELETE" });
     }
     await openVersions({ code: versionCode });
@@ -1769,7 +1821,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                     <button type="button" onClick={() => setTagEditor({ site, value: (site.tags || []).join(", ") })}>{site.tags?.length ? "编辑标签" : "添加标签"}</button>
                   </div>
                 </td>
-                <td><div className="badge-stack">{site.isPinned && <span className="badge amber">置顶</span>}{statusBadge(site.status || "active", site.accessProtected)}<span className="badge slate">{site.visibility === "unlisted" ? "未公开" : "公开"}</span></div></td>
+                <td><div className="badge-stack">{site.isPinned && <span className="badge amber">置顶</span>}{statusBadge(site.status || "active", site.accessProtected)}<span className={`badge ${site.visibility === "unlisted" ? "slate" : "green"}`}>{site.visibility === "unlisted" ? "未公开" : "公开"}</span></div></td>
                 <td>v{site.currentVersion || "-"} · {site.versionCount || 0}</td>
                 <td>{site.viewCount || 0} 访 · {site.likeCount || 0} 赞 · {site.favoriteCount || 0} 藏 · {site.reuseCount || 0} 复用</td>
                 <td>{formatSize(site.totalSize)}</td>
@@ -1777,12 +1829,13 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                 <td>
                   <div className="actions tight">
                     <a className="button compact" href={siteURL(site.code)} target="_blank" rel="noreferrer">打开</a>
-                    <button className="button compact" type="button" onClick={() => void setPassword(site)}><Lock size={14} />加密</button>
-                    <button className="button compact" type="button" onClick={() => void toggleVisibility(site)}>{site.visibility === "unlisted" ? "公开" : "未公开"}</button>
+                    <ToggleBadge checked={site.visibility === "public"} checkedLabel="已公开" uncheckedLabel="未公开" onChange={() => setVisibilityTarget(site)} />
+                    <button className="button compact" type="button" onClick={() => { setPasswordTarget(site); setPasswordInput(""); setShowPassword(true); }}><Lock size={14} />{site.accessProtected ? "改密" : "加密"}</button>
+                    {site.accessProtected && <button className="button compact ghost" type="button" onClick={() => void revealPassword(site)} title="查看密码"><Eye size={14} /></button>}
                     <button className="button compact" type="button" onClick={() => void openSiteDetail(site)}>详情</button>
                     <button className="button compact" type="button" onClick={() => void openVersions(site)}>版本</button>
                     {isAdmin && <button className="icon-button" type="button" title="置顶" onClick={() => void togglePin(site)}><Pin size={14} /></button>}
-                    <button className="icon-button danger" type="button" title="删除" onClick={() => void deleteSite(site)}><Trash2 size={14} /></button>
+                    <button className="icon-button danger" type="button" title="删除" onClick={() => setDeleteSiteTarget(site)}><Trash2 size={14} /></button>
                   </div>
                 </td>
               </tr>
@@ -1811,8 +1864,11 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                   <a className="button compact" href={siteURL(site.code)} target="_blank" rel="noreferrer">打开</a>
                   <button className="button compact" type="button" onClick={() => void openSiteDetail(site)}>详情</button>
                   <button className="button compact" type="button" onClick={() => void openVersions(site)}>版本</button>
+                  <button className="button compact" type="button" onClick={() => setVisibilityTarget(site)}>
+                    {site.visibility === "unlisted" ? "设为公开" : "设为未公开"}
+                  </button>
                   {isAdmin && <button className="button compact" type="button" onClick={() => void togglePin(site)}>{site.isPinned ? "取消精选" : "精选"}</button>}
-                  <button className="button compact danger" type="button" onClick={() => void deleteSite(site)}><Trash2 size={14} />删除</button>
+                  <button className="button compact danger" type="button" onClick={() => setDeleteSiteTarget(site)}><Trash2 size={14} />删除</button>
                 </div>
               </div>
             </article>
@@ -1821,13 +1877,13 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
         </div>
       )}
       {(detail || detailLoading) && (
-        <Modal title={`站点详情 ${detail?.site?.code || ""}`} onClose={() => setDetail(null)}>
+        <Drawer title={`站点详情 — ${detail?.site?.code || ""}`} open={true} onClose={() => setDetail(null)}>
           {detailLoading && !detail ? (
             <div className="empty">正在加载站点详情...</div>
           ) : detail ? (
             <SiteDetailModal detail={detail} isAdmin={isAdmin} onSavePolicy={updateReusePolicy} onSaveSecurityMode={updateSecurityMode} />
           ) : null}
-        </Modal>
+        </Drawer>
       )}
       {versions && (
         <Modal title={`版本管理 ${versionCode}`} onClose={() => setVersions(null)}>
@@ -1840,7 +1896,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                   <a className="button compact" href={`/agent/${encodeURIComponent(versionCode)}/versions/${version.versionNumber}/`} target="_blank" rel="noreferrer">预览</a>
                   {!version.isCurrent && <button className="button compact" type="button" onClick={() => void versionAction("current", version.versionNumber)}>设为当前</button>}
                   <button className="button compact" type="button" onClick={() => void versionAction("lock", version.versionNumber, version.isLocked)}>{version.isLocked ? "解锁" : "锁定"}</button>
-                  {!version.isLocked && <button className="button compact danger" type="button" onClick={() => void versionAction("delete", version.versionNumber)}>删除</button>}
+                  {!version.isLocked && <button className="button compact danger" type="button" onClick={() => setDeleteVersionTarget({ site: versions![0], version: version.versionNumber })}>删除</button>}
                 </div>
               </div>
             ))}
@@ -1848,24 +1904,75 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
         </Modal>
       )}
       {tagEditor && (
-        <Modal title={`编辑标签 ${tagEditor.site.code}`} onClose={() => setTagEditor(null)}>
-          <div className="form-stack">
-            <label>
-              <span>标签</span>
-              <input
-                value={tagEditor.value}
-                onChange={(event) => setTagEditor({ ...tagEditor, value: event.target.value })}
-                placeholder="官网, 看板, 活动页"
-              />
-            </label>
-            <p className="muted">最多 6 个标签，用逗号、空格或分号分隔。标签会用于创作市场搜索、后台筛选和作品卡片展示。</p>
-            <div className="actions right">
-              <button className="button" type="button" onClick={() => setTagEditor(null)}>取消</button>
-              <button className="button primary" type="button" onClick={() => void saveTags()}>保存标签</button>
+        <Drawer title={`编辑标签 — ${tagEditor.site.code}`} open={true} onClose={() => setTagEditor(null)}>
+          <div className="field"><span>当前标签</span>
+            <div className="tag-chips">
+              {(tagEditor.value ? tagEditor.value.split(/[,，;\s]+/).filter(Boolean) : []).map((tag) => (
+                <span key={tag} className="tag-chip">#{tag}
+                  <button type="button" onClick={() => {
+                    const tags = tagEditor.value.split(/[,，;\s]+/).filter(Boolean).filter((t) => t !== tag);
+                    setTagEditor({ ...tagEditor, value: tags.join(", ") });
+                  }}>×</button>
+                </span>
+              ))}
+              {!tagEditor.value && <span className="muted" style={{fontSize: "13px"}}>暂无标签</span>}
             </div>
           </div>
-        </Modal>
+          <div className="field"><span>标签（逗号或空格分隔）</span>
+            <input
+              value={tagEditor.value}
+              onChange={(event) => setTagEditor({ ...tagEditor, value: event.target.value })}
+              placeholder="官网, 看板, 活动页"
+            />
+          </div>
+          <p className="muted" style={{fontSize: "12px"}}>最多 6 个标签。标签用于创作市场搜索、后台筛选和作品卡片展示。</p>
+          <div className="actions right" style={{marginTop: "16px"}}>
+            <button className="button" type="button" onClick={() => setTagEditor(null)}>取消</button>
+            <button className="button primary" type="button" onClick={() => void saveTags()}>保存标签</button>
+          </div>
+        </Drawer>
       )}
+      {passwordTarget && (
+        <Drawer title={`访问密码设置 — ${passwordTarget.code}`} open={true} width="440px"
+          onClose={() => { setPasswordTarget(null); setPasswordInput(""); setShowPassword(false); }}>
+          <div className="field"><span>当前状态</span>
+            <span className={`badge ${passwordTarget.accessProtected ? "amber" : "slate"}`}>
+              {passwordTarget.accessProtected ? "🔒 已加密（点击行内 👁 可复制明文）" : "🔓 未设置"}
+            </span>
+          </div>
+          <div className="field"><span>{passwordTarget.accessProtected ? "新密码（留空清除）" : "设置访问密码"}</span>
+            <div className="password-field">
+              <input type={showPassword ? "text" : "password"} value={passwordInput}
+                onChange={(event) => setPasswordInput(event.target.value)}
+                placeholder={passwordTarget.accessProtected ? "留空确认清除" : "至少 4 位"} autoFocus />
+              <button className="password-toggle" type="button" onClick={() => setShowPassword((v) => !v)} title={showPassword ? "隐藏" : "显示"}>
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+            {passwordInput && (() => {
+              const s = getPasswordStrength(passwordInput);
+              return (
+                <div>
+                  <div className="password-strength">
+                    {[1, 2, 3].map((i) => <div key={i} className={`password-strength-bar ${i <= s.level ? s.color : ""}`} />)}
+                  </div>
+                  <div className="password-strength-text">强度：{s.label} {s.level === 1 ? "（建议添加大写字母、数字、符号）" : s.level === 2 ? "（可继续增强）" : "✓"}</div>
+                </div>
+              );
+            })()}
+          </div>
+          <div className="actions right" style={{marginTop: "16px"}}>
+            <button className="button" type="button" onClick={() => { setPasswordTarget(null); setPasswordInput(""); setShowPassword(false); }}>取消</button>
+            {passwordTarget.accessProtected && <button className="button danger" type="button" onClick={() => { void setPassword(passwordTarget, ""); setPasswordTarget(null); setPasswordInput(""); setShowPassword(false); }}>清除密码</button>}
+            <button className="button primary" type="button" onClick={() => { void setPassword(passwordTarget, passwordInput); setPasswordTarget(null); setPasswordInput(""); setShowPassword(false); }}>
+              {passwordTarget.accessProtected ? "更新密码" : "设置密码"}
+            </button>
+          </div>
+        </Drawer>
+      )}
+      {deleteSiteTarget && <ConfirmModal title="删除站点" message={`确认删除 ${deleteSiteTarget.code} 及其全部版本？`} danger confirmText="删除" onConfirm={() => void deleteSite(deleteSiteTarget)} onClose={() => setDeleteSiteTarget(null)} />}
+      {deleteVersionTarget && <ConfirmModal title="删除版本" message={`确认删除 v${deleteVersionTarget.version}？`} danger confirmText="删除" onConfirm={() => { if (versionCode) { void versionAction("delete", deleteVersionTarget.version); } setDeleteVersionTarget(null); }} onClose={() => setDeleteVersionTarget(null)} />}
+      {visibilityTarget && <ConfirmModal title="切换可见性" message={`确认将 ${visibilityTarget.code} ${visibilityTarget.visibility === "unlisted" ? "公开进创作市场" : "设为未公开"}？`} confirmText="确认" onConfirm={() => void toggleVisibility(visibilityTarget)} onClose={() => setVisibilityTarget(null)} />}
     </section>
   );
 }
@@ -1942,7 +2049,7 @@ function SiteDetailModal({
       {isAdmin && (
         <section className="admin-detail-section policy-editor">
           <div className="detail-info-head"><ShieldCheck size={15} /><strong>源码下载与模板复用</strong></div>
-          <p className="muted">默认自动策略：公开且未加密的作品可下载和复用；加密、不公开或下架作品默认禁止。加密作品即使策略为允许，也不会提供源码下载，需先清除访问密码。</p>
+          <p className="muted">默认自动策略：公开且未加密的作品可下载和复用；加密、不公开或下架作品对普通访客默认禁止。站点所有者和管理员可直接下载源码，用于审计、备份或二次修改。</p>
           <div className="policy-editor-grid">
             <label>
               <span>源码下载</span>
@@ -2128,6 +2235,7 @@ function CategoriesPanel({ showToast, setError }: { showToast: (msg: string) => 
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState<{ index: number | null; item: MarketCategoryInfo } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleteIndex, setDeleteIndex] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -2183,7 +2291,6 @@ function CategoriesPanel({ showToast, setError }: { showToast: (msg: string) => 
   }
 
   function removeAt(index: number) {
-    if (!window.confirm("确认删除这个分类？已有应用不会被删除，只会显示为原始分类标识。")) return;
     setCategories((current) => current.filter((_, itemIndex) => itemIndex !== index));
   }
 
@@ -2212,7 +2319,7 @@ function CategoriesPanel({ showToast, setError }: { showToast: (msg: string) => 
               <p>{item.note || "暂无备注"}</p>
               <div className="actions tight">
                 <button className="button compact" type="button" onClick={() => openEditor(item, index)}>编辑</button>
-                <button className="icon-button danger" type="button" title="删除" onClick={() => removeAt(index)}><Trash2 size={14} /></button>
+                <button className="icon-button danger" type="button" title="删除" onClick={() => setDeleteIndex(index)}><Trash2 size={14} /></button>
               </div>
             </div>
           );
@@ -2232,6 +2339,7 @@ function CategoriesPanel({ showToast, setError }: { showToast: (msg: string) => 
           </div>
         </Modal>
       )}
+      {deleteIndex != null && <ConfirmModal title="删除分类" message="确认删除这个分类？已有应用不会被删除，只会显示为原始分类标识。" danger confirmText="删除" onConfirm={() => removeAt(deleteIndex)} onClose={() => setDeleteIndex(null)} />}
     </section>
   );
 }
@@ -2245,6 +2353,7 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
   const [pickScreen, setPickScreen] = useState<ScreenItem | null>(null);
   const [pickTab, setPickTab] = useState<ScreenPickTab>("mine");
   const [screenshotDialog, setScreenshotDialog] = useState<ScreenshotDialog | null>(null);
+  const [unbindTarget, setUnbindTarget] = useState<ScreenItem | null>(null);
   const screenshotSeq = useRef(0);
 
   const load = useCallback(async () => {
@@ -2418,7 +2527,6 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
   }
 
   async function unbind(screen: ScreenItem) {
-    if (!window.confirm(`确认解绑 ${screen.name || screen.id}？`)) return;
     try {
       await api(`/api/screens/${encodeURIComponent(screen.id)}`, { method: "DELETE" });
       showToast("屏幕已解绑");
@@ -2461,7 +2569,7 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
                 <button className="button compact" type="button" onClick={() => void command(screen, "wake")}>唤醒</button>
                 <button className="button compact" type="button" onClick={() => void command(screen, "shutdown")}>软关机</button>
                 <button className="button compact" type="button" onClick={() => void viewScreenshot(screen)}>查看截图</button>
-                <button className="button compact danger" type="button" onClick={() => void unbind(screen)}>解绑</button>
+                <button className="button compact danger" type="button" onClick={() => setUnbindTarget(screen)}>解绑</button>
               </div>
             </article>
           ))}
@@ -2511,6 +2619,8 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
 function TokensPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [tokens, setTokens] = useState<TokenItem[]>([]);
   const [users, setUsers] = useState<UserItem[]>([]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [revokeTarget, setRevokeTarget] = useState<TokenItem | null>(null);
   const [label, setLabel] = useState("");
   const [ttl, setTtl] = useState("");
   const [owner, setOwner] = useState("");
@@ -2551,49 +2661,66 @@ function TokensPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showT
   }
 
   async function revoke(token: TokenItem) {
-    if (!window.confirm(`确认吊销 ${token.label || token.id}？`)) return;
     await api(`/api/tokens/${encodeURIComponent(token.id)}`, { method: "DELETE" });
     showToast("Token 已吊销");
     await load();
   }
 
   return (
-    <section className="two-col">
-      <div className="panel">
-        <div className="panel-head"><div><h2>创建 Token</h2><p>默认永久；选择有效期后为临时 Token。</p></div></div>
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Token 管理</h2>
+          <p>创建、吊销 API Token。吊销后 Agent 需要换 Token。</p>
+        </div>
+        <div className="actions tight">
+          <button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button>
+          <button className="button primary" type="button" onClick={() => { setCreated(""); setDrawerOpen(true); }}><KeyRound size={16} />创建 Token</button>
+        </div>
+      </div>
+      <div className="table-wrap compact">
+        <table>
+          <thead><tr><th>标签</th><th>归属</th><th>权限</th><th>有效期</th><th>操作</th></tr></thead>
+          <tbody>
+            {tokens.map((token) => (
+              <tr key={token.id}>
+                <td>{token.label || token.id}<br /><small>{token.id}</small></td>
+                <td>{token.ownerUsername || token.ownerUserId || "-"}</td>
+                <td>{token.isAdmin ? <span className="badge amber">管理员</span> : <span className="badge slate">用户</span>} {token.isRevoked && <span className="badge rose">已吊销</span>}</td>
+                <td>{token.expiresAt ? formatDate(token.expiresAt) : "永久"}</td>
+                <td><button className="button compact danger" type="button" disabled={token.isRevoked} onClick={() => setRevokeTarget(token)}>吊销</button></td>
+              </tr>
+            ))}
+            {!tokens.length && <tr><td colSpan={5}>暂无 Token。</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <Drawer title="创建 Token" open={drawerOpen} onClose={() => { setDrawerOpen(false); setCreated(""); }}>
         <label className="field"><span>标签</span><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="ci-bot / screen-agent" /></label>
         {isAdmin && <label className="field"><span>归属用户</span><select value={owner} onChange={(event) => setOwner(event.target.value)}>{users.map((user) => <option value={user.id} key={user.id}>{user.username}{user.isAdmin ? " · admin" : ""}</option>)}</select></label>}
         <label className="field"><span>有效期</span><select value={ttl} onChange={(event) => setTtl(event.target.value)}><option value="">永久</option><option value="1800">30 分钟</option><option value="86400">1 天</option><option value="604800">7 天</option><option value="2592000">30 天</option></select></label>
-        {isAdmin && <label className="check-line"><input type="checkbox" checked={adminToken} onChange={(event) => setAdminToken(event.target.checked)} />管理员 Token</label>}
+        {isAdmin && (
+          <label className="check-line admin-highlight">
+            <input type="checkbox" checked={adminToken} onChange={(event) => setAdminToken(event.target.checked)} title="管理员 Token 拥有全站管理权限" />
+            <span>管理员 Token</span>
+            <em>拥有用户管理、站点删除、运行设置等全站权限。普通 Token 只能管理自己的站点。</em>
+          </label>
+        )}
         <button className="button primary" type="button" onClick={() => void create()}><KeyRound size={16} />创建 Token</button>
         {created && <div className="token-created"><strong>Token 明文</strong><code>{created}</code><button className="button compact" type="button" onClick={() => navigator.clipboard.writeText(created)}><Copy size={14} />复制</button></div>}
-      </div>
-      <div className="panel">
-        <div className="panel-head"><div><h2>Token 列表</h2><p>吊销后 Agent 需要换 Token。</p></div><button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button></div>
-        <div className="table-wrap compact">
-          <table>
-            <thead><tr><th>标签</th><th>归属</th><th>权限</th><th>有效期</th><th>操作</th></tr></thead>
-            <tbody>
-              {tokens.map((token) => (
-                <tr key={token.id}>
-                  <td>{token.label || token.id}<br /><small>{token.id}</small></td>
-                  <td>{token.ownerUsername || token.ownerUserId || "-"}</td>
-                  <td>{token.isAdmin ? <span className="badge amber">管理员</span> : <span className="badge slate">用户</span>} {token.isRevoked && <span className="badge rose">已吊销</span>}</td>
-                  <td>{token.expiresAt ? formatDate(token.expiresAt) : "永久"}</td>
-                  <td><button className="button compact danger" type="button" disabled={token.isRevoked} onClick={() => void revoke(token)}>吊销</button></td>
-                </tr>
-              ))}
-              {!tokens.length && <tr><td colSpan={5}>暂无 Token。</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      </Drawer>
+
+      {revokeTarget && <ConfirmModal title="吊销 Token" message={`确认吊销 ${revokeTarget.label || revokeTarget.id}？吊销后不可恢复。`} danger confirmText="吊销" onConfirm={() => void revoke(revokeTarget)} onClose={() => setRevokeTarget(null)} />}
     </section>
   );
 }
 
 function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [users, setUsers] = useState<UserItem[]>([]);
+  const origUsersRef = useRef<UserItem[]>([]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<UserItem | null>(null);
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [emailVerified, setEmailVerified] = useState(false);
@@ -2605,6 +2732,7 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
     try {
       const data = await api<{ users?: UserItem[] }>("/api/admin/users");
       setUsers(data.users || []);
+      origUsersRef.current = data.users || [];
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -2626,12 +2754,10 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
         isAdmin
       })
     });
-    setUsername("");
-    setEmail("");
-    setEmailVerified(false);
-    setPassword("");
-    setIsAdmin(false);
+    setUsername(""); setEmail(""); setEmailVerified(false);
+    setPassword(""); setIsAdmin(false);
     showToast("用户已创建");
+    setDrawerOpen(false);
     await load();
   }
 
@@ -2653,21 +2779,84 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
   }
 
   async function remove(user: UserItem) {
-    if (!window.confirm(`确认删除用户 ${user.username}？`)) return;
     await api(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: "DELETE" });
     showToast("用户已删除");
     await load();
   }
 
   return (
-    <section className="two-col">
-      <div className="panel">
-        <div className="panel-head">
-          <div>
-            <h2>添加用户</h2>
-            <p>创建普通用户或管理员账号；邮箱用于注册验证、通知和后续账号找回。</p>
-          </div>
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>用户管理</h2>
+          <p>维护邮箱、验证状态、部署额度、角色和启用状态。</p>
         </div>
+        <div className="actions tight">
+          <button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button>
+          <button className="button primary" type="button" onClick={() => setDrawerOpen(true)}><UserPlus size={16} />添加用户</button>
+        </div>
+      </div>
+      <div className="table-wrap users-table">
+        <table>
+          <thead><tr><th style={{width:"160px"}}>用户</th><th>邮箱</th><th style={{width:"90px"}}>额度</th><th style={{width:"80px"}}>角色</th><th style={{width:"80px"}}>状态</th><th style={{width:"80px"}}>操作</th></tr></thead>
+          <tbody>
+            {users.map((user, index) => {
+              const orig = origUsersRef.current.find((u) => u.id === user.id);
+              const dirty = orig && (orig.username !== user.username || orig.email !== user.email || orig.emailVerified !== user.emailVerified || orig.deployLimit !== user.deployLimit || orig.isAdmin !== user.isAdmin || orig.isActive !== user.isActive);
+              return (
+                <tr key={user.id} className={dirty ? "row-dirty" : ""}>
+                  <td>
+                    <div className="user-cell-name">
+                      <input className="user-input" value={user.username} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, username: event.target.value } : item))} />
+                      <small>{user.id}</small>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="user-cell-email">
+                      <input className="user-input" type="email" value={user.email || ""} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, email: event.target.value, emailVerified: event.target.value ? item.emailVerified : false } : item))} placeholder="user@example.com" />
+                      <div className="verify-row">
+                        <label className="user-verify-checkbox" title={user.email ? "邮箱验证后可用于账号找回" : "先填写邮箱"}>
+                          <input type="checkbox" checked={Boolean(user.email && user.emailVerified)} disabled={!user.email} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, emailVerified: event.target.checked } : item))} />
+                          <span className={user.emailVerified ? "verified" : "unverified"}>
+                            {user.emailVerified ? "已验证" : "未验证"}
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="user-cell-limit">
+                      <input className="user-input-sm" type="number" value={user.deployLimit} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, deployLimit: Number(event.target.value) } : item))} />
+                      <small>已用 {user.deployCount}</small>
+                    </div>
+                  </td>
+                  <td>
+                    <label className={`pill-switch ${user.isAdmin ? "admin" : "user"}`} title={user.isAdmin ? "管理员：拥有全站权限" : "普通用户"}>
+                      <input type="checkbox" checked={user.isAdmin} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, isAdmin: event.target.checked } : item))} />
+                      <span>{user.isAdmin ? "管理员" : "用户"}</span>
+                    </label>
+                  </td>
+                  <td>
+                    <label className={`pill-switch ${user.isActive ? "active" : "inactive"}`} title={user.isActive ? "可正常登录" : "已停用"}>
+                      <input type="checkbox" checked={user.isActive} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, isActive: event.target.checked } : item))} />
+                      <span>{user.isActive ? "启用" : "停用"}</span>
+                    </label>
+                  </td>
+                  <td>
+                    <div className="actions tight">
+                      <button className={`button compact ${dirty ? "primary" : ""}`} type="button" onClick={() => void update(user)}>保存</button>
+                      <button className="button compact danger" type="button" onClick={() => setDeleteTarget(user)}>删除</button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {!users.length && <tr><td colSpan={6}>暂无用户。</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <Drawer title="添加用户" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
         <label className="field"><span>用户名</span><input value={username} onChange={(event) => setUsername(event.target.value)} /></label>
         <label className="field"><span>邮箱</span><input type="email" value={email} onChange={(event) => {
           setEmail(event.target.value);
@@ -2678,37 +2867,9 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
         <label className="field"><span>部署额度</span><input type="number" value={limit} onChange={(event) => setLimit(Number(event.target.value))} /></label>
         <label className="check-line"><input type="checkbox" checked={isAdmin} onChange={(event) => setIsAdmin(event.target.checked)} />管理员</label>
         <button className="button primary" type="button" onClick={() => void create()}><UserPlus size={16} />创建用户</button>
-      </div>
-      <div className="panel">
-        <div className="panel-head">
-          <div>
-            <h2>用户列表</h2>
-            <p>维护邮箱、验证状态、部署额度、角色和启用状态。</p>
-          </div>
-          <button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button>
-        </div>
-        <div className="table-wrap compact">
-          <table>
-            <thead><tr><th>用户</th><th>邮箱</th><th>额度</th><th>角色</th><th>状态</th><th>操作</th></tr></thead>
-            <tbody>
-              {users.map((user, index) => (
-                <tr key={user.id}>
-                  <td><input value={user.username} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, username: event.target.value } : item))} /><br /><small>{user.id}</small></td>
-                  <td>
-                    <input type="email" value={user.email || ""} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, email: event.target.value, emailVerified: event.target.value ? item.emailVerified : false } : item))} />
-                    <label className="check-line compact"><input type="checkbox" checked={Boolean(user.email && user.emailVerified)} disabled={!user.email} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, emailVerified: event.target.checked } : item))} />{user.emailVerified ? "已验证" : "未验证"}</label>
-                  </td>
-                  <td><input type="number" value={user.deployLimit} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, deployLimit: Number(event.target.value) } : item))} /><small>已用 {user.deployCount}</small></td>
-                  <td><label className="check-line compact"><input type="checkbox" checked={user.isAdmin} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, isAdmin: event.target.checked } : item))} />管理员</label></td>
-                  <td><label className="check-line compact"><input type="checkbox" checked={user.isActive} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, isActive: event.target.checked } : item))} />启用</label></td>
-                  <td><div className="actions tight"><button className="button compact" type="button" onClick={() => void update(user)}>保存</button><button className="button compact danger" type="button" onClick={() => void remove(user)}>删除</button></div></td>
-                </tr>
-              ))}
-              {!users.length && <tr><td colSpan={6}>暂无用户。</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      </Drawer>
+
+      {deleteTarget && <ConfirmModal title="删除用户" message={`确认删除用户 ${deleteTarget.username}？此操作不可恢复。`} danger confirmText="删除" onConfirm={() => void remove(deleteTarget)} onClose={() => setDeleteTarget(null)} />}
     </section>
   );
 }
@@ -2839,6 +3000,7 @@ function AuditPanel({ setError }: { setError: (msg: string) => void }) {
     until: ""
   });
   const [loading, setLoading] = useState(false);
+  const [detailLog, setDetailLog] = useState<AuditLogItem | null>(null);
 
   useEffect(() => {
     async function loadFilterOptions() {
@@ -2940,13 +3102,28 @@ function AuditPanel({ setError }: { setError: (msg: string) => void }) {
                 </td>
                 <td>{log.siteCode && <code>{log.siteCode}</code>}<br /><small>{log.targetType || "-"} · {log.targetId || "-"}</small></td>
                 <td>{log.ip || "-"}<br /><small>{log.userAgent || "-"}</small></td>
-                <td><pre className="audit-detail">{formatAuditDetail(log.detail)}</pre></td>
+                <td><button className="button compact" type="button" onClick={() => setDetailLog(log)}>查看</button></td>
               </tr>
             ))}
             {!logs.length && <tr><td colSpan={7}>暂无审计记录。</td></tr>}
           </tbody>
         </table>
       </div>
+
+      {detailLog && (
+        <Drawer title={`审计详情 — ${auditActionLabel(detailLog.action)}`} open={true} onClose={() => setDetailLog(null)}>
+          <div className="audit-detail-drawer">
+            <div className="field"><span>操作</span><strong>{auditActionLabel(detailLog.action)}</strong><code>{detailLog.action}</code></div>
+            <div className="field"><span>结果</span><span className={`badge ${detailLog.result === "success" ? "green" : "amber"}`}>{auditResultLabel(detailLog.result)}</span></div>
+            <div className="field"><span>操作者</span><span className={`badge ${detailLog.actorRole === "admin" ? "green" : detailLog.actorRole === "anonymous" ? "amber" : "slate"}`}>{actorRoleLabel(detailLog.actorRole)}</span> {detailLog.actorType} · {detailLog.actorId}</div>
+            <div className="field"><span>目标</span>{detailLog.targetType} · {detailLog.targetId}{detailLog.siteCode && <code>{detailLog.siteCode}</code>}</div>
+            <div className="field"><span>IP</span>{detailLog.ip || "-"}</div>
+            <div className="field"><span>UA</span><small>{detailLog.userAgent || "-"}</small></div>
+            <div className="field"><span>时间</span>{formatDate(detailLog.createdAt)}</div>
+            <div className="field full"><span>详情</span><pre>{formatAuditDetail(detailLog.detail)}</pre></div>
+          </div>
+        </Drawer>
+      )}
     </section>
   );
 }
@@ -2979,6 +3156,7 @@ function formatAuditDetail(detail: unknown) {
 }
 
 function ConfigPanel({ config, onConfig, showToast, setError }: { config: RuntimeConfig | null; onConfig: (cfg: RuntimeConfig) => void; showToast: (msg: string) => void; setError: (msg: string) => void }) {
+  const fold = useFoldState();
   const [draft, setDraft] = useState({
     appURLMode: "path",
     appDomainSuffix: "",
@@ -3052,21 +3230,16 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
   const embedModeText = draft.embedPolicy === "deny" ? "禁止任何网站 iframe 嵌入应用" : draft.embedPolicy === "self" ? "只允许本站嵌入应用" : draft.embedPolicy === "allowlist" ? "本站和白名单来源可嵌入应用" : "允许任意网站 iframe 嵌入应用";
 
   return (
-    <section className="panel config-panel">
-      <div className="panel-head">
-        <div>
-          <h2>运行设置</h2>
-          <p>主站链接会自动跟随当前访问域名；这里主要管理应用泛域名、上传限制、跨域和嵌入策略。</p>
+    <section className="single-col-layout">
+      <div className="panel config-panel">
+        <div className="panel-head">
+          <div>
+            <h2>运行设置</h2>
+            <p>主站链接会自动跟随当前访问域名；这里主要管理应用泛域名、上传限制、跨域和嵌入策略。</p>
+          </div>
         </div>
-      </div>
-
-      <div className="config-layout">
         <div className="config-main">
-          <section className="config-section">
-            <div className="config-section-head">
-              <strong>主站访问入口</strong>
-              <span>自动跟随当前浏览器域名</span>
-            </div>
+          <FoldSection id="mainSite" label="主站访问入口 — 自动跟随当前浏览器域名" fold={fold}>
             <div className="readonly-callout">
               <div>
                 <span>当前主站</span>
@@ -3074,13 +3247,9 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
               </div>
               <em>首页、后台、/agents/、/screens/、二维码、Skill/MCP 文案和路径模式 /agent/{"{code}"} 都使用当前打开 PagePilot 的域名或 IP，不需要在后台配置入口地址。</em>
             </div>
-          </section>
+          </FoldSection>
 
-          <section className="config-section">
-            <div className="config-section-head">
-              <strong>应用链接规则</strong>
-              <span>决定发布后的应用 URL 怎么生成</span>
-            </div>
+          <FoldSection id="appURL" label="应用链接规则 — 决定发布后的应用 URL 怎么生成" fold={fold}>
             <div className="form-grid">
               <label className="field rich-field">
                 <span>访问模式</span>
@@ -3112,13 +3281,9 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
                 <em>只在泛域名链接需要显式端口时填写。标准 443 通常可以留空；你的 1143 场景可填 1143。</em>
               </label>
             </div>
-          </section>
+          </FoldSection>
 
-          <section className="config-section">
-            <div className="config-section-head">
-              <strong>发布限额</strong>
-              <span>控制匿名发布、上传大小和滥用防护</span>
-            </div>
+          <FoldSection id="limits" label="发布限额 — 控制匿名发布、上传大小和滥用防护" fold={fold}>
             <div className="form-grid three">
               <label className="field rich-field">
                 <span>匿名额度</span>
@@ -3148,13 +3313,9 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
                 <em>限制一次发布的所有文件总大小。</em>
               </label>
             </div>
-          </section>
+          </FoldSection>
 
-          <section className="config-section">
-            <div className="config-section-head">
-              <strong>跨域与嵌入</strong>
-              <span>CORS 管 API，iframe 管应用嵌入</span>
-            </div>
+          <FoldSection id="cors" label="跨域与嵌入 — CORS 管 API，iframe 管应用嵌入" fold={fold}>
             <div className="embed-policy-inline">
               <label className="field rich-field">
                 <span>iframe 嵌入</span>
@@ -3187,10 +3348,10 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
               />
               <em>只在外部网站需要用 fetch/XHR 调 PagePilot API 时填写；iframe 嵌入应用 URL 请使用上面的嵌入策略。</em>
             </label>
-          </section>
+          </FoldSection>
         </div>
 
-        <aside className="config-preview">
+        <div className="config-preview">
           <div className="preview-card">
             <span>当前链接策略</span>
             <strong>{modeText}</strong>
@@ -3212,15 +3373,6 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
             </div>
           </div>
           <div className="preview-card muted">
-            <span>会被影响</span>
-            <ul>
-              <li>主站按钮、复制链接、二维码和 Skill/MCP 文案使用当前访问域名</li>
-              <li>路径模式应用地址固定为当前主站下的 /agent/{"{code}"}</li>
-              <li>只有启用泛域名应用访问时，才需要填写应用域名后缀</li>
-              <li>CORS 和 iframe 嵌入策略分别控制 API 跨域和应用被外站嵌入</li>
-            </ul>
-          </div>
-          <div className="preview-card muted">
             <span>部署能力状态</span>
             <div className="preview-row">
               <small>注册邮箱验证</small>
@@ -3232,14 +3384,18 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
             </div>
             <p className="muted-line">邮箱验证和 OSS 属于启动级配置，请通过环境变量或 Docker Compose 管理，不在后台热更新。</p>
           </div>
+        </div>
+
+        <div className="sticky-save-bar">
           <button className="button primary full" type="button" onClick={() => void save()}><Save size={16} />保存运行设置</button>
-        </aside>
+        </div>
       </div>
     </section>
   );
 }
 
 function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig | null; showToast: (msg: string) => void; setError: (msg: string) => void }) {
+  const fold = useFoldState();
   const [tab, setTab] = useState<SkillTab>("skill");
   const [meta, setMeta] = useState<any>(null);
   const [zipFile, setZipFile] = useState<File | null>(null);
@@ -3320,6 +3476,7 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
               <button className="button compact" type="button" onClick={() => navigator.clipboard.writeText(prompt)}><Copy size={14} />复制</button>
             </div>
           </aside>
+          <FoldSection id="guide" label="使用说明 — Skill 包维护指引" defaultOpen={false} fold={fold}>
           <div className="skill-package-guide">
             <h3>只维护下载包</h3>
             <p>后台不再直接编辑 Skill 源文件。需要调整 Skill 时，在本地修改并打包成 <code>pagep.zip</code> 后上传，服务器会把它作为固定下载包提供给 Agent。</p>
@@ -3330,6 +3487,7 @@ function SkillMCPPanel({ config, showToast, setError }: { config: RuntimeConfig 
               <li>发布后的应用 URL 以后端接口返回为准，Skill/MCP 不自行拼接。</li>
             </ul>
           </div>
+          </FoldSection>
         </div>
       ) : (
         <div className="doc-grid">
@@ -3395,7 +3553,7 @@ function ApiDocsPanel({ config }: { config: RuntimeConfig | null }) {
         </section>
         <section id="deploy" className="panel">
           <div className="panel-head"><div><h2>发布应用</h2><p>HTML、Markdown、ZIP 和多文件站点走同一发布模型。</p></div></div>
-          <DocBlock title="发布格式" lines={["content + filename: 单 HTML 或 Markdown。", "files[]: 多文件目录，文本用 content，二进制用 contentBase64。", "单 ZIP 文件: path 以 .zip 结尾，contentBase64 上传，服务端自动解压并识别入口。"]} />
+          <DocBlock title="发布格式" lines={["content: 单 HTML 或 Markdown，filename 可省略并由服务端识别。", "files[]: 多文件目录，文本用 content，二进制用 contentBase64。", "单 ZIP 文件: path 以 .zip 结尾，contentBase64 上传，服务端自动解压并识别入口。"]} />
           <DocBlock title="当前限制" lines={[`Base URL: ${base}`, `单文件上限: ${formatSize(config?.limits?.maxSingleFileBytes)}`, `整站上限: ${formatSize(config?.limits?.maxSiteTotalBytes)}`, `文件数上限: ${config?.limits?.maxFilesPerSite ?? "-"}`]} />
         </section>
         <section id="market" className="panel">
@@ -3481,6 +3639,57 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
   );
 }
 
+function ConfirmModal({ title, message, confirmText = "确认", danger, onConfirm, onClose }: { title: string; message: string; confirmText?: string; danger?: boolean; onConfirm: () => void; onClose: () => void }) {
+  return (
+    <div className="modal" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="modal-card confirm-card">
+        <div className="modal-head"><strong>{title}</strong><button className="button ghost" type="button" onClick={onClose}>关闭</button></div>
+        <div className="confirm-body"><p>{message}</p>
+          <div className="confirm-actions">
+            <button className="button ghost" type="button" onClick={onClose}>取消</button>
+            <button className={`button ${danger ? "danger" : "primary"}`} type="button" onClick={() => { onConfirm(); onClose(); }}>{confirmText}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Drawer({ title, open, onClose, children, width }: { title: string; open: boolean; onClose: () => void; children: React.ReactNode; width?: string }) {
+  if (!open) return null;
+  return (
+    <div className="drawer-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="drawer" style={width ? { width } : undefined} onMouseDown={(event) => { event.stopPropagation(); }}>
+        <div className="drawer-head">
+          <strong>{title}</strong>
+          <button className="button ghost" type="button" onClick={onClose}></button>
+        </div>
+        <div className="drawer-body">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function useFoldState() {
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const toggle = useCallback((key: string) => setOpen((prev) => ({ ...prev, [key]: !prev[key] })), []);
+  const isOpen = useCallback((key: string, fallback = true) => (key in open) ? open[key] : fallback, [open]);
+  return { open, toggle, isOpen, setOpen };
+}
+
+function FoldSection({ id, label, defaultOpen = true, fold, children }: { id: string; label: string; defaultOpen?: boolean; fold: ReturnType<typeof useFoldState>; children: React.ReactNode }) {
+  const expanded = fold.isOpen(id, defaultOpen);
+  return (
+    <div className={`fold-section${expanded ? "" : " collapsed"}`}>
+      <button className="fold-head" type="button" onClick={() => fold.toggle(id)}>
+        <span className="fold-chevron">{expanded ? "▾" : "▸"}</span>
+        <span>{label}</span>
+      </button>
+      {expanded && <div className="fold-body">{children}</div>}
+    </div>
+  );
+}
+
 function DocBlock({ title, lines }: { title: string; lines: string[] }) {
   return <div className="doc-block"><h3>{title}</h3><pre>{lines.join("\n")}</pre></div>;
 }
@@ -3489,4 +3698,36 @@ function Logo() {
   return (
     <img className="logo" src="/brand/pagepilot-logo.png" alt="" aria-hidden="true" />
   );
+}
+
+// ━ ToggleBadge：状态标签 + 开关按钮 ━━
+function ToggleBadge({ checked, checkedLabel, uncheckedLabel, onChange }: {
+  checked: boolean;
+  checkedLabel: string;
+  uncheckedLabel: string;
+  onChange: () => void;
+}) {
+  return (
+    <span className="toggle-badge" onClick={onChange} role="button" tabIndex={0}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChange(); } }}>
+      <span className={`toggle-badge-label ${checked ? "checked" : "unchecked"}`}>
+        {checked ? checkedLabel : uncheckedLabel}
+      </span>
+      <span className={`toggle-switch ${checked ? "checked" : ""}`} />
+    </span>
+  );
+}
+
+// ━━ PasswordStrength：密码强度指示 ━
+function getPasswordStrength(password: string): { level: number; label: string; color: string } {
+  if (!password) return { level: 0, label: "", color: "" };
+  let score = 0;
+  if (password.length >= 6) score++;
+  if (password.length >= 10) score++;
+  if (/[A-Z]/.test(password)) score++;
+  if (/[0-9]/.test(password)) score++;
+  if (/[^A-Za-z0-9]/.test(password)) score++;
+  if (score <= 2) return { level: 1, label: "弱", color: "weak" };
+  if (score <= 3) return { level: 2, label: "中", color: "medium" };
+  return { level: 3, label: "强", color: "strong" };
 }

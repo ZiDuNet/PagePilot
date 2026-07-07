@@ -276,7 +276,7 @@ func TestMarketplaceProtectedDetailBlocksExplicitReusePolicyAllow(t *testing.T) 
 	}
 }
 
-func TestReusePolicyBlocksEncryptedSiteEvenForManager(t *testing.T) {
+func TestReusePolicyAllowsEncryptedSiteForManager(t *testing.T) {
 	allowDownload, allowReuse, note := reusePolicy(detailReusePolicy{
 		CanManage:            true,
 		AccessProtected:      true,
@@ -286,11 +286,11 @@ func TestReusePolicyBlocksEncryptedSiteEvenForManager(t *testing.T) {
 		SourceDownloadPolicy: "allow",
 	})
 
-	if allowDownload || allowReuse {
-		t.Fatalf("allowDownload=%v allowReuse=%v; encrypted site must block source delivery", allowDownload, allowReuse)
+	if !allowDownload || !allowReuse {
+		t.Fatalf("allowDownload=%v allowReuse=%v; encrypted manager access must allow source delivery", allowDownload, allowReuse)
 	}
-	if !strings.Contains(note, "加密作品不提供源码下载") {
-		t.Fatalf("note = %q; want encrypted source delivery restriction", note)
+	if note == "" {
+		t.Fatal("note is empty; want manager source delivery explanation")
 	}
 }
 
@@ -389,9 +389,8 @@ func TestAdminSiteDetailIncludesVersionsBundleAndFiles(t *testing.T) {
 	if len(out.Files) != 2 {
 		t.Fatalf("files = %+v; want detail files", out.Files)
 	}
-	if out.Reuse.AllowReuse || out.Reuse.AllowDownload || out.Reuse.MCP["template_source_code"] != nil ||
-		!strings.Contains(out.Reuse.PolicyNote, "加密作品不提供源码下载") {
-		t.Fatalf("reuse = %+v; encrypted admin detail must block source delivery", out.Reuse)
+	if !out.Reuse.AllowReuse || !out.Reuse.AllowDownload || out.Reuse.MCP["template_source_code"] != "demo" || out.Reuse.PolicyNote == "" {
+		t.Fatalf("reuse = %+v; encrypted admin detail must allow source delivery", out.Reuse)
 	}
 }
 

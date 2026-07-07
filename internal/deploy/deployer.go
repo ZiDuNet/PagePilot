@@ -324,6 +324,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		CooldownSeconds:        d.cfg.CooldownSeconds,
 		NextAvailableAt:        time.Now().UTC().Add(retryAfter),
 		VersionCount:           len(allVersions),
+		Created:                isNewSite,
 		Size:                   totalSize,
 		CreatedAt:              now.Format(time.RFC3339),
 	}, nil
@@ -354,14 +355,7 @@ func (d *Deployer) resolveContentWithBundle(req api.DeployRequest, filenameHint 
 
 	// 单文件模式：包成单个 file
 	if hasContent {
-		mainEntry := filenameHint
-		if mainEntry == "" {
-			mainEntry = defaultMainEntry
-		}
-		if !isPageEntrypoint(mainEntry) {
-			return resolvedContent{}, api.NewError(api.CodeInvalidInput, "validate",
-				fmt.Sprintf("filename %q must end with .html, .htm, .md, or .markdown", mainEntry))
-		}
+		mainEntry := inferSingleContentMainEntry(filenameHint, req.Content)
 		if int64(len(req.Content)) > d.cfg.MaxSingleFileBytes {
 			return resolvedContent{}, api.NewError(api.CodeContentTooLarge, "validate",
 				fmt.Sprintf("content exceeds max single-file size (%d bytes)", d.cfg.MaxSingleFileBytes))
@@ -522,15 +516,7 @@ func validateEntrypoint(files []resolvedFile, mainEntry string) *api.APIError {
 			return api.NewError(api.CodeInvalidInput, "validate",
 				"main HTML entry is too short to be a page").WithHint("Upload a real HTML file with tags such as <html>, <body>, <main>, <script>, or <style>.")
 		}
-		hasPageTag := strings.Contains(html, "<html") ||
-			strings.Contains(html, "<body") ||
-			strings.Contains(html, "<main") ||
-			strings.Contains(html, "<section") ||
-			strings.Contains(html, "<div") ||
-			strings.Contains(html, "<script") ||
-			strings.Contains(html, "<style")
-		hasAngleStructure := strings.Contains(html, "<") && strings.Contains(html, ">")
-		if !hasPageTag || !hasAngleStructure {
+		if !looksLikeHTMLContent(html) {
 			return api.NewError(api.CodeInvalidInput, "validate",
 				"main entry does not look like an HTML page").WithHint("Plain text is not deployable here. Provide a valid HTML document or generated static site.")
 		}
@@ -538,6 +524,114 @@ func validateEntrypoint(files []resolvedFile, mainEntry string) *api.APIError {
 	}
 	return api.NewError(api.CodeInvalidInput, "validate",
 		fmt.Sprintf("main entry %q was not found in uploaded files", mainEntry))
+}
+
+func inferSingleContentMainEntry(filenameHint, content string) string {
+	kind := inferSingleContentKind(content)
+	mainEntry := strings.TrimSpace(filenameHint)
+	if mainEntry == "" {
+		if kind == "markdown" {
+			return "README.md"
+		}
+		return defaultMainEntry
+	}
+	if kind == "markdown" {
+		if isMarkdownPath(mainEntry) {
+			return mainEntry
+		}
+		return replacePageExtension(mainEntry, ".md")
+	}
+	if isHTMLPath(mainEntry) {
+		return mainEntry
+	}
+	return replacePageExtension(mainEntry, ".html")
+}
+
+func inferSingleContentKind(content string) string {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(content, "\ufeff"))
+	if looksLikeFullHTML(trimmed) {
+		return "html"
+	}
+	if markdownSignalScore(trimmed) >= 2 {
+		return "markdown"
+	}
+	if looksLikeHTMLContent(trimmed) {
+		return "html"
+	}
+	return "markdown"
+}
+
+func replacePageExtension(name, ext string) string {
+	trimmed := strings.TrimSpace(name)
+	lower := strings.ToLower(trimmed)
+	for _, old := range []string{".markdown", ".html", ".htm", ".md"} {
+		if strings.HasSuffix(lower, old) {
+			return trimmed[:len(trimmed)-len(old)] + ext
+		}
+	}
+	return trimmed + ext
+}
+
+func looksLikeFullHTML(content string) bool {
+	lower := strings.ToLower(strings.TrimSpace(content))
+	return strings.HasPrefix(lower, "<!doctype html") ||
+		strings.HasPrefix(lower, "<html") ||
+		strings.Contains(lower, "<html") ||
+		strings.Contains(lower, "<body") ||
+		strings.Contains(lower, "<head")
+}
+
+func looksLikeHTMLContent(content string) bool {
+	lower := strings.ToLower(strings.TrimSpace(content))
+	if !strings.Contains(lower, "<") || !strings.Contains(lower, ">") {
+		return false
+	}
+	htmlTags := []string{
+		"<main", "<section", "<article", "<nav", "<header", "<footer",
+		"<div", "<p", "<h1", "<h2", "<h3", "<ul", "<ol", "<table",
+		"<form", "<button", "<canvas", "<svg", "<script", "<style",
+	}
+	for _, tag := range htmlTags {
+		if strings.Contains(lower, tag) {
+			return true
+		}
+	}
+	return false
+}
+
+func markdownSignalScore(content string) int {
+	score := 0
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "# "):
+			score += 2
+		case strings.HasPrefix(trimmed, "## "):
+			score += 2
+		case strings.HasPrefix(trimmed, "### "):
+			score += 2
+		case strings.HasPrefix(trimmed, "```"):
+			score += 2
+		case strings.HasPrefix(trimmed, "- [ ] ") || strings.HasPrefix(trimmed, "- [x] "):
+			score += 2
+		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* "):
+			score++
+		case strings.HasPrefix(trimmed, "> "):
+			score++
+		case strings.Contains(trimmed, "]("):
+			score++
+		case strings.HasPrefix(trimmed, "|") && strings.HasSuffix(trimmed, "|"):
+			score++
+		}
+		if score >= 2 {
+			return score
+		}
+	}
+	return score
 }
 
 func isHTMLPath(path string) bool {
@@ -1405,14 +1499,31 @@ func (d *Deployer) SetSiteTags(ctx context.Context, code string, tags []string) 
 
 func (d *Deployer) SetSiteAccessPassword(ctx context.Context, code, password string) error {
 	hash := ""
+	cipher := ""
 	if strings.TrimSpace(password) != "" {
 		var err error
 		hash, err = auth.HashPassword(password)
 		if err != nil {
 			return err
 		}
+		cipher, err = auth.EncryptPassword(password)
+		if err != nil {
+			return err
+		}
 	}
-	return d.store.SetSiteAccessPasswordHash(ctx, code, hash)
+	return d.store.SetSiteAccessPasswordWithCipher(ctx, code, hash, cipher)
+}
+
+// RevealSiteAccessPassword 解密并返回站点的访问密码明文（仅管理员可用）。
+func (d *Deployer) RevealSiteAccessPassword(ctx context.Context, code string) (string, error) {
+	cipher, err := d.store.GetSiteAccessPasswordCipher(ctx, code)
+	if err != nil {
+		return "", err
+	}
+	if cipher == "" {
+		return "", errors.New("站点未设置访问密码")
+	}
+	return auth.DecryptPassword(cipher)
 }
 
 // 让 errors import 不被自动移除（部分错误路径用到 errors.Is）

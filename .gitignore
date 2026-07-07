@@ -11,3 +11,9 @@ __pycache__/
 node_modules/
 .gradle/
 build/
+
+# 临时文件
+.playwright-mcp/
+apps/screen-app/app/.kotlin/
+.claude/
+.codex
