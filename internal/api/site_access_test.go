@@ -196,9 +196,52 @@ func TestSourceContentRejectsPasswordOnlyAccess(t *testing.T) {
 	}
 }
 
-func TestSourceContentDownloadRecordsAuditLog(t *testing.T) {
+func TestSourceContentDownloadRequiresLogin(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
+	deployer := &siteAccessDeployerStub{
+		anonymous: store.AnonymousSession{ID: "claimed-anon", ClaimedByUserID: "user-1"},
+		site: store.Site{
+			Code:                 "demo",
+			Status:               "active",
+			Visibility:           "public",
+			ReusePolicy:          "auto",
+			SourceDownloadPolicy: "auto",
+		},
+	}
+	srv.deployer = deployer
+
+	req := httptest.NewRequest(http.MethodGet, "/api/deploy/content?code=demo&download=1", nil)
+	req.AddCookie(&http.Cookie{Name: "hostctl_anon_session", Value: "claimed-anon"})
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusUnauthorized)
+	}
+	if deployer.streamed {
+		t.Fatal("source download stream was reached for anonymous access")
+	}
+	if strings.Contains(rr.Body.String(), "anonymous_session") || strings.Contains(rr.Body.String(), "claimed") {
+		t.Fatalf("body leaked anonymous-session internals: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "login or bearer token required") {
+		t.Fatalf("body = %s; want login guidance", rr.Body.String())
+	}
+}
+
+func TestSourceContentDownloadRecordsAuditLog(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	user, err := authSvc.CreateUser(t.Context(), "reader", "password123", false, 20)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	token, err := authSvc.Generate(t.Context(), "reader-token", false, user.ID, nil)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
 	deployer := &siteAccessDeployerStub{
 		site: store.Site{
 			Code:                 "demo",
@@ -211,6 +254,7 @@ func TestSourceContentDownloadRecordsAuditLog(t *testing.T) {
 	srv.deployer = deployer
 
 	req := httptest.NewRequest(http.MethodGet, "/api/deploy/content?code=demo&version=3&download=1", nil)
+	req.Header.Set("Authorization", "Bearer "+token.Plaintext)
 	rr := httptest.NewRecorder()
 
 	srv.mux.ServeHTTP(rr, req)
@@ -449,6 +493,7 @@ func TestSetSiteAccessPasswordFailureRecordsAuditLog(t *testing.T) {
 type siteAccessDeployerStub struct {
 	DeployerPort
 	site      store.Site
+	anonymous store.AnonymousSession
 	streamed  bool
 	auditLogs []store.AuditLog
 }
@@ -465,6 +510,13 @@ func (s *siteAccessDeployerStub) StreamDownload(_ context.Context, _ string, _ *
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("SOURCE"))
 	return nil
+}
+
+func (s *siteAccessDeployerStub) GetAnonymousSession(_ context.Context, id string) (store.AnonymousSession, error) {
+	if s.anonymous.ID != id {
+		return store.AnonymousSession{}, store.ErrNotFound
+	}
+	return s.anonymous, nil
 }
 
 func (s *siteAccessDeployerStub) RecordAuditLog(_ context.Context, log store.AuditLog) error {

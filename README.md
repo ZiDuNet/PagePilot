@@ -142,7 +142,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 创作市场保留点赞排行；管理员置顶会优先于所有排序，置顶分组内部仍按当前选择的排序（如 `likes_desc`）排列。
 - 账号注册、登录、登出和修改密码会分别以 `auth.register`、`auth.login`、`auth.logout`、`account.password` 写入审计日志，成功 / 失败都会记录操作者、目标用户和错误阶段等非敏感信息，不记录密码明文。
 - 访问密码输入入口保持公开，匿名访客也可以输入密码查看加密站点；验证通过后浏览器获得 5 分钟签名访问票据。票据同时绑定站点密码哈希和版本号，站点改密码或切换当前版本后旧票据立即失效；显式历史版本 URL 会按该版本单独签发票据。访问密码验证成功 / 失败会以 `site.access_login` 写入安全审计日志，记录站点、版本、结果和失败原因，不记录密码明文。
-- 访问密码只授权浏览页面，不等于源码下载或模板复用权限。公开且未加密的作品默认可下载源码和复用；加密、不公开、下架作品默认禁止下载源码和复用。加密作品即使策略设置为 `allow`，也不会提供源码下载；如需公开源码，应先清除访问密码，再由管理员调整策略。详情接口会返回 `reuse.allowDownload`、`reuse.allowReuse`、`reuse.policyNote`、CLI 命令、Agent 提示词和 MCP 参数。
+- 访问密码只授权浏览页面，不等于源码下载或模板复用权限。源码下载和模板复用需要登录用户或已绑定注册用户的 Token；公开且未加密的作品在登录后默认可下载源码和复用，加密、不公开、下架或策略受限作品默认禁止下载源码和复用。加密作品即使策略设置为 `allow`，也不会提供源码下载；如需公开源码，应先清除访问密码，再由管理员调整策略。详情接口会返回 `reuse.allowDownload`、`reuse.allowReuse`、`reuse.policyNote`、CLI 命令、Agent 提示词和 MCP 参数。
 - 屏幕投放只允许注册用户 Token 或登录用户会话调用；匿名 session 不能绑定屏幕或投屏。
 - 屏幕 APP 不持有用户 Token，只持有可吊销的 Device Token；Device Token 只能拉取自己的 manifest、建立自己的 WebSocket 控制通道、上报心跳和按指令回传截图。
 - 屏幕配对码是 5 分钟一次性短码，只用于首次绑定，不是长期权限。
@@ -332,9 +332,9 @@ python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py skill/hostct
 python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
 ```
 
-`node scripts/runtime-qa.mjs` 会自动编译并启动一个临时 PagePilot 服务，使用临时 SQLite 和 hosted 目录，不会写入当前 `data/`。它覆盖注册成功 / 失败、管理员登录、账号改密、登出、Token 创建和吊销、匿名发布显式认领与归属迁移、已认领匿名 session 拒绝继续发布、Markdown 发布和渲染、真实 ZIP 站点发布、ZIP Bundle 详情、ZIP 相对资源访问、ZIP 多入口 / 缺少入口 / 路径穿越的稳定错误码、市场详情、后台站点详情、公开未加密站点源码下载及 `source_download` 成功审计、加密站点对发布者 Token / 管理员 Cookie / 匿名访问密码 Cookie 的源码下载禁用及 `source_download` 失败审计、加密访问、访问密码票据绑定版本和切换当前版本后的失效、模板复用来源记录、屏幕绑定 / 投放 / 截图 / 指令 / 解绑、认证 / 账号 / 匿名认领 / 访问密码 / 站点管理 / 版本锁定 / 下架 / 切换当前 / 覆盖 / 删除 / Token 管理 / 运行设置 / 市场分类 / Skill 包上传 / 用户管理 / 屏幕操作审计日志、审计分页与用户 / 站点 / 动作 / 角色 / 时间 / 详情关键字过滤、传统 CSP report 与 Reporting API 审计、CORS 边界、OpenAPI 和 Skill ZIP 下载。
+`node scripts/runtime-qa.mjs` 会自动编译并启动一个临时 PagePilot 服务，使用临时 SQLite 和 hosted 目录，不会写入当前 `data/`。它覆盖注册成功 / 失败、管理员登录、账号改密、登出、Token 创建和吊销、匿名发布显式认领与归属迁移、已认领匿名 session 拒绝继续发布、Markdown 发布和渲染、真实 ZIP 站点发布、ZIP Bundle 详情、ZIP 相对资源访问、ZIP 多入口 / 缺少入口 / 路径穿越的稳定错误码、市场详情、后台站点详情、登录用户公开未加密站点源码下载及 `source_download` 成功审计、匿名源码下载登录提示、加密站点对发布者 Token / 管理员 Cookie / 匿名访问密码 Cookie 的源码下载禁用及 `source_download` 失败审计、加密访问、访问密码票据绑定版本和切换当前版本后的失效、模板复用来源记录、屏幕绑定 / 投放 / 截图 / 指令 / 解绑、认证 / 账号 / 匿名认领 / 访问密码 / 站点管理 / 版本锁定 / 下架 / 切换当前 / 覆盖 / 删除 / Token 管理 / 运行设置 / 市场分类 / Skill 包上传 / 用户管理 / 屏幕操作审计日志、审计分页与用户 / 站点 / 动作 / 角色 / 时间 / 详情关键字过滤、传统 CSP report 与 Reporting API 审计、CORS 边界、OpenAPI 和 Skill ZIP 下载。
 
-`node scripts/visual-qa.mjs` 会启动临时服务并用真实浏览器检查首页、创作市场、市场详情、手动部署、Skill/MCP、屏幕介绍、HTML/Markdown 运行页、加密访问页、后台主要 tab、审计日志筛选和翻页的桌面与移动端横向溢出、空白页和浏览器错误。它会额外发布一个多文件站点、一个加密站点和超过一页的市场批量样本，检查创作市场加载更多、市场详情、后台站点详情、Bundle 信息、完整文件树、复用参数、模板复用弹窗，以及加密作品的源码下载 / 模板复用受限提示。该脚本需要本机可用的 Playwright；如果项目未安装，可先运行 `npm install --no-save playwright` 和 `npx playwright install chromium`，脚本也会尝试回退到系统 Edge/Chrome。
+`node scripts/visual-qa.mjs` 会启动临时服务并用真实浏览器检查首页、创作市场、市场详情、手动部署、Skill/MCP、屏幕介绍、HTML/Markdown 运行页、加密访问页、后台主要 tab、审计日志筛选和翻页的桌面与移动端横向溢出、空白页和浏览器错误。它会额外发布一个多文件站点、一个加密站点和超过一页的市场批量样本，检查创作市场加载更多、市场详情 Bundle 信息、折叠文件树、模板复用弹窗、后台站点详情完整文件树和复用参数，以及加密作品的源码下载 / 模板复用受限提示。该脚本需要本机可用的 Playwright；如果项目未安装，可先运行 `npm install --no-save playwright` 和 `npx playwright install chromium`，脚本也会尝试回退到系统 Edge/Chrome。
 
 `node scripts/legacy-upgrade-qa.mjs` 会构造一份旧 SQLite 数据库和旧 hosted 目录，包含公开站点、加密站点、旧管理员、Token、匿名 session、屏幕绑定、审计日志和托管文件；随后启动当前服务触发迁移，并通过后台 API、创作市场搜索、`/agent/{code}/`、访问密码和源码下载权限检查确认升级后仍可用。它不依赖 Docker，不能替代服务器上的真实 `docker compose up -d --build` 升级演练。
 

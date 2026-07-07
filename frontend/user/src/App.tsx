@@ -36,7 +36,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { APIError, api } from "./api";
+import { APIError, api, authHeaders } from "./api";
 import type {
   DeployFilePayload,
   DeployResponse,
@@ -432,6 +432,64 @@ function sameSiteURL(url?: string): string {
 
 function skillDownloadPath(): string {
   return "/skill/pagep.zip";
+}
+
+function toast(message: string) {
+  window.dispatchEvent(new CustomEvent("pagepilot-toast", { detail: message }));
+}
+
+function contentDispositionFilename(header: string | null, fallback: string): string {
+  if (!header) return fallback;
+  const utf8 = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8?.[1]) {
+    try {
+      return decodeURIComponent(utf8[1].replace(/"/g, ""));
+    } catch {
+      return utf8[1].replace(/"/g, "");
+    }
+  }
+  const plain = header.match(/filename="?([^";]+)"?/i);
+  return plain?.[1] || fallback;
+}
+
+function friendlyDownloadMessage(err: unknown): string {
+  if (err instanceof APIError) {
+    const detail = structuredAPIError(err);
+    if (err.status === 401) return "请先登录后下载源码；Skill、CLI 或 MCP 请使用已绑定注册用户的 Token。";
+    if (detail?.stage === "source_download" || err.status === 403) {
+      return detail?.hint || detail?.detail || "当前作品暂不允许下载源码。";
+    }
+    return detail?.detail || err.message || "下载失败，请稍后重试。";
+  }
+  return err instanceof Error ? err.message : "下载失败，请稍后重试。";
+}
+
+async function downloadSourceFile(url: string, fallbackName: string) {
+  const response = await fetch(url, {
+    credentials: "same-origin",
+    cache: "no-store",
+    headers: authHeaders()
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let body: unknown = text;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = text;
+    }
+    const data = body as { detail?: string; errorCode?: string };
+    throw new APIError(data?.detail || data?.errorCode || `HTTP ${response.status}`, response.status, body);
+  }
+  const blob = await response.blob();
+  const objectURL = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectURL;
+  link.download = contentDispositionFilename(response.headers.get("Content-Disposition"), fallbackName);
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectURL), 2500);
 }
 
 function buildMarketPreviewSnapshot(html: string, baseURL: string): string {
@@ -1450,19 +1508,19 @@ function MarketDetailViewFull({
 }) {
   const appURL = sameSiteURL(`/agent/${encodeURIComponent(item.code)}/`);
   const isLocked = Boolean(item.accessProtected);
-  const canDownload = Boolean(item.reuse?.allowDownload && item.reuse?.downloadUrl);
-  const canReuse = item.reuse?.allowReuse !== false;
-  const downloadUrl = item.reuse?.downloadUrl || `/api/deploy/content?code=${encodeURIComponent(item.code)}&download=1`;
+  const loginRequiredForReuse = !isLocked && item.visibility === "public" && !!item.reuse?.policyNote?.includes("登录");
+  const canOpenTemplate = item.reuse ? item.reuse.allowReuse !== false || loginRequiredForReuse : !isLocked && item.visibility === "public";
   const canManage = Boolean(item.canManage || item.owned || session?.isAdmin);
+  const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [versions, setVersions] = useState<VersionItem[]>([]);
   const [viewport, setViewport] = useState<PreviewViewport>("desktop");
   const [busyVersion, setBusyVersion] = useState<number | null>(null);
   const [showAllVersions, setShowAllVersions] = useState(false);
+  const [showFileTree, setShowFileTree] = useState(false);
   const displayTags = (item.tags || []).slice(0, 6);
   const detailFiles = item.files || [];
   const treeItems = item.bundle?.tree || [];
   const displayTree = treeItems.length ? treeItems : detailFiles;
-  const mcpText = item.reuse?.mcp ? JSON.stringify(item.reuse.mcp, null, 2) : "";
 
   const loadVersions = useCallback(async () => {
     const data = await api<VersionsResponse>(`/api/deploys/${encodeURIComponent(item.code)}/versions`);
@@ -1519,6 +1577,16 @@ function MarketDetailViewFull({
   const currentVersion = versions.find((version) => version.isCurrent) || versions[0];
   const visibleVersions = showAllVersions ? versions : versions.slice(0, 2);
   const updateURL = `/deploy?code=${encodeURIComponent(item.code)}&version=1`;
+  const focusPreviewFrame = useCallback(() => {
+    const frame = previewFrameRef.current;
+    if (!frame) return;
+    frame.focus();
+    try {
+      frame.contentWindow?.focus();
+    } catch {
+      // 跨 sandbox 预览可能拒绝 contentWindow 访问，聚焦 iframe 元素本身即可。
+    }
+  }, []);
 
   return (
     <section className="market-detail-layout">
@@ -1546,7 +1614,15 @@ function MarketDetailViewFull({
                 <span>打开应用并输入访问密码后才能查看内容。</span>
               </div>
             ) : (
-              <iframe src={`${appURL}?preview=1`} title={`${item.title || item.code} 预览`} sandbox={PREVIEW_IFRAME_SANDBOX} />
+              <iframe
+                ref={previewFrameRef}
+                src={`${appURL}?preview=1`}
+                title={`${item.title || item.code} 预览`}
+                sandbox={PREVIEW_IFRAME_SANDBOX}
+                tabIndex={0}
+                onLoad={focusPreviewFrame}
+                onMouseDown={focusPreviewFrame}
+              />
             )}
           </div>
         </div>
@@ -1598,39 +1674,26 @@ function MarketDetailViewFull({
         )}
         {!!displayTree.length && (
           <div className="detail-info-block">
-            <div className="detail-info-head"><FileText size={15} /><strong>完整文件树</strong></div>
-            <FileTreeExplorer
-              files={displayTree}
-              totalSize={item.bundle?.totalSize || item.fileSize}
-              onCopy={copyText}
-            />
-          </div>
-        )}
-        {item.reuse && (
-          <div className="detail-info-block">
-            <div className="detail-info-head"><Workflow size={15} /><strong>复用参数</strong></div>
-            {item.templateSourceCode && (
-              <p>这个作品基于 {item.templateSourceCode} v{item.templateSourceVersion || "-"} 二次创作。</p>
-            )}
-            {item.reuse.policyNote && <p>{item.reuse.policyNote}</p>}
-            <div className="detail-copy-stack">
-              {item.reuse.agentPrompt && <button className="button compact full" type="button" onClick={() => void copyText(item.reuse?.agentPrompt || "")}><Copy size={13} />复制 Agent 提示词</button>}
-              {item.reuse.cli && <button className="button compact full" type="button" onClick={() => void copyText(item.reuse?.cli || "")}><Code2 size={13} />复制 CLI 命令</button>}
-              {mcpText && <button className="button compact full" type="button" onClick={() => void copyText(mcpText)}><PackageOpen size={13} />复制 MCP 参数</button>}
-              {!item.reuse.allowReuse && <span className="muted-line">当前作品不开放模板复用。</span>}
+            <div className="detail-info-head split">
+              <span><FileText size={15} /><strong>完整文件树</strong></span>
+              <button className="button compact subtle" type="button" onClick={() => setShowFileTree((value) => !value)}>
+                {showFileTree ? "收起文件树" : "查看文件树"}
+              </button>
             </div>
+            {showFileTree && (
+              <FileTreeExplorer
+                files={displayTree}
+                totalSize={item.bundle?.totalSize || item.fileSize}
+                onCopy={copyText}
+              />
+            )}
           </div>
         )}
         <div className="market-detail-actions">
-          <button className="button primary full" type="button" disabled={!canReuse} onClick={() => onUse(item)}><Workflow size={16} />{canReuse ? "使用此模板" : "模板复用受限"}</button>
+          <button className="button primary full" type="button" disabled={!canOpenTemplate} onClick={() => onUse(item)}><Workflow size={16} />{canOpenTemplate ? "使用此模板" : "模板复用受限"}</button>
           <a className="button full" href={appURL} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开应用</a>
           <button className="button full" type="button" onClick={() => void copyText(appURL)}><Copy size={16} />复制链接</button>
           {canManage && <a className="button full" href={updateURL}><Upload size={16} />更新版本</a>}
-          {canDownload ? (
-            <a className="button full" href={downloadUrl}><Download size={16} />下载源文件</a>
-          ) : (
-            <button className="button full" type="button" disabled><Download size={16} />源码下载受限</button>
-          )}
         </div>
         <div className="detail-qr-block">
           <img src={`/api/deploys/${encodeURIComponent(item.code)}/qr`} alt={`${item.code} 二维码`} />
@@ -1729,10 +1792,11 @@ function categoryIcon(slug?: string) {
 
 function MarketUseDrawer({ item, onClose }: { item: MarketplaceDeploy; onClose: () => void }) {
   const [reuseMode, setReuseMode] = useState<"new" | "update">("new");
+  const [downloadBusy, setDownloadBusy] = useState(false);
   const fallbackReusable = item.visibility === "public" && !item.accessProtected;
   const canReuse = item.reuse ? item.reuse.allowReuse !== false : fallbackReusable;
   const canUpdateCurrent = Boolean(item.owned || item.canManage);
-  const canDownload = item.reuse ? Boolean(item.reuse.allowDownload && item.reuse.downloadUrl) : fallbackReusable;
+  const canDownloadNow = item.reuse ? Boolean(item.reuse.allowDownload && item.reuse.downloadUrl) : fallbackReusable;
   const policyNote = item.reuse?.policyNote || (canReuse ? "公开且未加密的作品可以下载源码并作为模板复用。" : "当前作品未开放源码下载和模板复用。");
   const downloadURL = item.reuse?.downloadUrl || `/api/deploy/content?code=${encodeURIComponent(item.code)}&download=1`;
   const title = item.title || item.code;
@@ -1744,9 +1808,13 @@ function MarketUseDrawer({ item, onClose }: { item: MarketplaceDeploy; onClose: 
     kind: item.bundle?.kindLabel || marketFileType(item),
     entry: item.bundle?.mainEntry || item.filename || "自动识别",
     root: item.bundle?.root || "根目录",
-    downloadType: canDownload
+    downloadType: canDownloadNow
       ? (sourceFiles.length > 1 || item.bundle?.kind === "zip_site" || item.bundle?.kind === "static_site" ? "ZIP 源码包" : "单文件源码")
-      : "下载受限",
+      : item.accessProtected
+        ? "加密受限"
+        : policyNote.includes("登录")
+          ? "登录后可下载"
+          : "策略受限",
     fileCount: item.bundle?.fileCount || sourceFiles.length || 1,
     totalSize: formatSize(item.bundle?.totalSize || item.fileSize || 0)
   };
@@ -1794,6 +1862,17 @@ function MarketUseDrawer({ item, onClose }: { item: MarketplaceDeploy; onClose: 
     : canUpdateCurrent
       ? `更新已有会自动使用当前作品 code=${updateTargetCode}，系统会追加新版本。`
       : `当前作品 code=${updateTargetCode} 不属于你，不能直接追加版本；请使用新建二创。`;
+  const handleSourceDownload = async () => {
+    setDownloadBusy(true);
+    try {
+      await downloadSourceFile(downloadURL, `${item.code}-source.zip`);
+      toast("源码下载已开始。");
+    } catch (err) {
+      toast(friendlyDownloadMessage(err));
+    } finally {
+      setDownloadBusy(false);
+    }
+  };
 
   return createPortal(
     <div className="market-use-modal" role="dialog" aria-modal="true" aria-label="作品复用">
@@ -1852,11 +1931,9 @@ function MarketUseDrawer({ item, onClose }: { item: MarketplaceDeploy; onClose: 
           </div>
           <div className="use-grid">
             <UseCard icon={<Download />} title="1. 下载源文件" text="多文件站点会下载 ZIP，单文件页面会下载源码。">
-              {canDownload ? (
-                <a className="button primary full" href={downloadURL}>下载源文件</a>
-              ) : (
-                <button className="button full" type="button" disabled>源码下载受限</button>
-              )}
+              <button className="button primary full" type="button" disabled={downloadBusy} onClick={() => void handleSourceDownload()}>
+                {downloadBusy ? "下载中..." : "下载源文件"}
+              </button>
             </UseCard>
             <UseCard icon={<Code2 />} title="2. CLI 命令行" text={reuseMode === "new" ? "复制命令到终端，下载后作为新作品发布。" : "复制命令到终端，下载后追加到已有发布。"}>
               <button className="button full" type="button" disabled={!canCopyReuse} onClick={() => navigator.clipboard.writeText(cli)}><Copy size={14} />复制 CLI</button>

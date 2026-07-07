@@ -152,6 +152,20 @@ code, .mono, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, 
 }
 .button.compact { min-height: 34px; padding: 0 10px; font-size: 12px; }
 .button.full { width: 100%; min-height: 46px; }
+.button.subtle {
+  min-height: 30px;
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(248, 250, 252, 0.86);
+  color: #475569;
+  box-shadow: none;
+}
+.button:disabled,
+.button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+  transform: none;
+  box-shadow: none;
+}
 .nav-button.ghost { background: rgba(255, 255, 255, 0.58); }
 
 .home-page {
@@ -2263,6 +2277,16 @@ h1, h2, h3, p { margin-top: 0; }
   color: #0f172a;
   font-size: 13px;
   font-weight: 900;
+}
+.detail-info-head.split {
+  justify-content: space-between;
+  gap: 10px;
+}
+.detail-info-head.split > span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
 }
 .detail-info-grid {
   display: grid;

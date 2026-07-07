@@ -539,14 +539,12 @@ async function verifyMarketBundleDetailUI(context, baseURL, sites) {
     "入口",
     "index.html",
     "完整文件树",
-    "assets/app.css",
-    "scripts/app.js",
-    "复用参数",
-    "复制 CLI 命令",
-    "复制 MCP 参数",
   ]) {
     await page.getByText(text, { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
   }
+  await page.getByRole("button", { name: "查看文件树" }).click();
+  await page.getByText("assets/app.css", { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
+  await page.getByText("scripts/app.js", { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
   await page.getByRole("button", { name: /使用此模板/ }).click();
   await page.locator(".market-use-modal").waitFor({ state: "visible", timeout: 10000 });
   for (const text of ["新建二创", "更新已有", "源文件结构", "ZIP 源码包", "Agent / MCP", "MCP 参数"]) {
@@ -567,15 +565,11 @@ async function verifyProtectedMarketReuseUI(context, baseURL, sites) {
     "视觉 QA 加密应用",
     "网页已加密",
     "访问密码",
-    "加密作品不提供源码下载和模板复用",
-    "当前作品不开放模板复用",
     "模板复用受限",
-    "源码下载受限",
   ]) {
     await page.getByText(text, { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
   }
   await assertDisabledButton(page, "模板复用受限");
-  await assertDisabledButton(page, "源码下载受限");
   await page.close();
 }
 

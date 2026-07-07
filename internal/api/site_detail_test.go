@@ -13,8 +13,16 @@ import (
 )
 
 func TestMarketplaceDetailIncludesBundleFilesAndReuse(t *testing.T) {
-	srv, _, cleanup := newDevAuthTestServer(t)
+	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
+	user, err := authSvc.CreateUser(t.Context(), "reader", "password123", false, 20)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	token, err := authSvc.Generate(t.Context(), "reader-token", false, user.ID, nil)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
 	currentVersion := int64(3)
 	srv.deployer = &siteDetailDeployerStub{
 		market: store.MarketplaceDeploy{
@@ -46,6 +54,7 @@ func TestMarketplaceDetailIncludesBundleFilesAndReuse(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/deploys/demo", nil)
+	req.Header.Set("Authorization", "Bearer "+token.Plaintext)
 	rr := httptest.NewRecorder()
 	srv.mux.ServeHTTP(rr, req)
 
@@ -86,6 +95,56 @@ func TestMarketplaceDetailIncludesBundleFilesAndReuse(t *testing.T) {
 		out.Reuse.MCP["template_source_code"] != "demo" ||
 		out.Reuse.MCP["template_source_version"] == nil {
 		t.Fatalf("reuse = %+v; want cli, prompt, and mcp params", out.Reuse)
+	}
+}
+
+func TestMarketplaceDetailRequiresLoginForSourceReuse(t *testing.T) {
+	srv, _, cleanup := newDevAuthTestServer(t)
+	defer cleanup()
+	currentVersion := int64(1)
+	srv.deployer = &siteDetailDeployerStub{
+		market: store.MarketplaceDeploy{
+			ID:                   "public-demo",
+			Code:                 "demo",
+			CurrentVersion:       &currentVersion,
+			Title:                "公开作品",
+			Filename:             "index.html",
+			FileSize:             1024,
+			VersionCount:         1,
+			Status:               "active",
+			Visibility:           "public",
+			ReusePolicy:          "auto",
+			SourceDownloadPolicy: "auto",
+			CreatedAt:            time.Now().UTC(),
+			UpdatedAt:            time.Now().UTC(),
+		},
+		content: bundleTestContent("demo", currentVersion),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/deploys/demo", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+	}
+	var out struct {
+		Reuse struct {
+			AllowReuse    bool   `json:"allowReuse"`
+			AllowDownload bool   `json:"allowDownload"`
+			DownloadURL   string `json:"downloadUrl"`
+			CLI           string `json:"cli"`
+			PolicyNote    string `json:"policyNote"`
+		} `json:"reuse"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.Reuse.AllowReuse || out.Reuse.AllowDownload || out.Reuse.DownloadURL != "" || out.Reuse.CLI != "" {
+		t.Fatalf("reuse = %+v; anonymous viewer must not get source download/reuse enabled", out.Reuse)
+	}
+	if !strings.Contains(out.Reuse.PolicyNote, "需要先登录") {
+		t.Fatalf("policyNote = %q; want login restriction explanation", out.Reuse.PolicyNote)
 	}
 }
 

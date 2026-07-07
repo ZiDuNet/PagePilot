@@ -1442,6 +1442,7 @@ func (s *Server) toMarketplaceResponse(r *http.Request, d store.MarketplaceDeplo
 
 type detailReusePolicy struct {
 	CanManage            bool
+	Authenticated        bool
 	AccessProtected      bool
 	Visibility           string
 	Status               string
@@ -1451,8 +1452,10 @@ type detailReusePolicy struct {
 }
 
 func (s *Server) enrichMarketplaceDetail(r *http.Request, resp *marketplaceDeployResponse, title string, versionPtr *int64) {
+	actor, isAdmin := s.marketplaceActor(r)
 	policy := detailReusePolicy{
 		CanManage:            resp.CanManage,
+		Authenticated:        isAdmin || authenticatedUserActor(actor),
 		AccessProtected:      resp.AccessProtected,
 		Visibility:           resp.Visibility,
 		Status:               resp.Status,
@@ -1739,6 +1742,9 @@ func reusePolicy(policy detailReusePolicy) (allowDownload, allowReuse bool, note
 	if policy.CanManage {
 		return true, true, "你是站点所有者或管理员，可以下载源码并复用为新发布。"
 	}
+	if !policy.Authenticated {
+		return false, false, "源码下载和模板复用需要先登录；已登录用户或用户 Token 可按站点策略下载。"
+	}
 	sourcePolicy := normalizeReusePolicy(policy.SourceDownloadPolicy)
 	reusePolicyValue := normalizeReusePolicy(policy.ReusePolicy)
 	sourceAllowed := sourcePolicy == "allow" || (sourcePolicy == "auto" && policy.Visibility == "public" && !policy.AccessProtected)
@@ -1762,6 +1768,11 @@ func reusePolicy(policy detailReusePolicy) (allowDownload, allowReuse bool, note
 		return false, false, "不公开站点只允许通过链接浏览，源码下载和模板复用仅限所有者或管理员。"
 	}
 	return false, false, "站点策略未开放源码下载和模板复用。"
+}
+
+func authenticatedUserActor(actor string) bool {
+	userID := strings.TrimPrefix(strings.TrimSpace(actor), "user:")
+	return strings.HasPrefix(strings.TrimSpace(actor), "user:") && userID != ""
 }
 
 func normalizeReusePolicy(policy string) string {
@@ -3004,7 +3015,7 @@ func (s *Server) authorizeSourceContentRead(r *http.Request, code string) *APIEr
 			"encrypted sites do not allow source download").
 			WithHint("Remove the access password before downloading or reusing the source.")
 	}
-	actor, isAdmin, authErr := s.optionalActor(r)
+	actor, isAdmin, authErr := s.sourceDownloadActor(r)
 	if authErr != nil {
 		return authErr
 	}
@@ -3012,6 +3023,7 @@ func (s *Server) authorizeSourceContentRead(r *http.Request, code string) *APIEr
 		return nil
 	}
 	allowDownload, _, _ := reusePolicy(detailReusePolicy{
+		Authenticated:        true,
 		AccessProtected:      strings.TrimSpace(site.AccessPasswordHash) != "",
 		Visibility:           site.Visibility,
 		Status:               site.Status,
@@ -3023,8 +3035,34 @@ func (s *Server) authorizeSourceContentRead(r *http.Request, code string) *APIEr
 		return nil
 	}
 	return NewError(CodeForbidden, "source_download",
-		"source download requires the site owner, an admin, or a public unencrypted site").
-		WithHint("Access passwords allow viewing the page; they do not grant source download permission.")
+		"source download is disabled by site policy").
+		WithHint("源码下载需要登录，并且站点策略必须允许源码下载；访问密码只允许浏览页面，不授予源码下载权限。")
+}
+
+func (s *Server) sourceDownloadActor(r *http.Request) (string, bool, *APIError) {
+	if user, ok := s.adminUserFromCookie(r); ok {
+		if !user.IsActive {
+			return "", false, NewError(CodeForbidden, "auth", "user is inactive")
+		}
+		return "user:" + user.ID, user.IsAdmin, nil
+	}
+	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+		return "", false, NewError(CodeUnauthorized, "auth", "login or bearer token required").
+			WithHint("源码下载需要先登录；Skill、CLI 或 MCP 请使用已绑定注册用户的 Token。")
+	}
+	tok, authErr := s.authenticateToken(r)
+	if authErr != nil {
+		return "", false, authErr
+	}
+	if strings.TrimSpace(tok.OwnerUserID) == "" {
+		return "", false, NewError(CodeUnauthorized, "auth", "user-bound token required").
+			WithHint("源码下载需要用户归属的 Token。")
+	}
+	user, err := s.auth.GetUser(r.Context(), tok.OwnerUserID)
+	if err != nil || !user.IsActive {
+		return "", false, NewError(CodeForbidden, "user", "token owner is inactive or missing")
+	}
+	return "user:" + strings.TrimSpace(tok.OwnerUserID), tok.IsAdmin || user.IsAdmin, nil
 }
 
 func auditActorFromToken(tok store.Token) (actorType, actorID, actorRole string) {
