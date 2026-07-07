@@ -2,7 +2,7 @@
 # Frontend stages build React assets, Go stage embeds them into static binaries.
 
 ARG NODE_IMAGE=node:22-alpine
-ARG GO_IMAGE=golang:1.22-alpine
+ARG GO_IMAGE=golang:1.25-alpine
 ARG ALPINE_IMAGE=alpine:3.20
 
 # ===== Frontend =====
