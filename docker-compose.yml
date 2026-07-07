@@ -1,21 +1,21 @@
-# PagePilot single-container deployment example.
+# PagePilot 单容器部署示例。
 #
-# Usage:
-#   1. Run: docker compose up -d --build
-#   2. Open: http://<host>:8787/admin
-#   3. Sign in with the first-run admin below, then change the password immediately.
-# Full deployment guide: deploy/DOCKER.md
+# 使用方式：
+#   1. 启动服务：docker compose up -d --build
+#   2. 打开后台：http://<服务器地址>:8787/admin
+#   3. 使用下方初始管理员登录，并立刻修改密码。
+# 完整部署说明：deploy/DOCKER.md
 #
-# Persistent bind mounts:
-#   ./data/docker/hostctl  -> /var/lib/hostctl      SQLite database, app metadata, and managed Skill ZIP
-#   ./data/docker/sql      -> /var/lib/hostctl/sql  SQL files for maintenance/backups/migrations
-#   ./data/docker/hosted   -> /var/www/hosted       deployed static sites
-#   ./data/docker/logs     -> /var/log/hostctl      service logs, if file logging is enabled later
+# 持久化目录映射：
+#   ./data/docker/hostctl  -> /var/lib/hostctl      SQLite 数据库、应用元数据和后台维护的 Skill ZIP
+#   ./data/docker/sql      -> /var/lib/hostctl/sql  维护、备份和迁移使用的 SQL 文件
+#   ./data/docker/hosted   -> /var/www/hosted       已发布的静态站点文件
+#   ./data/docker/logs     -> /var/log/hostctl      服务日志目录，后续启用文件日志时使用
 #
-# Default first-run admin:
-#   username: admin
-#   password: 123456
-# Change the password immediately after first login. Existing databases are never overwritten.
+# 首次启动默认管理员：
+#   用户名：admin
+#   密码：123456
+# 首次登录后请立刻修改密码。已有数据库不会被覆盖。
 
 services:
   hostctl:
@@ -23,7 +23,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Docker 构建会先编译前端、刷新内置 Skill ZIP，再把产物 embed 进 Go 二进制。
+        # Docker 构建会先编译前端、刷新内置 Skill ZIP，再把产物嵌入 Go 二进制。
         NODE_IMAGE: node:22-alpine
         GO_IMAGE: golang:1.22-alpine
         ALPINE_IMAGE: alpine:3.20
@@ -36,25 +36,25 @@ services:
       - "8787:8787"
 
     environment:
-      # App URL strategy. Keep "path" for /agent/{code}/ compatibility.
-      # Use "domain" only after DNS and reverse proxy accept *.your-domain.
-      # See deploy/APP_URL_MODE.md for Nginx and Docker examples.
+      # 应用访问链接规则。默认使用 path，保持 /agent/{code}/ 路径模式兼容。
+      # 只有 DNS 和反向代理已经支持 *.your-domain 泛域名时，才建议切换为 domain。
+      # Nginx 和 Docker 示例见 deploy/APP_URL_MODE.md。
       HOSTCTL_APP_URL_MODE: "path"
       HOSTCTL_APP_DOMAIN_SUFFIX: ""
       HOSTCTL_APP_URL_SCHEME: "https"
       HOSTCTL_APP_URL_PORT: ""
 
-      # Production mode: login is required after the first admin account exists.
+      # 生产模式：创建首个管理员后，后台访问必须登录。
       REQUIRE_AUTH: "true"
 
-      # A short deploy cooldown keeps accidental repeated agent calls under control.
+      # 发布冷却时间，用于降低 Agent 误触发重复发布的风险。
       HOSTCTL_COOLDOWN_SECONDS: "10"
 
-      # First-run admin bootstrap. Only used when the database has no users.
+      # 首次启动管理员初始化。仅在数据库没有任何用户时生效。
       HOSTCTL_ADMIN_USERNAME: "admin"
       HOSTCTL_ADMIN_PASSWORD: "123456"
 
-      # Optional registration email verification. Keep disabled until SMTP is ready.
+      # 注册邮箱验证。SMTP 未配置好之前建议保持关闭。
       HOSTCTL_EMAIL_VERIFICATION_ENABLED: "false"
       HOSTCTL_SMTP_HOST: ""
       HOSTCTL_SMTP_PORT: "587"
@@ -63,8 +63,7 @@ services:
       HOSTCTL_SMTP_FROM: ""
       HOSTCTL_SMTP_SECURE: "starttls"
 
-      # Storage backend. "local" is fully supported; "oss" is configuration-ready
-      # for the next storage adapter phase.
+      # 存储后端。local 为本地文件存储；oss 为阿里云 OSS 对象存储配置入口。
       HOSTCTL_STORAGE_BACKEND: "local"
       HOSTCTL_OSS_PROVIDER: "aliyun"
       HOSTCTL_OSS_ENDPOINT: ""
