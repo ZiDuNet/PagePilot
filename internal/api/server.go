@@ -3663,6 +3663,7 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuth {
 		mode = "dev"
 	}
+	optional := r.URL.Query().Get("optional") == "1"
 	hasAdmin, err := s.auth.HasAdminUser(r.Context())
 	if err != nil {
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "auth", err.Error()), requestIDFromContext(r.Context())))
@@ -3684,6 +3685,14 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+		if optional {
+			writeJSON(w, http.StatusOK, AdminSessionResponse{
+				Success:    false,
+				Mode:       mode,
+				NeedsSetup: !hasAdmin,
+			})
+			return
+		}
 		writeJSON(w, http.StatusUnauthorized, AdminSessionResponse{
 			Success:    false,
 			Mode:       mode,

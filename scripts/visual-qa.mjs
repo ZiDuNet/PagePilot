@@ -554,8 +554,8 @@ async function verifyMarketBundleDetailUI(context, baseURL, sites) {
   }
   await page.locator(".market-use-modal").getByText("assets/app.css", { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
   await page.getByRole("tab", { name: "更新已有" }).click();
-  await page.getByPlaceholder("填写你拥有的已有发布 code").fill(sites.htmlCode);
-  await page.getByText(`pagep append ${sites.htmlCode}`, { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
+  await page.locator(".market-use-modal").getByText(sites.multiCode, { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
+  await page.getByText(`pagep append ${sites.multiCode}`, { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
   await page.close();
 }
 

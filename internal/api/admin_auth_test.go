@@ -124,6 +124,23 @@ func TestDevAdminSessionRequiresLogin(t *testing.T) {
 	}
 }
 
+func TestOptionalAdminSessionDoesNotRequireLogin(t *testing.T) {
+	srv, _, cleanup := newDevAuthTestServer(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/session?optional=1", nil)
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+	}
+	if !strings.Contains(rr.Body.String(), `"success":false`) {
+		t.Fatalf("body = %s; want anonymous optional session", rr.Body.String())
+	}
+}
+
 func TestDevAdminSitesRequiresLogin(t *testing.T) {
 	srv, _, cleanup := newDevAuthTestServer(t)
 	defer cleanup()

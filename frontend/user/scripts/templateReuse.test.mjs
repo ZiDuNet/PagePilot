@@ -12,4 +12,6 @@ test("市场复用抽屉展示源文件结构并分离 MCP 参数", () => {
   assert.match(source, /复制 MCP/, "缺少独立 MCP 复制按钮");
   assert.match(source, /DocBlock title="MCP 参数"/, "缺少 MCP 参数独立代码块");
   assert.match(source, /item\.reuse\?\.mcp/, "MCP 参数必须来自服务端复用详情");
+  assert.match(source, /updateTargetCode = item\.code/, "更新已有模式必须自动使用当前作品 code");
+  assert.doesNotMatch(source, /填写你拥有的已有发布 code/, "更新已有模式不应再要求手填目标 code");
 });

@@ -52,11 +52,12 @@ type SortMode = "hot" | "newest" | "featured" | "oldest" | "likes_desc" | "views
 type MarketCategory = string;
 type MarketKind = "all" | "html" | "md" | "protected" | "featured" | "mine" | "favorites";
 type AgentDocTab = "skill" | "mcp";
-type PreviewStatus = "idle" | "loading" | "loaded";
+type PreviewStatus = "idle" | "loading" | "loaded" | "failed";
 type PreviewViewport = "desktop" | "tablet" | "mobile";
 
 const PREVIEW_IFRAME_SANDBOX =
   "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-top-navigation-by-user-activation";
+const MARKET_SNAPSHOT_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
 
 interface EditableDeployFile {
   path: string;
@@ -433,13 +434,39 @@ function skillDownloadPath(): string {
   return "/skill/pagep.zip";
 }
 
+function buildMarketPreviewSnapshot(html: string, baseURL: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("script").forEach((node) => node.remove());
+  doc.querySelectorAll("*").forEach((node) => {
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim().toLowerCase();
+      if (name.startsWith("on") || value.startsWith("javascript:")) {
+        node.removeAttribute(attr.name);
+      }
+    }
+  });
+  const base = doc.createElement("base");
+  base.href = baseURL;
+  doc.head.prepend(base);
+  const style = doc.createElement("style");
+  style.textContent = `
+html,body{min-height:100%;margin:0;overflow:hidden;background:#fff!important;}
+body{pointer-events:none;transform-origin:left top;}
+*{scrollbar-width:none!important;}
+*::-webkit-scrollbar{display:none!important;}
+`;
+  doc.head.append(style);
+  return `<!doctype html>${doc.documentElement.outerHTML}`;
+}
+
 function useRuntime() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
 
   useEffect(() => {
     api<RuntimeConfig>("/api/config").then(setConfig).catch(() => setConfig(null));
-    api<SessionInfo>("/api/admin/session").then(setSession).catch(() => setSession(null));
+    api<SessionInfo>("/api/admin/session?optional=1").then(setSession).catch(() => setSession(null));
   }, []);
 
   return { config, session };
@@ -1238,9 +1265,9 @@ function MarketplaceCard({
   onUse: (item: MarketplaceDeploy) => void;
   onDetail: (item: MarketplaceDeploy) => void;
 }) {
-  const previewRef = useRef<HTMLIFrameElement | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
+  const [previewDoc, setPreviewDoc] = useState("");
   const title = item.title || item.code || "未命名作品";
   const appURL = sameSiteURL(`/agent/${encodeURIComponent(item.code)}/`);
   const isLocked = Boolean(item.accessProtected);
@@ -1248,29 +1275,48 @@ function MarketplaceCard({
   const heat = getMarketHeat(item);
 
   useEffect(() => {
-    const iframe = previewRef.current;
     const node = cardRef.current;
-    if (!iframe || !node || isLocked) return;
+    if (!node || isLocked) return;
 
     let cancelQueued = false;
-    const loadHandler = () => {
-      setPreviewStatus("loaded");
-    };
+    let controller: AbortController | null = null;
+    let timeoutID: number | undefined;
 
     const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting) || iframe.src || cancelQueued) return;
+      if (!entries.some((entry) => entry.isIntersecting) || previewDoc || cancelQueued) return;
       setPreviewStatus("loading");
-      iframe.addEventListener("load", loadHandler, { once: true });
-      iframe.src = `${appURL}?preview=1`;
+      controller = new AbortController();
+      timeoutID = window.setTimeout(() => controller?.abort(), 4500);
+      fetch(`${appURL}?preview=1`, {
+        credentials: "same-origin",
+        cache: "force-cache",
+        signal: controller.signal
+      })
+        .then((response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.text();
+        })
+        .then((html) => {
+          if (cancelQueued) return;
+          setPreviewDoc(buildMarketPreviewSnapshot(html, appURL));
+          setPreviewStatus("loaded");
+        })
+        .catch(() => {
+          if (!cancelQueued) setPreviewStatus("failed");
+        })
+        .finally(() => {
+          if (timeoutID) window.clearTimeout(timeoutID);
+        });
     }, { rootMargin: "0px 0px", threshold: 0.08 });
 
     observer.observe(node);
     return () => {
       cancelQueued = true;
-      iframe.removeEventListener("load", loadHandler);
+      controller?.abort();
+      if (timeoutID) window.clearTimeout(timeoutID);
       observer.disconnect();
     };
-  }, [appURL, isLocked]);
+  }, [appURL, isLocked, previewDoc]);
 
   const like = async () => {
     try {
@@ -1319,12 +1365,19 @@ function MarketplaceCard({
           </div>
         ) : (
           <iframe
-            ref={previewRef}
             title={`${title} 预览`}
             loading="lazy"
             scrolling="no"
-            sandbox={PREVIEW_IFRAME_SANDBOX}
+            sandbox={MARKET_SNAPSHOT_SANDBOX}
+            srcDoc={previewDoc}
           />
+        )}
+        {!isLocked && previewStatus === "failed" && (
+          <div className="preview-fallback">
+            <FileCode2 size={22} />
+            <strong>{title}</strong>
+            <span>预览资源较慢，打开应用查看完整效果</span>
+          </div>
         )}
         <div className="card-quickbar" aria-label="作品数据">
           <span title="访问量"><Eye size={13} />{compactNumber(item.viewCount || 0)}</span>
@@ -1676,15 +1729,16 @@ function categoryIcon(slug?: string) {
 
 function MarketUseDrawer({ item, onClose }: { item: MarketplaceDeploy; onClose: () => void }) {
   const [reuseMode, setReuseMode] = useState<"new" | "update">("new");
-  const [targetCode, setTargetCode] = useState("");
   const fallbackReusable = item.visibility === "public" && !item.accessProtected;
   const canReuse = item.reuse ? item.reuse.allowReuse !== false : fallbackReusable;
+  const canUpdateCurrent = Boolean(item.owned || item.canManage);
   const canDownload = item.reuse ? Boolean(item.reuse.allowDownload && item.reuse.downloadUrl) : fallbackReusable;
   const policyNote = item.reuse?.policyNote || (canReuse ? "公开且未加密的作品可以下载源码并作为模板复用。" : "当前作品未开放源码下载和模板复用。");
   const downloadURL = item.reuse?.downloadUrl || `/api/deploy/content?code=${encodeURIComponent(item.code)}&download=1`;
   const title = item.title || item.code;
   const sourceVersion = item.reuse?.templateSourceVersion || item.versionCount || 1;
   const sourceCode = item.reuse?.templateSourceCode || item.code;
+  const updateTargetCode = item.code;
   const sourceFiles = item.bundle?.tree?.length ? item.bundle.tree : (item.files || []);
   const sourceSummary = {
     kind: item.bundle?.kindLabel || marketFileType(item),
@@ -1697,25 +1751,31 @@ function MarketUseDrawer({ item, onClose }: { item: MarketplaceDeploy; onClose: 
     totalSize: formatSize(item.bundle?.totalSize || item.fileSize || 0)
   };
   const visibleSourceFiles = sourceFiles.slice(0, 6);
-  const mcpText = item.reuse?.mcp
-    ? JSON.stringify(item.reuse.mcp, null, 2)
-    : JSON.stringify({
+  const mcpPayload = reuseMode === "update"
+    ? {
+      tool: "deploy_site",
+      target_code: updateTargetCode,
+      template_source_code: sourceCode,
+      template_source_version: sourceVersion,
+      reuse_mode: "update"
+    }
+    : {
       tool: "deploy_site",
       template_source_code: sourceCode,
       template_source_version: sourceVersion,
-      reuse_mode: reuseMode
-    }, null, 2);
-  const normalizedTargetCode = targetCode.trim();
-  const canCopyReuse = canReuse && (reuseMode === "new" || normalizedTargetCode.length > 0);
+      reuse_mode: "new"
+    };
+  const mcpText = reuseMode === "new" && item.reuse?.mcp
+    ? JSON.stringify(item.reuse.mcp, null, 2)
+    : JSON.stringify(mcpPayload, null, 2);
+  const canCopyReuse = canReuse && (reuseMode === "new" || canUpdateCurrent);
   const newCli = item.reuse?.cli || [
     `pagep market show ${item.code}`,
     "复制详情响应里的 reuse.cli 后执行；它会包含准确的源码下载路径、template-source-code 和 template-source-version。"
   ].join("\n");
   const updateCli = [
     `pagep get ${item.code} --download --output ./pagepilot-downloads`,
-    normalizedTargetCode
-      ? `pagep append ${normalizedTargetCode} ./pagepilot-downloads/${item.code} --description "基于 ${title} 复用更新" --template-source-code ${sourceCode} --template-source-version ${sourceVersion}`
-      : "pagep append YOUR_EXISTING_CODE ./pagepilot-downloads/{downloaded-folder} --description \"基于市场作品复用更新\" --template-source-code " + sourceCode + " --template-source-version " + sourceVersion
+    `pagep append ${updateTargetCode} ./pagepilot-downloads/${item.code} --description "基于 ${title} 复用更新" --template-source-code ${sourceCode} --template-source-version ${sourceVersion}`
   ].join("\n");
   const cli = reuseMode === "new" ? newCli : updateCli;
   const newAgentPrompt = item.reuse?.agentPrompt || [
@@ -1725,15 +1785,15 @@ function MarketUseDrawer({ item, onClose }: { item: MarketplaceDeploy; onClose: 
   ].join("\n");
   const updateAgentPrompt = [
     `请参考 PagePilot 创作市场作品《${title}》（code=${item.code}，version=${sourceVersion}）的结构和风格。`,
-    normalizedTargetCode
-      ? `目标是更新我已有的 PagePilot 发布 code=${normalizedTargetCode}，请追加为新版本，不要创建新的 code。`
-      : "目标是更新我已有的 PagePilot 发布。开始前必须先让我确认目标 code，再追加为新版本，不要创建新的 code。",
+    `目标是更新当前 PagePilot 发布 code=${updateTargetCode}，请追加为新版本，不要创建新的 code。`,
     `发布时传 templateSourceCode=${sourceCode}、templateSourceVersion=${sourceVersion} 记录复用来源；不要复制原作品里的隐私数据、密钥或不可复用内容。`
   ].join("\n");
   const agentPrompt = reuseMode === "new" ? newAgentPrompt : updateAgentPrompt;
   const modeNote = reuseMode === "new"
     ? "新建二创会生成新的 PagePilot code，并记录来源作品。"
-    : "更新已有发布需要你拥有目标 code，系统会追加新版本，不会覆盖来源作品。";
+    : canUpdateCurrent
+      ? `更新已有会自动使用当前作品 code=${updateTargetCode}，系统会追加新版本。`
+      : `当前作品 code=${updateTargetCode} 不属于你，不能直接追加版本；请使用新建二创。`;
 
   return createPortal(
     <div className="market-use-modal" role="dialog" aria-modal="true" aria-label="作品复用">
@@ -1758,10 +1818,11 @@ function MarketUseDrawer({ item, onClose }: { item: MarketplaceDeploy; onClose: 
             </div>
             <p>{modeNote}</p>
             {reuseMode === "update" && (
-              <label className="reuse-target-code">
+              <div className={`reuse-target-code ${canUpdateCurrent ? "readonly" : "blocked"}`}>
                 <span>目标 code</span>
-                <input value={targetCode} onChange={(event) => setTargetCode(event.target.value)} placeholder="填写你拥有的已有发布 code" />
-              </label>
+                <code>{updateTargetCode}</code>
+                <small>{canUpdateCurrent ? "已自动带入当前作品 code，不需要手动填写。" : "只有作品所有者或管理员可以更新这个 code。"}</small>
+              </div>
             )}
           </div>
           <div className="source-structure-panel">

@@ -69,7 +69,7 @@
 
 4. 创作市场“模板复用”体验
 
-   现状：前台已有“使用/复用”抽屉，可给出源码下载、CLI 命令、Agent 指令和独立 MCP 参数；抽屉已展示源文件结构摘要，包括 Bundle 类型、入口、根目录、下载形态、文件数量、总大小和前几个文件路径，并区分“新建二创”和“更新已有发布”。更新模式要求填写用户拥有的目标 code，并生成追加版本语义的 CLI / Agent 指令。详情 API 已返回 `allowDownload`、`allowReuse`、`policyNote`、`templateSourceCode` 和 `templateSourceVersion`，并区分访问密码浏览权限和源码下载 / 模板复用权限。发布 API、CLI、MCP 和 Skill 支持 `templateSourceCode` / `templateSourceVersion`，复用后会记录来源站点、来源版本并增加来源作品的 `reuseCount`。后台站点详情已支持管理员设置源码下载和模板复用策略；加密作品即使策略为 `allow`，也不会提供源码下载，必须先清除访问密码。
+   现状：前台已有“使用/复用”抽屉，可给出源码下载、CLI 命令、Agent 指令和独立 MCP 参数；抽屉已展示源文件结构摘要，包括 Bundle 类型、入口、根目录、下载形态、文件数量、总大小和前几个文件路径，并区分“新建二创”和“更新已有发布”。更新模式自动带入当前作品 code，只有所有者或管理员可复制追加版本语义的 CLI / Agent 指令。详情 API 已返回 `allowDownload`、`allowReuse`、`policyNote`、`templateSourceCode` 和 `templateSourceVersion`，并区分访问密码浏览权限和源码下载 / 模板复用权限。发布 API、CLI、MCP 和 Skill 支持 `templateSourceCode` / `templateSourceVersion`，复用后会记录来源站点、来源版本并增加来源作品的 `reuseCount`。后台站点详情已支持管理员设置源码下载和模板复用策略；加密作品即使策略为 `allow`，也不会提供源码下载，必须先清除访问密码。
 
    待办：继续打磨模板市场级体验的视觉 QA 和批量策略操作；复用后的新建/更新边界已在 Skill、CLI 示例和详情页参数中约束，站点详情可查看最近审计摘要。
 
