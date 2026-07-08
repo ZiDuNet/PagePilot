@@ -1438,116 +1438,128 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
   }
 
   return (
-    <section className="single-col-layout">
-      <div className="panel">
-        <div className="panel-head"><div><h2>{append ? "更新现有发布" : "发布新应用"}</h2><p>支持 HTML、Markdown、ZIP、多文件目录、公开/未公开、访问密码和追加版本。</p></div></div>
-        <div className="segmented">
-          <button className={mode === "single" ? "active" : ""} type="button" onClick={() => setMode("single")}>单文件</button>
-          <button className={mode === "multi" ? "active" : ""} type="button" onClick={() => setMode("multi")}>多文件项目</button>
+    <section className="deploy-page-v2">
+      <div className="deploy-topbar">
+        <div className="deploy-topbar-copy">
+          <div className="eyebrow"><Upload size={16} />{append ? "更新发布" : "发布新应用"}</div>
+          <h1>{append ? "追加版本到已有站点" : "上传 HTML / Markdown / ZIP / 多文件目录"}</h1>
         </div>
-        <label className="field"><span>标题</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="有意义的中文名字" /></label>
-        <label className="field"><span>一句话描述 *</span><input value={description} onChange={(event) => setDescription(event.target.value)} maxLength={240} placeholder="这个应用是做什么的" /></label>
-        <label className="field"><span>自定义 / 更新 code</span><input className="mono" value={code} onChange={(event) => setCode(event.target.value)} placeholder={append ? "填写已有 code，例如 my-landing" : "可选，例如 my-landing"} /></label>
-        <label className="check-line"><input checked={append} type="checkbox" onChange={(event) => setAppend(event.target.checked)} />更新现有发布，追加为新版本</label>
-        {append && <div className="hint-box">更新必须填写已有 <code>code</code>。它不会创建新链接，只给原站点追加版本；公开方式和访问密码沿用原设置。</div>}
-        <FoldSection id="advanced" label="高级选项 — 可见性、密码、分类与标签" defaultOpen={false} fold={fold}>
-        <div className="form-grid">
-          <label className="field"><span>可见性</span><select value={visibility} disabled={append} onChange={(event) => setVisibility(event.target.value)}><option value="public">公开进创作市场</option><option value="unlisted">未公开，仅链接访问</option></select></label>
-          <label className="field">
-            <span>访问密码</span>
-            <input
-              type="password"
-              value={password}
-              disabled={append}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="可选，至少 4 位"
-              autoComplete="new-password"
-              data-lpignore="true"
-              name="pagepilot-admin-access-password"
-            />
-          </label>
+        <div className="deploy-topbar-actions">
+          <button className={`button ${mode === "single" ? "primary" : ""}`} type="button" onClick={() => setMode("single")}>单文件</button>
+          <button className={`button ${mode === "multi" ? "primary" : ""}`} type="button" onClick={() => setMode("multi")}>多文件项目</button>
         </div>
-        <div className="form-grid">
-          <label className="field">
-            <span>作品分类（可选）</span>
-            <select value={category} disabled={append} onChange={(event) => setCategory(event.target.value)}>
-              <option value="">暂不分类</option>
-              {categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}
-            </select>
-          </label>
-          <label className="field">
-            <span>作品标签</span>
-            <input
-              value={tagsInput}
-              disabled={append}
-              onChange={(event) => setTagsInput(event.target.value)}
-              placeholder="官网, 看板, 活动页"
-              autoComplete="off"
-              data-lpignore="true"
-              name="pagepilot-admin-tags"
-            />
-          </label>
-        </div>
-        </FoldSection>
+      </div>
 
-        {mode === "single" ? (
-          <>
-            <label className="upload-zone">
-              <input type="file" accept=".html,.htm,.md,.markdown,.zip" onChange={(event) => void readFiles(event.target.files)} />
-              <FileUp size={18} />上传 HTML / Markdown / ZIP
-            </label>
-            <textarea className="code-input" value={content} onChange={(event) => setContent(event.target.value)} placeholder="粘贴 HTML 或 Markdown 源码，服务端会自动识别格式" />
-            <details className="entry-field-toggle">
-              <summary>{entry ? `入口提示：${entry}` : "指定入口文件（高级）"}</summary>
-              <label className="field"><span>入口文件名（可选）</span><input value={entry} onChange={(event) => setEntry(event.target.value)} placeholder="留空自动识别；多入口时填写真实相对路径" /></label>
-            </details>
-          </>
-        ) : (
-          <>
-            <input ref={fileInput} className="hidden" type="file" multiple onChange={(event) => void readFiles(event.target.files)} />
-            <input ref={dirInput} className="hidden" type="file" multiple webkitdirectory="" onChange={(event) => void readFiles(event.target.files)} />
-            <div className="upload-box" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void readFiles(event.dataTransfer.files); }}>
-              <strong>上传多文件静态站点</strong>
-              <span>保留 CSS、JS、图片、字体等相对路径；服务端会自动识别入口，单 ZIP 会先做安全检查。</span>
-              <div className="actions">
-                <button className="button" type="button" onClick={() => fileInput.current?.click()}>选择多个文件</button>
-                <button className="button" type="button" onClick={() => dirInput.current?.click()}>选择目录</button>
+      <div className="deploy-workspace">
+        <div className="deploy-stage">
+          {mode === "single" ? (
+            <>
+              <label className="deploy-upload-zone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); void readFiles(e.dataTransfer.files); }}>
+                <input type="file" accept=".html,.htm,.md,.markdown,.zip" onChange={(e) => void readFiles(e.target.files)} />
+                <FileUp size={28} />
+                <strong>上传 HTML / Markdown / ZIP</strong>
+                <span>或直接粘贴源码到下方编辑器</span>
+              </label>
+              <div className="deploy-editor-wrap">
+                <textarea className="deploy-editor" value={content} onChange={(e) => setContent(e.target.value)} placeholder="粘贴 HTML 或 Markdown 源码，服务端会自动识别格式" spellCheck={false} />
+                <div className="preview-box">
+                  {content.trim() ? (
+                    <iframe title="实时预览" srcDoc={content} sandbox={PREVIEW_IFRAME_SANDBOX} />
+                  ) : (
+                    <div className="preview-empty"><Eye size={32} /><span>粘贴源码后，实时预览会自动显示</span></div>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="deploy-upload-area">
+              <label className="deploy-upload-zone large" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); void readFiles(e.dataTransfer.files); }}>
+                <input type="file" multiple onChange={(e) => void readFiles(e.target.files)} />
+                <input type="file" multiple webkitdirectory="" onChange={(e) => void readFiles(e.target.files)} />
+                <FileUp size={36} />
+                <strong>选择文件或拖拽到此处</strong>
+                <span>支持多文件、整个目录、或单 ZIP 包。自动识别入口文件。</span>
+              </label>
+              <div className="deploy-file-list">
+                {files.map((f) => (
+                  <div className="deploy-file-row" key={f.path}>
+                    <code>{f.path}</code>
+                    <span>{f.isText ? "text" : "bin"} · {formatSize(f.size)}</span>
+                    <button className="icon-button danger" type="button" onClick={() => setFiles((prev) => prev.filter((x) => x.path !== f.path))}><Trash2 size={14} /></button>
+                  </div>
+                ))}
+                {!files.length && <div className="empty">还没有选择文件。</div>}
               </div>
             </div>
-            <div className="file-list">
-              {files.map((file) => (
-                <div className="file-row" key={file.path}>
-                  <code>{file.path}</code>
-                  <span>{file.isText ? "text" : "bin"} · {formatSize(file.size)}</span>
-                  <button className="icon-button danger" type="button" onClick={() => setFiles((prev) => prev.filter((item) => item.path !== file.path))}><Trash2 size={14} /></button>
-                </div>
-              ))}
-              {!files.length && <div className="empty">还没有选择文件。</div>}
-            </div>
-            <details className="entry-field-toggle">
-              <summary>{entry ? `入口提示：${entry}` : "指定入口文件（高级）"}</summary>
-              <label className="field"><span>入口文件名（可选）</span><input value={entry} onChange={(event) => setEntry(event.target.value)} placeholder="留空由服务端自动识别；多入口时填写真实相对路径" /></label>
-            </details>
-          </>
-        )}
-        <div className="summary-line"><span>大小 {formatSize(totalSize)}</span><span>上限 {formatSize(config?.limits?.maxSiteTotalBytes)}</span></div>
-        <button className="button primary full" type="button" disabled={busy} onClick={submit}><Upload size={16} />{busy ? "部署中..." : "立即部署"}</button>
-        {deployError && <DeployErrorPanel message={deployError} error={deployErrorDetail} />}
-      </div>
-      {result && (
-        <Modal title="部署成功" onClose={() => setResult(null)}>
-          <div className="result-modal">
-            <InfoRow label="Code" value={result.code} />
-            <InfoRow label="访问地址" value={sameSiteURL(result.url)} copy />
-            <InfoRow label="版本" value={`v${result.versionNumber || "-"}`} />
-            <InfoRow label="大小" value={formatSize(result.size)} />
-            <div className="actions">
-              <a className="button primary" href={sameSiteURL(result.url)} target="_blank" rel="noreferrer"><Eye size={16} />打开</a>
-              <button className="button" type="button" onClick={() => navigator.clipboard.writeText(sameSiteURL(result.url))}><Copy size={16} />复制</button>
-            </div>
-            <p className="muted">部署预览已移至独立页面；可点击上方"打开"查看实际效果。</p>
+          )}
+
+          <div className="deploy-submit-bar">
+            <span className="deploy-size-info">大小 {formatSize(totalSize)} · 上限 {formatSize(config?.limits?.maxSiteTotalBytes)}</span>
+            <button className="button primary large" type="button" disabled={busy} onClick={submit}>
+              <Upload size={18} />{busy ? "部署中..." : "立即部署"}
+            </button>
           </div>
-        </Modal>
+          {deployError && <DeployErrorPanel message={deployError} error={deployErrorDetail} />}
+        </div>
+
+        <aside className="deploy-props">
+          <div className="deploy-props-head">
+            <strong>发布设置</strong>
+            <span className="mini-label">必填项标 *</span>
+          </div>
+          <div className="deploy-props-body">
+            <label className="field">
+              <span>标题</span>
+              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="有意义的中文名字" />
+            </label>
+            <label className="field">
+              <span>描述 *</span>
+              <input value={description} onChange={(e) => setDescription(e.target.value)} maxLength={240} placeholder="这个应用是做什么的（必填）" />
+            </label>
+            <label className="field">
+              <span>自定义 / 更新 code</span>
+              <input className="mono" value={code} onChange={(e) => setCode(e.target.value)} placeholder={append ? "填写已有 code" : "可选，例如 my-landing"} />
+            </label>
+            <label className="check-line">
+              <input checked={append} type="checkbox" onChange={(e) => setAppend(e.target.checked)} />
+              更新已有发布
+            </label>
+            {append && <div className="hint-box">更新必须填写已有 <code>code</code>。公开方式和访问密码沿用原设置。</div>}
+            <label className="field">
+              <span>可见性</span>
+              <select value={visibility} disabled={append} onChange={(e) => setVisibility(e.target.value)}>
+                <option value="public">公开进创作市场</option>
+                <option value="unlisted">仅链接访问</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>作品分类</span>
+              <select value={category} disabled={append} onChange={(e) => setCategory(e.target.value)}>
+                <option value="">暂不分类</option>
+                {categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}
+              </select>
+            </label>
+            <label className="field">
+              <span>作品标签</span>
+              <input value={tagsInput} disabled={append} onChange={(e) => setTagsInput(e.target.value)} placeholder="官网, 看板, 活动页" autoComplete="off" data-lpignore="true" />
+            </label>
+            <label className="field">
+              <span>访问密码</span>
+              <input type="password" value={password} disabled={append} onChange={(e) => setPassword(e.target.value)} placeholder="可选，至少 8 位" autoComplete="new-password" data-lpignore="true" />
+            </label>
+          </div>
+        </aside>
+      </div>
+
+      {result && (
+        <div className="result-toast" role="status">
+          <div><strong>部署成功</strong><span>{result.code} · v{result.versionNumber || 1} · {formatSize(result.size)}</span></div>
+          <div className="actions tight">
+            <a className="button primary compact" href={sameSiteURL(result.url)} target="_blank" rel="noreferrer"><Eye size={15} />打开</a>
+            <button className="button compact" type="button" onClick={() => navigator.clipboard.writeText(sameSiteURL(result.url))}><Copy size={15} />复制链接</button>
+            <button className="button compact" type="button" onClick={() => setResult(null)}>关闭</button>
+          </div>
+        </div>
       )}
     </section>
   );
@@ -1783,13 +1795,18 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
         </div>
         <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 code、owner、标签" /></label>
         <div className="filter-row">
-          <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">运行中</option><option value="inactive">已下架</option></select>
-          <select value={visibility} onChange={(event) => setVisibility(event.target.value)}><option value="">全部可见性</option><option value="public">公开</option><option value="unlisted">未公开</option></select>
-          <select value={ownerScope} onChange={(event) => setOwnerScope(event.target.value)}><option value="">全部归属</option><option value="registered">注册用户</option><option value="anonymous">匿名发布</option><option value="token">Token/其他</option></select>
-          <select value={category} onChange={(event) => setCategory(event.target.value)}><option value="">全部分类</option>{categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}</select>
-          <select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}><option value="">全部标签</option>{allTags.map((tag) => <option value={tag} key={tag}>#{tag}</option>)}</select>
-          <select value={kind} onChange={(event) => setKind(event.target.value)}><option value="">全部类型</option><option value="html">HTML</option><option value="md">Markdown</option><option value="protected">加密</option><option value="featured">精选</option></select>
+          <select value={status} onChange={(event) => setStatus(event.target.value)} title="状态"><option value="">全部状态</option><option value="active">运行中</option><option value="inactive">已下架</option></select>
+          <select value={visibility} onChange={(event) => setVisibility(event.target.value)} title="可见性"><option value="">全部可见性</option><option value="public">公开</option><option value="unlisted">未公开</option></select>
+          <select value={category} onChange={(event) => setCategory(event.target.value)} title="分类"><option value="">全部分类</option>{categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}</select>
         </div>
+        <details className="filter-advanced">
+          <summary>高级筛选</summary>
+          <div className="filter-row">
+            <select value={ownerScope} onChange={(event) => setOwnerScope(event.target.value)} title="归属"><option value="">全部归属</option><option value="registered">注册用户</option><option value="anonymous">匿名发布</option><option value="token">Token/其他</option></select>
+            <select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)} title="标签"><option value="">全部标签</option>{allTags.map((tag) => <option value={tag} key={tag}>#{tag}</option>)}</select>
+            <select value={kind} onChange={(event) => setKind(event.target.value)} title="类型"><option value="">全部类型</option><option value="html">HTML</option><option value="md">Markdown</option><option value="protected">加密</option><option value="featured">精选</option></select>
+          </div>
+        </details>
         <div className="toolbar-tail">
           {hasActiveFilters && <button className="button compact" type="button" onClick={clearFilters}>清空筛选</button>}
           <div className="segmented-control" role="group" aria-label="视图">
@@ -1944,7 +1961,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
             <div className="password-field">
               <input type={showPassword ? "text" : "password"} value={passwordInput}
                 onChange={(event) => setPasswordInput(event.target.value)}
-                placeholder={passwordTarget.accessProtected ? "留空确认清除" : "至少 4 位"} autoFocus />
+                placeholder={passwordTarget.accessProtected ? "留空确认清除" : "至少 8 位"} autoFocus />
               <button className="password-toggle" type="button" onClick={() => setShowPassword((v) => !v)} title={showPassword ? "隐藏" : "显示"}>
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
@@ -2563,13 +2580,18 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
               <DeviceInfoBlock screen={screen} />
               <div className="actions">
                 <button className="button compact primary" type="button" onClick={() => setPickScreen(screen)}>投放</button>
-                <button className="button compact" type="button" onClick={() => void command(screen, "refresh")}>刷新</button>
                 <button className="button compact" type="button" onClick={() => void command(screen, "screenshot")}>截图</button>
-                <button className="button compact" type="button" onClick={() => void command(screen, "sleep")}>休眠</button>
-                <button className="button compact" type="button" onClick={() => void command(screen, "wake")}>唤醒</button>
-                <button className="button compact" type="button" onClick={() => void command(screen, "shutdown")}>软关机</button>
                 <button className="button compact" type="button" onClick={() => void viewScreenshot(screen)}>查看截图</button>
-                <button className="button compact danger" type="button" onClick={() => setUnbindTarget(screen)}>解绑</button>
+                <details className="more-menu">
+                  <summary className="button compact ghost" aria-label="更多操作">⋯ 更多</summary>
+                  <div className="more-menu-list">
+                    <button className="button compact full" type="button" onClick={() => { (document.activeElement as HTMLElement | null)?.blur(); void command(screen, "refresh"); }}>刷新</button>
+                    <button className="button compact full" type="button" onClick={() => { (document.activeElement as HTMLElement | null)?.blur(); void command(screen, "sleep"); }}>休眠</button>
+                    <button className="button compact full" type="button" onClick={() => { (document.activeElement as HTMLElement | null)?.blur(); void command(screen, "wake"); }}>唤醒</button>
+                    <button className="button compact full" type="button" onClick={() => { (document.activeElement as HTMLElement | null)?.blur(); void command(screen, "shutdown"); }}>软关机</button>
+                    <button className="button compact full danger" type="button" onClick={() => { (document.activeElement as HTMLElement | null)?.blur(); setUnbindTarget(screen); }}>解绑</button>
+                  </div>
+                </details>
               </div>
             </article>
           ))}
@@ -2718,9 +2740,10 @@ function TokensPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showT
 
 function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [users, setUsers] = useState<UserItem[]>([]);
-  const origUsersRef = useRef<UserItem[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<UserItem | null>(null);
+  const [editingUser, setEditingUser] = useState<UserItem | null>(null);
+  // 新建表单字段
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [emailVerified, setEmailVerified] = useState(false);
@@ -2732,7 +2755,6 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
     try {
       const data = await api<{ users?: UserItem[] }>("/api/admin/users");
       setUsers(data.users || []);
-      origUsersRef.current = data.users || [];
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -2743,19 +2765,10 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
   async function create() {
     const normalizedEmail = email.trim();
     await api("/api/admin/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username,
-        email: normalizedEmail,
-        emailVerified: normalizedEmail ? emailVerified : false,
-        password,
-        deployLimit: limit,
-        isAdmin
-      })
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, email: normalizedEmail, emailVerified: normalizedEmail ? emailVerified : false, password, deployLimit: limit, isAdmin })
     });
-    setUsername(""); setEmail(""); setEmailVerified(false);
-    setPassword(""); setIsAdmin(false);
+    setUsername(""); setEmail(""); setEmailVerified(false); setPassword(""); setIsAdmin(false);
     showToast("用户已创建");
     setDrawerOpen(false);
     await load();
@@ -2763,18 +2776,11 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
 
   async function update(user: UserItem) {
     await api(`/api/admin/users/${encodeURIComponent(user.id)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: user.username,
-        email: user.email || "",
-        emailVerified: Boolean(user.email && user.emailVerified),
-        deployLimit: user.deployLimit,
-        isAdmin: user.isAdmin,
-        isActive: user.isActive
-      })
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: user.username, email: user.email || "", emailVerified: Boolean(user.email && user.emailVerified), deployLimit: user.deployLimit, isAdmin: user.isAdmin, isActive: user.isActive })
     });
     showToast("用户已保存");
+    setEditingUser(null);
     await load();
   }
 
@@ -2787,10 +2793,7 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
   return (
     <section className="panel">
       <div className="panel-head">
-        <div>
-          <h2>用户管理</h2>
-          <p>维护邮箱、验证状态、部署额度、角色和启用状态。</p>
-        </div>
+        <div><h2>用户管理</h2><p>维护邮箱、验证状态、部署额度、角色和启用状态。</p></div>
         <div className="actions tight">
           <button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button>
           <button className="button primary" type="button" onClick={() => setDrawerOpen(true)}><UserPlus size={16} />添加用户</button>
@@ -2798,76 +2801,95 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
       </div>
       <div className="table-wrap users-table">
         <table>
-          <thead><tr><th style={{width:"160px"}}>用户</th><th>邮箱</th><th style={{width:"90px"}}>额度</th><th style={{width:"80px"}}>角色</th><th style={{width:"80px"}}>状态</th><th style={{width:"80px"}}>操作</th></tr></thead>
+          <thead><tr><th>用户名</th><th>邮箱</th><th style={{width:"80px",textAlign:"center"}}>额度 / 已用</th><th style={{width:"84px",textAlign:"center"}}>角色</th><th style={{width:"70px",textAlign:"center"}}>状态</th><th style={{width:"90px"}}>操作</th></tr></thead>
           <tbody>
-            {users.map((user, index) => {
-              const orig = origUsersRef.current.find((u) => u.id === user.id);
-              const dirty = orig && (orig.username !== user.username || orig.email !== user.email || orig.emailVerified !== user.emailVerified || orig.deployLimit !== user.deployLimit || orig.isAdmin !== user.isAdmin || orig.isActive !== user.isActive);
-              return (
-                <tr key={user.id} className={dirty ? "row-dirty" : ""}>
-                  <td>
-                    <div className="user-cell-name">
-                      <input className="user-input" value={user.username} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, username: event.target.value } : item))} />
-                      <small>{user.id}</small>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="user-cell-email">
-                      <input className="user-input" type="email" value={user.email || ""} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, email: event.target.value, emailVerified: event.target.value ? item.emailVerified : false } : item))} placeholder="user@example.com" />
-                      <div className="verify-row">
-                        <label className="user-verify-checkbox" title={user.email ? "邮箱验证后可用于账号找回" : "先填写邮箱"}>
-                          <input type="checkbox" checked={Boolean(user.email && user.emailVerified)} disabled={!user.email} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, emailVerified: event.target.checked } : item))} />
-                          <span className={user.emailVerified ? "verified" : "unverified"}>
-                            {user.emailVerified ? "已验证" : "未验证"}
-                          </span>
-                        </label>
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="user-cell-limit">
-                      <input className="user-input-sm" type="number" value={user.deployLimit} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, deployLimit: Number(event.target.value) } : item))} />
-                      <small>已用 {user.deployCount}</small>
-                    </div>
-                  </td>
-                  <td>
-                    <label className={`pill-switch ${user.isAdmin ? "admin" : "user"}`} title={user.isAdmin ? "管理员：拥有全站权限" : "普通用户"}>
-                      <input type="checkbox" checked={user.isAdmin} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, isAdmin: event.target.checked } : item))} />
-                      <span>{user.isAdmin ? "管理员" : "用户"}</span>
-                    </label>
-                  </td>
-                  <td>
-                    <label className={`pill-switch ${user.isActive ? "active" : "inactive"}`} title={user.isActive ? "可正常登录" : "已停用"}>
-                      <input type="checkbox" checked={user.isActive} onChange={(event) => setUsers((prev) => prev.map((item, i) => i === index ? { ...item, isActive: event.target.checked } : item))} />
-                      <span>{user.isActive ? "启用" : "停用"}</span>
-                    </label>
-                  </td>
-                  <td>
-                    <div className="actions tight">
-                      <button className={`button compact ${dirty ? "primary" : ""}`} type="button" onClick={() => void update(user)}>保存</button>
-                      <button className="button compact danger" type="button" onClick={() => setDeleteTarget(user)}>删除</button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+            {users.map((user) => (
+              <tr key={user.id}>
+                <td>
+                  <div className="user-cell-name">
+                    <strong>{user.username}</strong>
+                    <small>{user.id}</small>
+                  </div>
+                </td>
+                <td>
+                  <div className="user-cell-email">
+                    <span className="email-display">{user.email || <em>未设置</em>}</span>
+                    {user.email ? (
+                      <span className={`verify-chip ${user.emailVerified ? "verified" : "unverified"}`}
+                        onClick={() => {
+                          const updated = { ...user, emailVerified: !user.emailVerified };
+                          setUsers((prev) => prev.map((u) => u.id === user.id ? updated : u));
+                          update(updated);
+                        }}>
+                        {user.emailVerified ? "✓ 已验证" : "待验证"}
+                      </span>
+                    ) : null}
+                  </div>
+                </td>
+                <td>
+                  <div className="user-cell-limit">
+                    <span className="limit-display">{user.deployLimit} / {user.deployCount}</span>
+                  </div>
+                </td>
+                <td>
+                  <span className={`role-badge ${user.isAdmin ? "admin" : "user"}`}>{user.isAdmin ? "管理员" : "用户"}</span>
+                </td>
+                <td>
+                  <span className={`status-dot ${user.isActive ? "active" : "inactive"}`} />
+                  {user.isActive ? "启用" : "停用"}
+                </td>
+                <td>
+                  <div className="actions tight">
+                    <button className="button compact" type="button" onClick={() => setEditingUser({...user})}>编辑</button>
+                    <button className="button compact danger" type="button" onClick={() => setDeleteTarget(user)}>删除</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
             {!users.length && <tr><td colSpan={6}>暂无用户。</td></tr>}
           </tbody>
         </table>
       </div>
 
+      {/* 添加用户抽屉 */}
       <Drawer title="添加用户" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
-        <label className="field"><span>用户名</span><input value={username} onChange={(event) => setUsername(event.target.value)} /></label>
-        <label className="field"><span>邮箱</span><input type="email" value={email} onChange={(event) => {
-          setEmail(event.target.value);
-          if (!event.target.value.trim()) setEmailVerified(false);
-        }} placeholder="user@example.com" /></label>
-        <label className="check-line"><input type="checkbox" checked={emailVerified} disabled={!email.trim()} onChange={(event) => setEmailVerified(event.target.checked)} />邮箱已验证</label>
-        <label className="field"><span>初始密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" /></label>
-        <label className="field"><span>部署额度</span><input type="number" value={limit} onChange={(event) => setLimit(Number(event.target.value))} /></label>
-        <label className="check-line"><input type="checkbox" checked={isAdmin} onChange={(event) => setIsAdmin(event.target.checked)} />管理员</label>
+        <label className="field"><span>用户名</span><input value={username} onChange={(e) => setUsername(e.target.value)} /></label>
+        <label className="field"><span>邮箱</span><input type="email" value={email} onChange={(e) => { setEmail(e.target.value); if (!e.target.value.trim()) setEmailVerified(false); }} placeholder="user@example.com" /></label>
+        <label className="check-line"><input type="checkbox" checked={emailVerified} disabled={!email.trim()} onChange={(e) => setEmailVerified(e.target.checked)} />邮箱已验证</label>
+        <label className="field"><span>初始密码</span><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少 8 位" /></label>
+        <label className="field"><span>部署额度</span><input type="number" value={limit} onChange={(e) => setLimit(Number(e.target.value))} /></label>
+        <label className="check-line admin-highlight"><input type="checkbox" checked={isAdmin} onChange={(e) => setIsAdmin(e.target.checked)} /><span>管理员</span><em>管理员拥有全站管理权限</em></label>
         <button className="button primary" type="button" onClick={() => void create()}><UserPlus size={16} />创建用户</button>
       </Drawer>
+
+      {/* 编辑用户抽屉 */}
+      {editingUser && (
+        <Drawer title={`编辑用户 — ${editingUser.username}`} open={true} onClose={() => setEditingUser(null)}>
+          <label className="field"><span>用户名</span><input value={editingUser.username} onChange={(e) => setEditingUser({ ...editingUser, username: e.target.value })} /></label>
+          <label className="field"><span>邮箱</span><input type="email" value={editingUser.email || ""} onChange={(e) => setEditingUser({ ...editingUser, email: e.target.value, emailVerified: e.target.value ? editingUser.emailVerified : false })} placeholder="user@example.com" /></label>
+          {editingUser.email ? (
+            <label className="check-line"><input type="checkbox" checked={editingUser.emailVerified} onChange={(e) => setEditingUser({ ...editingUser, emailVerified: e.target.checked })} />邮箱已验证</label>
+          ) : null}
+          <label className="field"><span>部署额度</span><input type="number" value={editingUser.deployLimit} onChange={(e) => setEditingUser({ ...editingUser, deployLimit: Number(e.target.value) })} /></label>
+          <div className="field"><span>已使用</span><strong>{editingUser.deployCount || 0} 次</strong></div>
+          <div className="form-grid" style={{marginTop:"12px"}}>
+            <label className="check-line admin-highlight">
+              <input type="checkbox" checked={editingUser.isAdmin} onChange={(e) => setEditingUser({ ...editingUser, isAdmin: e.target.checked })} />
+              <span>管理员</span>
+              <em>管理员拥有全站管理权限</em>
+            </label>
+            <label className="check-line">
+              <input type="checkbox" checked={editingUser.isActive} onChange={(e) => setEditingUser({ ...editingUser, isActive: e.target.checked })} />
+              <span>账号启用</span>
+              <em>停用后用户无法登录</em>
+            </label>
+          </div>
+          <div className="actions right" style={{marginTop:"20px",borderTop:"1px solid var(--pp-line, rgba(15,118,158,0.16))",paddingTop:"16px"}}>
+            <button className="button" type="button" onClick={() => setEditingUser(null)}>取消</button>
+            <button className="button primary" type="button" onClick={() => void update(editingUser)}>保存</button>
+          </div>
+        </Drawer>
+      )}
 
       {deleteTarget && <ConfirmModal title="删除用户" message={`确认删除用户 ${deleteTarget.username}？此操作不可恢复。`} danger confirmText="删除" onConfirm={() => void remove(deleteTarget)} onClose={() => setDeleteTarget(null)} />}
     </section>
@@ -3064,15 +3086,20 @@ function AuditPanel({ setError }: { setError: (msg: string) => void }) {
       </div>
       <div className="filter-row audit-filter-row">
         <label className="field"><span>关键词</span><input value={filters.q} onChange={(event) => updateFilter("q", event.target.value)} placeholder="动作、站点、对象或详情" /></label>
-        <label className="field"><span>操作者类型</span><select value={filters.actorType} onChange={(event) => updateFilter("actorType", event.target.value)}><option value="">全部来源</option>{auditActorTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-        <label className="field"><span>用户</span><select value={filters.actorType === "user" ? filters.actorId : ""} onChange={(event) => { updateFilter("actorType", event.target.value ? "user" : ""); updateFilter("actorId", event.target.value); }}><option value="">全部用户</option>{auditUsers.map((user) => <option value={user.id} key={user.id}>{user.username}{user.isAdmin ? " · 管理员" : ""}</option>)}</select></label>
         <label className="field"><span>动作</span><select value={filters.action} onChange={(event) => updateFilter("action", event.target.value)}><option value="">全部动作</option>{auditActionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-        <label className="field"><span>站点</span><select value={filters.siteCode} onChange={(event) => updateFilter("siteCode", event.target.value)}><option value="">全部站点</option>{auditSites.map((site) => <option value={site.code} key={site.code}>{site.code}{site.ownerUsername ? ` · ${site.ownerUsername}` : ""}</option>)}</select></label>
-        <label className="field"><span>操作者 ID</span><input value={filters.actorId} onChange={(event) => updateFilter("actorId", event.target.value)} placeholder="用户 ID / token ID / 匿名 session" /></label>
-        <label className="field"><span>角色</span><select value={filters.actorRole} onChange={(event) => updateFilter("actorRole", event.target.value)}><option value="">全部</option><option value="admin">管理员</option><option value="user">用户</option><option value="anonymous">匿名</option></select></label>
         <label className="field"><span>结果</span><select value={filters.result} onChange={(event) => updateFilter("result", event.target.value)}><option value="">全部</option><option value="success">成功</option><option value="failed">失败</option></select></label>
-        <label className="field"><span>对象类型</span><select value={filters.targetType} onChange={(event) => updateFilter("targetType", event.target.value)}><option value="">全部</option><option value="site">站点</option><option value="version">版本</option><option value="token">Token</option><option value="screen">屏幕</option><option value="user">用户</option><option value="config">配置</option></select></label>
       </div>
+      <details className="filter-advanced">
+        <summary>高级筛选（操作者、对象类型、站点等）</summary>
+        <div className="filter-row">
+          <label className="field"><span>操作者类型</span><select value={filters.actorType} onChange={(event) => updateFilter("actorType", event.target.value)}><option value="">全部来源</option>{auditActorTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          <label className="field"><span>用户</span><select value={filters.actorType === "user" ? filters.actorId : ""} onChange={(event) => { updateFilter("actorType", event.target.value ? "user" : ""); updateFilter("actorId", event.target.value); }}><option value="">全部用户</option>{auditUsers.map((user) => <option value={user.id} key={user.id}>{user.username}{user.isAdmin ? " · 管理员" : ""}</option>)}</select></label>
+          <label className="field"><span>站点</span><select value={filters.siteCode} onChange={(event) => updateFilter("siteCode", event.target.value)}><option value="">全部站点</option>{auditSites.map((site) => <option value={site.code} key={site.code}>{site.code}{site.ownerUsername ? ` · ${site.ownerUsername}` : ""}</option>)}</select></label>
+          <label className="field"><span>操作者 ID</span><input value={filters.actorId} onChange={(event) => updateFilter("actorId", event.target.value)} placeholder="用户 ID / token ID / 匿名 session" /></label>
+          <label className="field"><span>角色</span><select value={filters.actorRole} onChange={(event) => updateFilter("actorRole", event.target.value)}><option value="">全部</option><option value="admin">管理员</option><option value="user">用户</option><option value="anonymous">匿名</option></select></label>
+          <label className="field"><span>对象类型</span><select value={filters.targetType} onChange={(event) => updateFilter("targetType", event.target.value)}><option value="">全部</option><option value="site">站点</option><option value="version">版本</option><option value="token">Token</option><option value="screen">屏幕</option><option value="user">用户</option><option value="config">配置</option></select></label>
+        </div>
+      </details>
       <div className="filter-row audit-time-row">
         <label className="field"><span>开始时间</span><input type="datetime-local" value={filters.since} onChange={(event) => updateFilter("since", event.target.value)} /></label>
         <label className="field"><span>结束时间</span><input type="datetime-local" value={filters.until} onChange={(event) => updateFilter("until", event.target.value)} /></label>
@@ -3230,26 +3257,26 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
   const embedModeText = draft.embedPolicy === "deny" ? "禁止任何网站 iframe 嵌入应用" : draft.embedPolicy === "self" ? "只允许本站嵌入应用" : draft.embedPolicy === "allowlist" ? "本站和白名单来源可嵌入应用" : "允许任意网站 iframe 嵌入应用";
 
   return (
-    <section className="single-col-layout">
-      <div className="panel config-panel">
-        <div className="panel-head">
-          <div>
-            <h2>运行设置</h2>
-            <p>主站链接会自动跟随当前访问域名；这里主要管理应用泛域名、上传限制、跨域和嵌入策略。</p>
-          </div>
+    <section className="config-page-v2">
+      <div className="config-topbar">
+        <div className="config-topbar-copy">
+          <div className="eyebrow"><Settings size={16} />运行设置</div>
+          <h1>站点运行参数配置</h1>
+          <p>主站链接会自动跟随当前访问域名；这里主要管理应用泛域名、上传限制、跨域和嵌入策略。</p>
         </div>
+        <button className="button primary" type="button" onClick={() => void save()}><Save size={16} />保存运行设置</button>
+      </div>
+
+      <div className="config-grid">
         <div className="config-main">
           <FoldSection id="mainSite" label="主站访问入口 — 自动跟随当前浏览器域名" fold={fold}>
             <div className="readonly-callout">
-              <div>
-                <span>当前主站</span>
-                <code>{baseURLPreview}</code>
-              </div>
+              <div><span>当前主站</span><code>{baseURLPreview}</code></div>
               <em>首页、后台、/agents/、/screens/、二维码、Skill/MCP 文案和路径模式 /agent/{"{code}"} 都使用当前打开 PagePilot 的域名或 IP，不需要在后台配置入口地址。</em>
             </div>
           </FoldSection>
 
-          <FoldSection id="appURL" label="应用链接规则 — 决定发布后的应用 URL 怎么生成" fold={fold}>
+          <FoldSection id="appURL" label="应用链接规则" fold={fold}>
             <div className="form-grid">
               <label className="field rich-field">
                 <span>访问模式</span>

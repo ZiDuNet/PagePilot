@@ -357,8 +357,9 @@ func (s *Server) handleDeviceManifest(w http.ResponseWriter, r *http.Request) {
 			Path:     resp.AccessCookie.Path,
 			MaxAge:   resp.AccessCookie.MaxAgeSeconds,
 			Expires:  resp.AccessCookie.ExpiresAt,
-			SameSite: http.SameSiteLaxMode,
+			Secure:   s.cfg.AppURLScheme == "https",
 			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)

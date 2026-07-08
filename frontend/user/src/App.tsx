@@ -13,10 +13,12 @@ import {
   Copy,
   Download,
   Eye,
+  EyeOff,
   ExternalLink,
   FileArchive,
   FileCode2,
   FileText,
+  FileUp,
   Heart,
   KeyRound,
   Layers,
@@ -34,7 +36,7 @@ import {
   UserRound,
   Workflow
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { APIError, api, authHeaders } from "./api";
 import type {
@@ -1446,11 +1448,16 @@ function MarketplaceCard({
   const previewTimeoutRef = useRef<number | undefined>(undefined);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
   const [previewSrc, setPreviewSrc] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const title = item.title || item.code || "未命名作品";
   const appURL = appURLForDeploy(config, item);
   const isLocked = Boolean(item.accessProtected);
   const displayTags = (item.tags || []).slice(0, 3);
   const heat = getMarketHeat(item);
+
+  // 顶部注入的 toast helper（统一提示风格，避免 window.alert）
+  const showToast = (detail: string) => window.dispatchEvent(new CustomEvent("pagepilot-toast", { detail }));
 
   useEffect(() => {
     const node = cardRef.current;
@@ -1532,12 +1539,15 @@ function MarketplaceCard({
   };
 
   const deleteSite = async () => {
-    if (!window.confirm(`确认删除「${title}」？删除后站点和所有版本都会移除。`)) return;
+    setConfirmDelete(false);
+    setDeleting(true);
     try {
       await api(`/api/admin/sites/${encodeURIComponent(item.code)}`, { method: "DELETE" });
       onChanged();
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "删除失败，请确认你有权限删除这个作品。");
+      showToast(err instanceof Error ? err.message : "删除失败，请确认你有权限删除这个作品。");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -1597,7 +1607,7 @@ function MarketplaceCard({
             <ExternalLink size={16} />
           </a>
           {item.canManage && (
-            <button className="market-icon-action danger" type="button" title="删除作品" aria-label="删除作品" onClick={() => void deleteSite()}>
+            <button className="market-icon-action danger" type="button" title="删除作品" aria-label="删除作品" disabled={deleting} onClick={() => setConfirmDelete(true)}>
               <Trash2 size={16} />
             </button>
           )}
@@ -1639,6 +1649,20 @@ function MarketplaceCard({
           <span title="版本数"><Layers size={13} /><strong>v{item.versionCount || 1}</strong></span>
         </div>
       </div>
+      {confirmDelete && (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmDelete(false); }}>
+          <div className="user-confirm-card">
+            <div className="user-confirm-head"><strong>删除作品</strong><button className="button ghost" type="button" onClick={() => setConfirmDelete(false)}>关闭</button></div>
+            <div className="user-confirm-body">
+              <p>确认删除「{title}」？删除后站点和所有版本都会移除。</p>
+              <div className="user-confirm-actions">
+                <button className="button ghost" type="button" onClick={() => setConfirmDelete(false)}>取消</button>
+                <button className="button danger" type="button" disabled={deleting} onClick={() => void deleteSite()}>确认删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </article>
   );
 }
@@ -1676,8 +1700,10 @@ function MarketDetailViewFull({
   const [accessPassword, setAccessPassword] = useState("");
   const [accessError, setAccessError] = useState("");
   const [accessBusy, setAccessBusy] = useState(false);
-  const [accessUnlocked, setAccessUnlocked] = useState(() => !isLocked || canManage);
+  const [pendingDeleteVersion, setPendingDeleteVersion] = useState<VersionItem | null>(null);
   const [busyVersion, setBusyVersion] = useState<number | null>(null);
+  const showToast = (detail: string) => window.dispatchEvent(new CustomEvent("pagepilot-toast", { detail }));
+  const [accessUnlocked, setAccessUnlocked] = useState(() => !isLocked || canManage);
   const [showAllVersions, setShowAllVersions] = useState(false);
   const [showFileTree, setShowFileTree] = useState(false);
   const [detailPreviewReady, setDetailPreviewReady] = useState(false);
@@ -1771,11 +1797,14 @@ function MarketDetailViewFull({
   };
 
   const deleteVersion = async (version: VersionItem) => {
-    if (!window.confirm(`确认删除 v${version.versionNumber}？`)) return;
+    setPendingDeleteVersion(null);
     setBusyVersion(version.versionNumber);
     try {
       await api(`/api/deploys/${encodeURIComponent(item.code)}/versions/${version.versionNumber}`, { method: "DELETE" });
       await loadVersions();
+      showToast(`已删除 v${version.versionNumber}`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "删除版本失败");
     } finally {
       setBusyVersion(null);
     }
@@ -1953,7 +1982,7 @@ function MarketDetailViewFull({
                   <button className="button compact" type="button" onClick={() => void copyText(versionURL)}><Copy size={13} />复制</button>
                   {canManage && !version.isCurrent && <button className="button compact" type="button" disabled={busyVersion === version.versionNumber} onClick={() => void setCurrentVersion(version.versionNumber)}>设为当前</button>}
                   {canManage && <button className="button compact" type="button" disabled={busyVersion === version.versionNumber} onClick={() => void toggleVersionLock(version)}>{version.isLocked ? "解锁" : "锁定"}</button>}
-                  {canManage && !version.isCurrent && !version.isLocked && <button className="button compact danger" type="button" disabled={busyVersion === version.versionNumber} onClick={() => void deleteVersion(version)}>删除</button>}
+                  {canManage && !version.isCurrent && !version.isLocked && <button className="button compact danger" type="button" disabled={busyVersion === version.versionNumber} onClick={() => setPendingDeleteVersion(version)}>删除</button>}
                 </div>
               </div>
             );
@@ -1966,6 +1995,20 @@ function MarketDetailViewFull({
           {!versions.length && <span className="muted-line">暂无版本记录</span>}
         </div>
       </aside>
+      {pendingDeleteVersion && (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingDeleteVersion(null); }}>
+          <div className="user-confirm-card">
+            <div className="user-confirm-head"><strong>删除版本</strong><button className="button ghost" type="button" onClick={() => setPendingDeleteVersion(null)}>关闭</button></div>
+            <div className="user-confirm-body">
+              <p>确认删除 v{pendingDeleteVersion.versionNumber}？删除后无法恢复。</p>
+              <div className="user-confirm-actions">
+                <button className="button ghost" type="button" onClick={() => setPendingDeleteVersion(null)}>取消</button>
+                <button className="button danger" type="button" disabled={busyVersion === pendingDeleteVersion.versionNumber} onClick={() => void deleteVersion(pendingDeleteVersion)}>确认删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -2369,189 +2412,158 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
   };
 
   return (
-    <section className="tool-layout">
-      <div className="tool-main">
-        <div className="sub-hero">
+    <section className="deploy-page-v2">
+      {/* 紧凑顶部条幅 */}
+      <div className="deploy-topbar">
+        <div className="deploy-topbar-copy">
           <div className="eyebrow"><Upload size={16} />手动部署</div>
-          <h1>上传 HTML、Markdown、目录或 ZIP</h1>
-          <p>手动部署适合临时调试和人工发布。长期协作建议使用 Agent、MCP 或 pagep CLI。</p>
-          <div className="hero-actions">
-            <a className="button primary" href="/agents/"><Bot size={18} />交给 Agent 部署</a>
-            <a className="button" href="/market"><PackageOpen size={18} />进入创作市场</a>
-          </div>
-          <div className="deploy-format-strip" aria-label="支持的发布格式">
-            <span><FileCode2 size={15} />HTML</span>
-            <span><FileText size={15} />Markdown</span>
-            <span><FileArchive size={15} />ZIP</span>
-            <span><Layers size={15} />多文件目录</span>
-          </div>
+          <h1>上传 HTML / Markdown / ZIP / 多文件目录</h1>
         </div>
-        <div className="preview-box">
-          {mode === "single" ? (
-            <iframe title="实时预览" srcDoc={content} sandbox={PREVIEW_IFRAME_SANDBOX} />
-          ) : (
-            <div>
-              <FileArchive size={36} />
-              <strong>多文件站点</strong>
-              <span>共 {files.length} 个文件；ZIP/目录会自动识别 index.html、README.md 或首个 HTML/Markdown 入口。</span>
-            </div>
-          )}
+        <div className="deploy-topbar-actions">
+          <a className="button" href="/agents/"><Bot size={16} />Agent 部署</a>
+          <a className="button" href="/market"><PackageOpen size={16} />创作市场</a>
         </div>
       </div>
-      <aside className="tool-panel">
-        <div className="segmented">
-          <button className={mode === "single" ? "active" : ""} type="button" onClick={() => setMode("single")}><FileCode2 size={15} />单文件</button>
-          <button className={mode === "multi" ? "active" : ""} type="button" onClick={() => setMode("multi")}><FileArchive size={15} />多文件</button>
+
+      <div className="deploy-workspace">
+        {/* 左侧：预览 / 上传区 */}
+        <div className="deploy-stage">
+          <div className="deploy-mode-bar">
+            <button className={mode === "single" ? "active" : ""} type="button" onClick={() => setMode("single")}><FileCode2 size={15} />单文件</button>
+            <button className={mode === "multi" ? "active" : ""} type="button" onClick={() => setMode("multi")}><FileArchive size={15} />多文件</button>
+          </div>
+
+          {mode === "single" ? (
+            <>
+              <label className="deploy-upload-zone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); void readUploaded(e.dataTransfer.files); }}>
+                <input type="file" accept=".html,.htm,.md,.markdown,.zip" onChange={(e) => void readUploaded(e.target.files)} />
+                <FileUp size={28} />
+                <strong>上传 HTML / Markdown / ZIP</strong>
+                <span>或直接粘贴源码到下方编辑器</span>
+              </label>
+              <div className="deploy-editor-wrap">
+                <textarea className="deploy-editor" value={content} onChange={(e) => setContent(e.target.value)} placeholder="粘贴 HTML 或 Markdown 源码，服务端会自动识别格式" spellCheck={false} />
+                <div className="preview-box">
+                  {content.trim() ? (
+                    <iframe title="实时预览" srcDoc={content} sandbox={PREVIEW_IFRAME_SANDBOX} />
+                  ) : (
+                    <div className="preview-empty"><Eye size={32} /><span>粘贴源码后，实时预览会自动显示</span></div>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="deploy-upload-area">
+              <label className="deploy-upload-zone large" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); void readUploaded(e.dataTransfer.files); }}>
+                <input type="file" accept=".html,.htm,.md,.markdown,.zip" multiple onChange={(e) => void readUploaded(e.target.files)} />
+                <input type="file" multiple webkitdirectory="" onChange={(e) => void readUploaded(e.target.files)} />
+                <FileUp size={36} />
+                <strong>选择文件或拖拽到此处</strong>
+                <span>支持多文件、整个目录、或单 ZIP 包。自动识别入口文件。</span>
+              </label>
+              {files.length > 0 && (
+                <div className="deploy-file-list">
+                  {files.map((f) => (
+                    <div className="deploy-file-row" key={f.path}>
+                      <code>{f.path}</code>
+                      <span>{f.isText ? "text" : "bin"} · {formatSize(f.size)}</span>
+                      <button className="icon-button danger compact" type="button" onClick={() => setFiles((prev) => prev.filter((x) => x.path !== f.path))}><Trash2 size={14} /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 部署按钮区 */}
+          <div className="deploy-submit-bar">
+            <span className="deploy-size-info">大小 {formatSize(totalSize)} · {mode === "multi" ? `${files.length} 个文件` : "单文件"}</span>
+            <button className="button primary large" type="button" disabled={busy || !ready} onClick={submit}>
+              <Upload size={18} />{busy ? "部署中..." : "立即部署"}
+            </button>
+          </div>
         </div>
-        <label className="field">
-          <span>作品标题</span>
-          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="给作品起一个可读名称" />
-        </label>
-        <label className="field">
-          <span>描述</span>
-          <input value={description} onChange={(event) => setDescription(event.target.value)} maxLength={240} placeholder="一句话说明用途" />
-        </label>
-        <div className="field-grid three">
-          <label className="field">
-            <span>市场可见性</span>
-            <select value={visibility} onChange={(event) => setVisibility(event.target.value as "public" | "unlisted")}>
-              <option value="public" disabled={!canPublishToMarket}>进入创作市场（登录后可选）</option>
-              <option value="unlisted">不进入市场</option>
-            </select>
-            {!canPublishToMarket && <em>匿名发布默认仅链接访问，登录后可进入创作市场。</em>}
-          </label>
-          <label className="field">
-            <span>作品分类（可选）</span>
-            <select value={deployCategory} onChange={(event) => setDeployCategory(event.target.value as MarketCategory)} disabled={createVersion}>
-              <option value="">暂不分类</option>
-              {marketCategories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}
-            </select>
-          </label>
-          <label className="field">
-            <span>作品标签</span>
-            <input
-              value={tagsInput}
-              onChange={(event) => setTagsInput(event.target.value)}
-              disabled={createVersion}
-              placeholder="官网, 看板, 活动页"
-              autoComplete="off"
-              data-lpignore="true"
-              name="pagepilot-deploy-tags"
-            />
-          </label>
-        </div>
-        <div className="field-grid">
-          <label className="field">
-            <span>访问密码</span>
-            <input
-              value={accessPassword}
-              onChange={(event) => setAccessPassword(event.target.value)}
-              type="password"
-              placeholder="可选"
-              autoComplete="new-password"
-              data-lpignore="true"
-              name="pagepilot-access-password"
-            />
-          </label>
-        </div>
-        <label className="check-line">
-          <input type="checkbox" checked={enableCustom || createVersion} disabled={createVersion} onChange={(event) => setEnableCustom(event.target.checked)} />
-          自定义 code 后缀
-        </label>
-        {enableCustom && !createVersion && (
-          <input className="standalone-input mono" value={customCode} onChange={(event) => setCustomCode(event.target.value)} placeholder={createVersion ? "输入已有 code" : "my-landing"} />
-        )}
-        <label className="check-line">
-          <input
-            type="checkbox"
-            checked={createVersion}
-            onChange={(event) => {
-              setCreateVersion(event.target.checked);
-              if (event.target.checked) setEnableCustom(false);
-            }}
-          />
-          更新已有发布，追加为新版本
-        </label>
-        {createVersion && (
-          <div className="update-version-picker">
+
+        {/* 右侧：属性面板 */}
+        <aside className="deploy-props">
+          <div className="deploy-props-head">
+            <strong>发布设置</strong>
+            <span className="mini-label">必填项标 *</span>
+          </div>
+          <div className="deploy-props-body">
             <label className="field">
-              <span>选择要更新的发布</span>
-              <select value={customCode} onChange={(event) => setCustomCode(event.target.value)} disabled={loadingUpdatableSites || !updatableSites.length}>
-                <option value="">{loadingUpdatableSites ? "正在加载可更新发布..." : "请选择当前账号或匿名会话的发布"}</option>
-                {updatableSites.map((site) => (
-                  <option value={site.code} key={site.code}>
-                    {(site.title || site.code)} / {site.code} / v{site.currentVersion || site.versionCount || 1}
-                  </option>
-                ))}
+              <span>作品标题</span>
+              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="给作品起一个可读名称" />
+            </label>
+            <label className="field">
+              <span>描述 *</span>
+              <input value={description} onChange={(e) => setDescription(e.target.value)} maxLength={240} placeholder="一句话说明用途（必填）" />
+            </label>
+            <label className="field">
+              <span>可见性</span>
+              <select value={visibility} onChange={(e) => setVisibility(e.target.value as "public" | "unlisted")}>
+                <option value="unlisted">仅链接访问</option>
+                <option value="public" disabled={!canPublishToMarket}>公开进创作市场</option>
               </select>
             </label>
-            <div className="hint-box">
-              更新只能从当前登录用户或当前匿名 session 拥有的发布中选择；认领后的匿名发布需要登录对应账号更新。
-              {updatableSitesError && <strong>{updatableSitesError}</strong>}
-              {!loadingUpdatableSites && !updatableSitesError && !updatableSites.length && <strong>暂无可更新发布。</strong>}
-            </div>
+            <label className="field">
+              <span>作品分类</span>
+              <select value={deployCategory} onChange={(e) => setDeployCategory(e.target.value as MarketCategory)} disabled={createVersion}>
+                <option value="">暂不分类</option>
+                {marketCategories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}
+              </select>
+            </label>
+            <label className="field">
+              <span>作品标签</span>
+              <input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} disabled={createVersion} placeholder="官网, 看板, 活动页" autoComplete="off" data-lpignore="true" />
+            </label>
+            <label className="field">
+              <span>访问密码</span>
+              <input value={accessPassword} onChange={(e) => setAccessPassword(e.target.value)} type="password" placeholder="可选，至少 8 位" autoComplete="new-password" data-lpignore="true" />
+            </label>
+            <label className="check-line">
+              <input type="checkbox" checked={enableCustom || createVersion} disabled={createVersion} onChange={(e) => setEnableCustom(e.target.checked)} />
+              自定义 code
+            </label>
+            {enableCustom && !createVersion && (
+              <input className="field tight mono-input" value={customCode} onChange={(e) => setCustomCode(e.target.value)} placeholder="my-landing" />
+            )}
+            <label className="check-line">
+              <input type="checkbox" checked={createVersion} onChange={(e) => { setCreateVersion(e.target.checked); if (e.target.checked) setEnableCustom(false); }} />
+              更新已有发布
+            </label>
+            {createVersion && (
+              <div className="update-version-picker">
+                <select value={customCode} onChange={(e) => setCustomCode(e.target.value)} disabled={loadingUpdatableSites || !updatableSites.length}>
+                  <option value="">{loadingUpdatableSites ? "加载中..." : "选择要更新的发布"}</option>
+                  {updatableSites.map((site) => (
+                    <option value={site.code} key={site.code}>{(site.title || site.code)} · {site.code} · v{site.currentVersion || site.versionCount || 1}</option>
+                  ))}
+                </select>
+                {updatableSitesError && <div className="alert error compact-alert">{updatableSitesError}</div>}
+              </div>
+            )}
           </div>
-        )}
+        </aside>
+      </div>
 
-        {mode === "single" ? (
-          <>
-            <label className="upload-line">
-              <input type="file" accept=".html,.htm,.md,.markdown,.txt,.zip" onChange={(event) => void readUploaded(event.target.files)} />
-              <Upload size={18} />上传 HTML / Markdown / ZIP
-            </label>
-            <textarea className="code-input" value={content} onChange={(event) => setContent(event.target.value)} placeholder="<!doctype html>..." />
-            <details className="entry-field-toggle">
-              <summary>{filename ? `入口提示：${filename}` : "指定入口文件（高级）"}</summary>
-              <label className="field">
-                <span>入口文件名（可选）</span>
-                <input value={filename} onChange={(event) => setFilename(event.target.value)} placeholder="留空自动识别；多入口时填写真实相对路径" />
-              </label>
-            </details>
-          </>
-        ) : (
-          <>
-            <label className="upload-line">
-              <input type="file" multiple webkitdirectory="" onChange={(event) => void readUploaded(event.target.files)} />
-              <Upload size={18} />上传目录
-            </label>
-            <label className="upload-line">
-              <input type="file" accept=".zip" onChange={(event) => void readUploaded(event.target.files)} />
-              <FileArchive size={18} />上传 ZIP 包
-            </label>
-            <div className="file-editor-list">
-              {files.map((file, index) => (
-                <div className="file-editor" key={index}>
-                  <input value={file.path} onChange={(event) => setFiles((prev) => prev.map((f, i) => i === index ? { ...f, path: event.target.value } : f))} />
-                  {file.contentBase64 ? (
-                    <div className="binary-file-note">二进制资源 / {formatSize(file.size)} / 将随整站一起上传</div>
-                  ) : (
-                    <textarea value={file.content} onChange={(event) => setFiles((prev) => prev.map((f, i) => i === index ? { ...f, content: event.target.value, size: fileTextSize(event.target.value) } : f))} />
-                  )}
-                  <button type="button" onClick={() => setFiles((prev) => prev.filter((_, i) => i !== index))} disabled={files.length === 1}>移除</button>
-                </div>
-              ))}
-              <button className="button" type="button" onClick={() => setFiles((prev) => [...prev, { path: "", content: "", isText: true, size: 0 }])}>新增文件</button>
-            </div>
-            <details className="entry-field-toggle">
-              <summary>{filename ? `入口提示：${filename}` : "指定入口文件（高级）"}</summary>
-              <label className="field">
-                <span>入口文件名（可选）</span>
-                <input value={filename} onChange={(event) => setFilename(event.target.value)} placeholder="留空由服务端自动识别；多入口时填写真实相对路径" />
-              </label>
-            </details>
-          </>
-        )}
-
-        <div className="deploy-summary">
-          <span>大小 {formatSize(totalSize)}</span>
-          <span>上限 {formatSize(config?.limits?.maxSiteTotalBytes)}</span>
+      {error && (
+        <div className="deploy-error-banner">
+          <DeployErrorPanel message={error} error={errorDetail} />
+          <button className="button compact" type="button" onClick={() => { setError(""); setErrorDetail(null); }}>关闭</button>
         </div>
-        <button className="button primary full" type="button" disabled={!ready || busy} onClick={submit}>
-          <Rocket size={18} />{busy ? "部署中..." : "立即部署"}
-        </button>
-        {error && <DeployErrorPanel message={error} error={errorDetail} />}
-      </aside>
-      {result && <DeployResult result={result} onClose={() => setResult(null)} />}
+      )}
+
+      {result && (
+        <div className="result-toast" role="status">
+          <div><strong>部署成功</strong><span>{result.code} · v{result.versionNumber || 1} · {formatSize(result.size)}</span></div>
+          <div className="actions tight">
+            <a className="button primary compact" href={sameSiteURL(result.url)} target="_blank" rel="noreferrer"><Eye size={15} />打开</a>
+            <button className="button compact" type="button" onClick={() => navigator.clipboard.writeText(sameSiteURL(result.url))}><Copy size={15} />复制链接</button>
+            <button className="button compact" type="button" onClick={() => setResult(null)}>关闭</button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -2778,13 +2790,15 @@ function SkillInstallCard({ baseURL }: { baseURL: string }) {
 function ScreensPage() {
   const [screens, setScreens] = useState<ScreenInfo[]>([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api<ScreensResponse>("/api/screens")
-      .then((data) => setScreens(data.screens || []))
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+      .then((data) => { setScreens(data.screens || []); setLoading(false); })
+      .catch((err) => { setError(err instanceof Error ? err.message : String(err)); setLoading(false); });
   }, []);
 
+  const isAuthError = error.toLowerCase().includes("token") || error.toLowerCase().includes("401") || error.toLowerCase().includes("unauthorized");
   const onlineCount = screens.filter((screen) => String(screen.status || "").toLowerCase().includes("online")).length;
   const assignedCount = screens.filter((screen) => screen.currentSiteCode).length;
   const heartbeats = screens
@@ -2806,6 +2820,13 @@ function ScreensPage() {
   ];
   const screenStatusLabel = (screen: ScreenInfo) =>
     String(screen.status || "").toLowerCase().includes("online") ? "在线" : (screen.status || "未知");
+
+  const accessMethods = [
+    { icon: <Monitor size={14} />, label: "Web 管理后台", desc: "admin?tab=screens 绑定/投放/截图/指令" },
+    { icon: <Download size={14} />, label: "Skill（Python）", desc: "pagep screen list/bind/publish/screenshot" },
+    { icon: <Code2 size={14} />, label: "MCP（JSON-RPC）", desc: "list_screens / publish_screen / send_screen_command" },
+    { icon: <Workflow size={14} />, label: "CLI（Go）", desc: "pagep screens 子命令组" },
+  ];
 
   return (
     <section className="content-page screen-page-v3">
@@ -2831,6 +2852,22 @@ function ScreensPage() {
         </div>
       </section>
 
+      {/* 多端访问方式 */}
+      <section className="screen-access-methods">
+        <span className="mini-label">多端可用</span>
+        <div className="access-method-grid">
+          {accessMethods.map((m) => (
+            <div className="access-method-card" key={m.label}>
+              <span className="access-method-icon">{m.icon}</span>
+              <div>
+                <strong>{m.label}</strong>
+                <em>{m.desc}</em>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       <section className="screen-metric-row">
         {metrics.map((metric) => (
           <div className="screen-metric-card" key={metric.label}>
@@ -2847,11 +2884,26 @@ function ScreensPage() {
             <div>
               <span className="mini-label">MY SCREENS</span>
               <h2>我的屏幕</h2>
-              <p>{error ? "登录注册用户后可查看自己的屏幕。" : "服务器：" + currentOrigin()}</p>
+              <p>{isAuthError ? "登录注册用户后可查看和管理屏幕。" : error ? "加载失败" : "服务器：" + currentOrigin()}</p>
             </div>
             <a className="button compact" href="/admin?tab=screens">管理绑定</a>
           </div>
-          {error ? <div className="empty-wide">{error}</div> : (
+          {isAuthError ? (
+            <div className="screen-auth-hint">
+              <div className="screen-hint-icon"><KeyRound size={28} /></div>
+              <strong>需要注册用户 Token</strong>
+              <p>屏幕功能（绑定、投放、截图、指令）要求注册用户身份。匿名用户仅能浏览，无法操作。</p>
+              <p>登录后在<a href="/admin?tab=tokens">用户中心 API 令牌</a> 创建 Token，然后通过 Web 后台、Skill、MCP 或 CLI 使用。</p>
+              <div className="screen-hint-actions">
+                <a className="button primary" href="/admin">登录 / 注册</a>
+                <a className="button" href="/agents/">Skill & MCP 文档</a>
+              </div>
+            </div>
+          ) : loading ? (
+            <div className="empty-wide">正在加载屏幕列表...</div>
+          ) : error ? (
+            <div className="empty-wide">{error}</div>
+          ) : (
             <div className="screen-table-list">
               {screens.map((screen) => (
                 <div className="screen-table-row" key={screen.id}>

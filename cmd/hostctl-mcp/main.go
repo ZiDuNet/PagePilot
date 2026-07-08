@@ -1275,4 +1275,4 @@ func validSiteSecurityMode(value string) bool {
 }
 
 // _unused 让 strings import 不被自动移除（部分预留）。
-var _ = strings.TrimSpace
+// strings 在文件其他位置被广泛使用，import 不会因一处缺失而消失，此行冗余已移除。

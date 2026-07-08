@@ -47,6 +47,10 @@ services:
       # 生产模式：创建首个管理员后，后台访问必须登录。
       REQUIRE_AUTH: "true"
 
+      # 主密钥：已有线上必须沿用旧值；旧版本未配置时会使用下方历史兼容值。
+      # 全新空库部署建议在 .env 中设置 HOSTCTL_MASTER_KEY=$(openssl rand -base64 32)。
+      HOSTCTL_MASTER_KEY: "${HOSTCTL_MASTER_KEY:-pagepilot-dev-master-key-0000000}"
+
       # 发布冷却时间，用于降低 Agent 误触发重复发布的风险。
       HOSTCTL_COOLDOWN_SECONDS: "10"
 

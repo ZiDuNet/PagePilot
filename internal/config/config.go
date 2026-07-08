@@ -314,6 +314,9 @@ func Default() Config {
 		if c.DBPath == "/var/lib/hostctl/hostctl.db" {
 			c.DBPath = filepath.Join("data", "hostctl.db")
 		}
+		if os.Getenv("HOSTCTL_APP_URL_SCHEME") == "" && os.Getenv("APP_URL_SCHEME") == "" {
+			c.AppURLScheme = "http"
+		}
 		if os.Getenv("HOSTCTL_COOLDOWN_SECONDS") == "" {
 			c.CooldownSeconds = 1
 		}

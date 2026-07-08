@@ -7,44 +7,62 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"sync"
 )
 
 // cipherKey 是 AES 加密/解密访问密码明文的主密钥。
 // 优先使用环境变量 HOSTCTL_MASTER_KEY（32 字节 base64），
 // 未配置时使用固定默认值（仅用于开发环境，生产环境必须配置）。
-var cipherKey [32]byte
-
-func init() {
-	// 尝试从环境变量读取主密钥
-	// 如果为空，使用开发默认密钥（仅 dev 模式安全）
-}
+var (
+	cipherKeyMu sync.RWMutex
+	cipherKey   [32]byte
+)
 
 // SetMasterKey 设置 AES 主密钥（由 server 启动时调用）。
 func SetMasterKey(key [32]byte) {
+	cipherKeyMu.Lock()
+	defer cipherKeyMu.Unlock()
 	cipherKey = key
 }
 
+// currentKey 返回当前密钥（线程安全）。
+func currentKey() [32]byte {
+	cipherKeyMu.RLock()
+	defer cipherKeyMu.RUnlock()
+	return cipherKey
+}
+
 // EnsureCipherKey 确保 cipherKey 已初始化（dev 模式 fallback）。
+// 仅在密钥全零时填入开发默认值；生产环境必须由 main.go 调用 SetMasterKey。
 func EnsureCipherKey() {
-	// 如果 cipherKey 全零，使用开发默认密钥
-	allZero := true
-	for _, b := range cipherKey {
+	if !currentKeyIsZero() {
+		return
+	}
+	var key [32]byte
+	copy(key[:], []byte("pagepilot-dev-master-key-0000000"))
+	cipherKeyMu.Lock()
+	defer cipherKeyMu.Unlock()
+	if cipherKey == [32]byte{} {
+		cipherKey = key
+	}
+}
+
+func currentKeyIsZero() bool {
+	k := currentKey()
+	for _, b := range k {
 		if b != 0 {
-			allZero = false
-			break
+			return false
 		}
 	}
-	if allZero {
-		// 开发环境默认密钥（仅在 HOSTCTL_DEV 模式下安全）
-		copy(cipherKey[:], []byte("pagepilot-dev-master-key-0000000"))
-	}
+	return true
 }
 
 // EncryptPassword 使用 AES-GCM 加密明文密码，返回 base64 编码的密文。
 func EncryptPassword(plaintext string) (string, error) {
 	EnsureCipherKey()
 	plaintextBytes := []byte(plaintext)
-	block, err := aes.NewCipher(cipherKey[:])
+	key := currentKey()
+	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return "", err
 	}
@@ -67,7 +85,8 @@ func DecryptPassword(ciphertextB64 string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	block, err := aes.NewCipher(cipherKey[:])
+	key := currentKey()
+	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return "", err
 	}

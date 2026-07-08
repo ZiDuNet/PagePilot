@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yourorg/hostctl/internal/api"
 )
@@ -33,7 +34,8 @@ func New(baseURL, token string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		http:    &http.Client{},
+		// P15：30s 整体超时，避免服务器无响应时进程永久挂起
+		http: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -84,11 +86,25 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
+		// P17：先尝试解析为 JSON，失败时把响应体原文存入 Detail（最多 500 字节）
 		var apiErr api.APIError
-		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if jsonErr := json.Unmarshal(body, &apiErr); jsonErr != nil {
+			apiErr = api.APIError{
+				ErrorCode: "HTTP_ERROR",
+				Detail:     fmt.Sprintf("non-JSON response (status %d): %s", resp.StatusCode, truncateString(string(body), 500)),
+			}
+		}
 		return resp, &APIError{Status: resp.StatusCode, Body: &apiErr}
 	}
 	return resp, nil
+}
+
+func truncateString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // doGet 发 GET 请求并把响应解码到 v。

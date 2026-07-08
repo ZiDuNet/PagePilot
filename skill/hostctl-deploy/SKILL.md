@@ -205,13 +205,7 @@ deck/
 └── assets/
     ├── reveal.js
     ├── reveal-base.css
-    ├── theme.css
-    └── plugin/
-        ├── highlight/
-        │   ├── plugin.js
-        │   └── monokai.css
-        └── notes/
-            └── notes.js
+    └── theme.css
 ```
 
 ### index.html 要求
@@ -225,7 +219,6 @@ deck/
   <title>幻灯片标题</title>
   <link rel="stylesheet" href="assets/reveal-base.css">
   <link rel="stylesheet" href="assets/theme.css">
-  <link rel="stylesheet" href="assets/plugin/highlight/monokai.css">
 </head>
 <body>
   <div class="reveal">
@@ -239,16 +232,16 @@ deck/
     </div>
   </div>
   <script src="assets/reveal.js"></script>
-  <script src="assets/plugin/highlight/plugin.js"></script>
   <script>
     Reveal.initialize({
       embedded: true,
-      hash: true,
+      hash: false,
+      history: false,
       controls: true,
       progress: true,
       slideNumber: true,
       transition: "slide",
-      plugins: [RevealHighlight]
+      plugins: []
     });
   </script>
 </body>
@@ -258,24 +251,48 @@ deck/
 关键约束：
 
 - `Reveal.initialize` 必须设置 `embedded: true`，避免 iframe 父页面抢键盘事件。
+- 默认关闭 `hash` 和 `history`，避免市场预览、详情预览或屏幕 WebView 中修改父页面 URL。
 - 不要引用 jsdelivr、unpkg、cdnjs 等 CDN；所有资源放进 `assets/`。
 - 每页内容必须精简；Reveal.js 不会自动滚动，溢出会被裁切。
 - `reveal-base.css` 在前，`theme.css` 在后。
 - 代码高亮不是必需项；没有代码页时不要引入额外高亮资源。
+- 不要把 ESM 插件源码当普通 script 引入；普通 `<script>` 只能加载无 `import` / `export` 的浏览器脚本。
 
 ### 复制随包资源
 
-Skill 包内置了 Reveal.js 资源和主题。生成幻灯片时复制：
+Skill 包内置了 Reveal.js 资源和主题。默认生成幻灯片时只复制必要资源：
 
 ```bash
-mkdir -p deck/assets/plugin/notes deck/assets/plugin/highlight
+mkdir -p deck/assets
 cp assets/reveal.js deck/assets/
 cp assets/reveal-base.css deck/assets/
 cp assets/themes/business.css deck/assets/theme.css
-cp assets/plugin/notes/notes.js deck/assets/plugin/notes/
+```
+
+只有确实需要代码高亮时，才额外复制随包的浏览器安全高亮适配器：
+
+```bash
+mkdir -p deck/assets/plugin/highlight
 cp assets/plugin/highlight/plugin.js deck/assets/plugin/highlight/
 cp assets/plugin/highlight/monokai.css deck/assets/plugin/highlight/
 ```
+
+并把默认 HTML 中的初始化段替换为：
+
+```html
+<link rel="stylesheet" href="assets/plugin/highlight/monokai.css">
+<script src="assets/plugin/highlight/plugin.js"></script>
+<script>
+  Reveal.initialize({
+    embedded: true,
+    hash: false,
+    history: false,
+    plugins: [RevealHighlight]
+  });
+</script>
+```
+
+随包 `RevealHighlight` 适配器不会内置完整 highlight.js 运行时；没有 `window.hljs` 时只做安全降级，不会抛出 `RevealHighlight is not defined`。如果用户明确要求真正语法着色，可以生成预高亮 HTML，或额外随站点打包一个浏览器版 `hljs` 后再启用该插件。
 
 发布：
 
@@ -482,6 +499,9 @@ MCP 返回里的 URL 同样以服务端 API 返回值为准。
 | 更新变成新建 | 没有明确已有 code | 先列出自己的站点，再用 `--update` 或 `append` |
 | 幻灯片空白 | Reveal.js 资源未打包或路径错误 | 确保 `assets/reveal.js`、`reveal-base.css`、`theme.css` 都存在 |
 | 幻灯片翻页键不响应 | iframe 焦点问题 | 设置 `embedded: true`，提示用户点击页面区域聚焦 |
+| `Cannot use import statement outside a module` | 把 ESM 插件源码当成普通 `<script>` 加载 | 移除该插件，或使用 Skill 随包的浏览器安全 `plugin.js` |
+| `RevealHighlight is not defined` | 初始化里写了 `plugins: [RevealHighlight]`，但高亮插件没有正确加载 | 无代码页时改成 `plugins: []`；有代码页时复制 `assets/plugin/highlight/plugin.js` |
+| `Unsafe attempt to load URL ... Domains, protocols and ports must match` | 预览 iframe 或 hosted CSP 的 sandbox 让页面处于隔离 origin，脚本尝试改父页面或 URL | Reveal 默认使用 `hash: false` / `history: false`；需要完整浏览器能力时打开正式页面，或由管理员审查后调整安全模式 |
 | 幻灯片文字被裁切 | 单页内容过多 | 拆页，每页只放一个核心观点 |
 | 屏幕投放失败 | 未使用注册用户 Token 或屏幕不属于该用户 | 先 `screen list`，确认 Token 和屏幕归属 |
 | 加密作品无法预览 | 需要访问密码授权 | 打开应用输入密码；授权有效期为 5 分钟，且绑定目标版本 |

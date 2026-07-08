@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"log"
 	"os"
@@ -16,6 +17,49 @@ import (
 	"github.com/yourorg/hostctl/internal/deploy"
 	"github.com/yourorg/hostctl/internal/store"
 )
+
+// loadMasterKey 从环境变量加载 AES-256 主密钥。
+// 优先级：HOSTCTL_MASTER_KEY > dev 默认密钥。
+// 生产环境未设置时启动失败。
+func loadMasterKey() ([32]byte, error) {
+	var key [32]byte
+	raw := strings.TrimSpace(os.Getenv("HOSTCTL_MASTER_KEY"))
+	if raw == "" {
+		if isDev() {
+			copy(key[:], "pagepilot-dev-master-key-0000000")
+			return key, nil
+		}
+		return key, errMasterKeyMissing
+	}
+
+	// 接受 base64 或原始 32 字节字符串
+	if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil && len(decoded) == 32 {
+		copy(key[:], decoded)
+		return key, nil
+	}
+	if len(raw) >= 32 {
+		copy(key[:], []byte(raw)[:32])
+		return key, nil
+	}
+	return key, errMasterKeyLength
+}
+
+var (
+	errMasterKeyMissing = &configError{msg: "HOSTCTL_MASTER_KEY is required in production (set HOSTCTL_DEV=1 to use dev fallback)"}
+	errMasterKeyLength  = &configError{msg: "HOSTCTL_MASTER_KEY must decode to exactly 32 bytes"}
+)
+
+type configError struct{ msg string }
+
+func (e *configError) Error() string { return e.msg }
+
+func isDev() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("HOSTCTL_DEV"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
 
 func main() {
 	cfg := config.Default()
@@ -54,6 +98,17 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("config invalid: %v", err)
 	}
+
+	// 加载 AES 主密钥（SEC-01：生产环境强制配置）
+	masterKey, err := loadMasterKey()
+	if err != nil {
+		if *dev || isDev() {
+			log.Printf("WARNING: using insecure dev master key (only safe in dev mode)")
+		} else {
+			log.Fatalf("master key: %v", err)
+		}
+	}
+	auth.SetMasterKey(masterKey)
 
 	// 确保静态根目录存在
 	if err := os.MkdirAll(cfg.HostedDir, 0o755); err != nil {

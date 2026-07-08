@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -125,6 +126,9 @@ func main() {
 	root := &cobra.Command{
 		Use:   "pagep",
 		Short: "PagePilot CLI for Agent-driven application publishing",
+		// 抑制 cobra 内置错误输出（printErr 已负责友好输出）
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		// 持久 flag（所有子命令可用）
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			// cobra 默认会把 -h 处理掉；这里什么都不做
@@ -157,7 +161,10 @@ func main() {
 	)
 
 	if err := root.Execute(); err != nil {
-		// cobra 已经打印了错误
+		// 错误由 RunE 内部用 printErr 友好输出；cobra 已被静音
+		if errors.Is(err, errSilent) {
+			os.Exit(1)
+		}
 		os.Exit(1)
 	}
 }
@@ -1840,4 +1847,6 @@ func cmdAccess() *cobra.Command {
 }
 
 // errSilent 表示错误已经被 printErr 打印过，cobra 不要再打印。
+// 保留向后兼容：所有 RunE 可以直接返回 printErr 包装后的 errSilent，
+// 也可以返回 nil（cobra 已 SilenceErrors）— 推荐后者。
 var errSilent = fmt.Errorf("__silent__")

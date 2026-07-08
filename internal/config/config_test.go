@@ -40,3 +40,24 @@ func TestEmailVerificationRequiresSMTPConfig(t *testing.T) {
 		t.Fatalf("Validate() error = nil; want SMTP config error")
 	}
 }
+
+func TestDefaultDevUsesHTTPAppURLScheme(t *testing.T) {
+	t.Setenv("HOSTCTL_DEV", "1")
+
+	cfg := Default()
+
+	if cfg.AppURLScheme != "http" {
+		t.Fatalf("AppURLScheme = %q; want http in dev mode", cfg.AppURLScheme)
+	}
+}
+
+func TestDefaultDevKeepsExplicitAppURLScheme(t *testing.T) {
+	t.Setenv("HOSTCTL_DEV", "1")
+	t.Setenv("HOSTCTL_APP_URL_SCHEME", "https")
+
+	cfg := Default()
+
+	if cfg.AppURLScheme != "https" {
+		t.Fatalf("AppURLScheme = %q; want explicit https", cfg.AppURLScheme)
+	}
+}

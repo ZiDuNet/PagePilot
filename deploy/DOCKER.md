@@ -18,6 +18,18 @@ PagePilot 不需要配置入口域名。浏览器访问时，首页、后台、`
 
 Skill、MCP 和 CLI 不读取所谓“主站域名配置”。它们使用 `--server`、`PAGEPILOT_SERVER` 或客户端保存的服务器地址作为 API 控制面入口，并把这个入口交给后端用于路径模式 URL 生成。发布成功后的 URL 仍以后端响应为准。旧 `HOSTCTL_SERVER` 仍兼容读取，但新配置建议使用 `PAGEPILOT_SERVER`。
 
+主密钥要按部署类型处理：
+
+- 已上线旧环境：必须继续使用原来的 `HOSTCTL_MASTER_KEY`。如果旧版本从未配置过主密钥，兼容旧数据的历史值是 `pagepilot-dev-master-key-0000000`，当前 `docker-compose.yml` 会在未设置环境变量时自动使用这个值。
+- 全新空库部署：建议准备 `.env` 并生成独立主密钥：
+
+```bash
+cp .env.example .env
+openssl rand -base64 32
+```
+
+把生成结果填入 `.env` 中的 `HOSTCTL_MASTER_KEY`。这个主密钥用于加密服务端敏感数据；升级或重启容器时不要更换，否则旧的加密数据可能无法解密。`.env` 文件不要提交到 Git。
+
 然后启动：
 
 ```bash
@@ -201,6 +213,7 @@ docker compose up -d
 ## 安全注意
 
 - 生产环境保持 `REQUIRE_AUTH=true`。
+- 已上线环境必须保留原 `HOSTCTL_MASTER_KEY`；旧版本从未配置时使用历史兼容值 `pagepilot-dev-master-key-0000000`。全新空库推荐使用 `openssl rand -base64 32` 生成独立值并写入 `.env`，不要把 `.env` 提交到 Git。
 - 首次登录后立即修改默认管理员密码。
 - Token 明文只返回一次，请使用密码管理器或 CI Secret 保存。
 - 访问密码仅保护前台查看入口。匿名用户也可以输入访问密码查看加密站点；输入正确后浏览器获得 5 分钟访问票据，改密码后旧票据立即失效。

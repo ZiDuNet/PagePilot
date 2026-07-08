@@ -118,7 +118,29 @@ def save_bound_token(base: str, token: str, username: str, token_id: str, agent:
     }
     if agent:
         payload.update(agent)
-    CONFIG_FILE.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    # P1：使用 os.open 配合 O_CREAT|O_WRONLY|O_TRUNC + 0o600 模式，
+    # 避免临时文件在 umask 022 系统上创建为 0o644 泄露 Bearer Token
+    fd = os.open(
+        str(CONFIG_FILE),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+    except Exception:
+        # 写入失败时关闭 fd
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    # 后向兼容：若已存在的文件权限过宽，强制收紧
+    if hasattr(os, "chmod"):
+        try:
+            os.chmod(CONFIG_FILE, 0o600)
+        except OSError:
+            pass
 
 
 def project_key(source_arg: str) -> str:

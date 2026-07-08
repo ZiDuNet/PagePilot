@@ -143,18 +143,112 @@ type bundleMetadataReader interface {
 }
 
 type Server struct {
-	cfg         config.Config
-	deployer    DeployerPort
-	auth        *auth.Service
-	requireAuth bool
-	mux         *http.ServeMux
-	logger      *log.Logger
-	version     string
-	captchaMu   sync.Mutex
-	captchas    map[string]captchaChallenge
-	emailMu     sync.Mutex
-	emailCodes  map[string]emailVerificationChallenge
-	screenHub   *screenHub
+	cfg              config.Config
+	deployer         DeployerPort
+	auth             *auth.Service
+	requireAuth      bool
+	mux              *http.ServeMux
+	logger           *log.Logger
+	version          string
+	captchaMu        sync.Mutex
+	captchas         map[string]captchaChallenge
+	emailMu          sync.Mutex
+	emailCodes       map[string]emailVerificationChallenge
+	screenHub        *screenHub
+	loginMu          sync.Mutex
+	loginFails       map[string]*loginFailCounter
+	loginCleanupOnce sync.Once
+}
+
+// loginFailCounter 记录某主键（用户名/ip）的失败次数。
+// 超过阈值后返回 429。
+type loginFailCounter struct {
+	count       int
+	lastFail    time.Time
+	lockedUntil time.Time
+}
+
+const (
+	loginFailWindow      = 5 * time.Minute
+	loginFailThreshold   = 5
+	loginLockoutDuration = 15 * time.Minute
+)
+
+func (s *Server) loginKey(username, ip string) string {
+	return strings.ToLower(strings.TrimSpace(username)) + "|" + ip
+}
+
+// loginCheckLocked 查询是否在锁定窗口中。若已锁定返回 unlockRemain。
+func (s *Server) loginCheckLocked(key string) time.Duration {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	s.loginCleanup()
+	c, ok := s.loginFails[key]
+	if !ok || c.lockedUntil.IsZero() {
+		return 0
+	}
+	remain := time.Until(c.lockedUntil)
+	if remain <= 0 {
+		return 0
+	}
+	return remain
+}
+
+// loginRecordFail 增加失败计数，超过阈值锁定。
+func (s *Server) loginRecordFail(key string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	s.loginCleanup()
+	c, ok := s.loginFails[key]
+	if !ok {
+		c = &loginFailCounter{}
+		s.loginFails[key] = c
+	}
+	now := time.Now()
+	if now.Sub(c.lastFail) > loginFailWindow {
+		c.count = 1
+	} else {
+		c.count++
+	}
+	c.lastFail = now
+	if c.count >= loginFailThreshold {
+		c.lockedUntil = now.Add(loginLockoutDuration)
+	}
+}
+
+// loginReset 成功登录后清除计数。
+func (s *Server) loginReset(key string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	delete(s.loginFails, key)
+}
+
+func (s *Server) loginCleanup() {
+	if s.loginFails == nil {
+		s.loginFails = make(map[string]*loginFailCounter)
+		return
+	}
+	now := time.Now()
+	for k, c := range s.loginFails {
+		if now.Sub(c.lastFail) > loginFailWindow && (c.lockedUntil.IsZero() || now.After(c.lockedUntil)) {
+			delete(s.loginFails, k)
+		}
+	}
+}
+
+// startLoginCleanup 启动后台清理协程（幂等）。
+func (s *Server) startLoginCleanup() {
+	s.loginCleanupOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				s.loginMu.Lock()
+				s.loginCleanup()
+				s.loginMu.Unlock()
+			}
+		}()
+	})
 }
 
 type captchaChallenge struct {
@@ -169,6 +263,31 @@ type emailVerificationChallenge struct {
 
 var emailRe = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 var routeCodeRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{2,30}[a-z0-9])?$`)
+
+// validatePasswordStrength 校验用户密码强度：至少 8 字符、含字母和数字。
+// 返回 nil 或 *APIError。空密码（用作"清除"语义）不被拦截。
+func validatePasswordStrength(password string) *APIError {
+	p := strings.TrimSpace(password)
+	if p == "" {
+		return nil
+	}
+	if len(p) < 8 {
+		return NewError(CodeInvalidInput, "password", "password must be at least 8 characters")
+	}
+	hasLetter, hasDigit := false, false
+	for _, r := range p {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			hasLetter = true
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		}
+	}
+	if !hasLetter || !hasDigit {
+		return NewError(CodeInvalidInput, "password", "password must contain both letters and digits")
+	}
+	return nil
+}
 
 // New 构造 Server。
 // requireAuth: true 时所有写操作要求 Bearer token；dev 模式下传 false。
@@ -186,9 +305,12 @@ func New(cfg config.Config, deployer DeployerPort, authSvc *auth.Service, requir
 		version:     "dev",
 		captchas:    map[string]captchaChallenge{},
 		emailCodes:  map[string]emailVerificationChallenge{},
+		loginFails:  make(map[string]*loginFailCounter),
 		screenHub:   newScreenHub(),
 	}
 	s.routes()
+	s.startLoginCleanup()
+	s.startCaptchaCleanup()
 	return s
 }
 
@@ -1005,7 +1127,7 @@ func (s *Server) handleClaimAnonymousSession(w http.ResponseWriter, r *http.Requ
 		writeClaimError(NewError(code, "anonymous_session", err.Error()))
 		return
 	}
-	clearAnonymousSessionCookie(w)
+	clearAnonymousSessionCookie(w, s.cookieSecureForRequest(r))
 	claimDetail["siteCount"] = result.SiteCount
 	claimDetail["deployCount"] = result.DeployCount
 	claimDetail["alreadyClaimed"] = result.AlreadyClaimed
@@ -1059,7 +1181,7 @@ func (s *Server) ensureAnonymousSession(w http.ResponseWriter, r *http.Request) 
 			}
 			s.updateAnonymousSessionMeta(r, sess.ID)
 			sess, _ = s.deployer.GetAnonymousSession(r.Context(), sess.ID)
-			setAnonymousSessionCookie(w, sess.ID)
+			setAnonymousSessionCookie(w, sess.ID, s.cookieSecureForRequest(r))
 			return sess, nil
 		}
 		if !errors.Is(err, store.ErrNotFound) {
@@ -1074,7 +1196,7 @@ func (s *Server) ensureAnonymousSession(w http.ResponseWriter, r *http.Request) 
 	}
 	s.updateAnonymousSessionMeta(r, sess.ID)
 	sess, _ = s.deployer.GetAnonymousSession(r.Context(), sess.ID)
-	setAnonymousSessionCookie(w, sess.ID)
+	setAnonymousSessionCookie(w, sess.ID, s.cookieSecureForRequest(r))
 	return sess, nil
 }
 
@@ -1097,36 +1219,118 @@ func (s *Server) updateAnonymousSessionMeta(r *http.Request, id string) {
 	}
 }
 
-func setAnonymousSessionCookie(w http.ResponseWriter, id string) {
+// cookieSecure 根据配置决定 cookie 是否需要 Secure 标志（仅 HTTPS 模式）。
+// 开发环境（AppURLScheme == http）下发 Secure 会导致浏览器在 http://localhost
+// 下保留 cookie 失败，因此开发模式不设置 Secure。
+func (s *Server) cookieSecure() bool {
+	return s.cfg.AppURLScheme == "https"
+}
+
+func (s *Server) cookieSecureForRequest(r *http.Request) bool {
+	if r != nil {
+		if r.TLS != nil {
+			return true
+		}
+		if proto := firstForwardedProto(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+			return proto == "https"
+		}
+		switch forwardedProto(r.Header.Get("Forwarded")) {
+		case "https":
+			return true
+		case "http":
+			return false
+		}
+		if r.URL != nil {
+			switch strings.ToLower(strings.TrimSpace(r.URL.Scheme)) {
+			case "https":
+				return true
+			case "http":
+				return false
+			}
+		}
+	}
+	if isTruthyEnv(os.Getenv("HOSTCTL_DEV")) {
+		return false
+	}
+	return s.cookieSecure()
+}
+
+func firstForwardedProto(header string) string {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return ""
+	}
+	first, _, _ := strings.Cut(header, ",")
+	return strings.ToLower(strings.TrimSpace(first))
+}
+
+func forwardedProto(header string) string {
+	for _, part := range strings.Split(header, ";") {
+		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "proto") {
+			continue
+		}
+		return strings.ToLower(strings.Trim(strings.TrimSpace(value), `"`))
+	}
+	return ""
+}
+
+func isTruthyEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// secureCookie 是带 HttpOnly + SameSite + 自动 Secure 的辅助函数。
+// name/secure/maxAge/path 透传给 http.SetCookie。
+func (s *Server) secureCookie(w http.ResponseWriter, name, value string, maxAge int, path string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     path,
+		MaxAge:   maxAge,
+		Secure:   s.cookieSecure(),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func setAnonymousSessionCookie(w http.ResponseWriter, id string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "hostctl_anon_session",
 		Value:    id,
 		Path:     "/",
 		MaxAge:   60 * 60 * 24 * 365,
-		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
 		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func clearAnonymousSessionCookie(w http.ResponseWriter) {
+func clearAnonymousSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "hostctl_anon_session",
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
-		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
 		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func setAdminSessionCookie(w http.ResponseWriter, value string, maxAge int) {
+func setAdminSessionCookie(w http.ResponseWriter, value string, maxAge int, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "hostctl_admin_session",
 		Value:    value,
 		Path:     "/",
 		MaxAge:   maxAge,
-		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
 		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
@@ -2003,7 +2207,7 @@ func (s *Server) handleSiteAccessLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if auth.VerifyPassword(req.Password, site.AccessPasswordHash) {
-		setSiteAccessCookie(w, code, site.AccessPasswordHash, versionNumber)
+		setSiteAccessCookie(w, code, site.AccessPasswordHash, versionNumber, s.cookieSecureForRequest(r))
 		s.recordSiteAccessLoginAudit(r, code, versionNumber, "success", "")
 		writeJSON(w, http.StatusOK, map[string]any{"success": true})
 		return
@@ -2045,8 +2249,8 @@ func (s *Server) handleSetSiteAccessPassword(w http.ResponseWriter, r *http.Requ
 			mergeAPIErrorAuditDetail(accessPasswordAuditDetail(), apiErr))
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 	}
-	if password != "" && len(password) < 4 {
-		writeAccessPasswordError(NewError(CodeInvalidInput, "access_password", "password must be at least 4 characters"))
+	if password != "" && len(password) < 8 {
+		writeAccessPasswordError(NewError(CodeInvalidInput, "access_password", "password must be at least 8 characters"))
 		return
 	}
 	if err := s.deployer.SetSiteAccessPassword(r.Context(), code, password); err != nil {
@@ -2137,15 +2341,16 @@ func siteAccessCookieVersion(site store.Site, versionPtr *int64) int64 {
 	return 0
 }
 
-func setSiteAccessCookie(w http.ResponseWriter, code, passwordHash string, version int64) {
+func setSiteAccessCookie(w http.ResponseWriter, code, passwordHash string, version int64, secure bool) {
 	expiresAt := time.Now().UTC().Add(siteAccessCookieTTL)
 	http.SetCookie(w, &http.Cookie{
 		Name:     siteAccessCookieName(code),
 		Value:    siteAccessCookieValue(code, passwordHash, version, expiresAt),
 		Path:     "/",
 		MaxAge:   int(siteAccessCookieTTL.Seconds()),
-		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
 		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
@@ -3553,7 +3758,8 @@ func (s *Server) anonymousActor(r *http.Request) (string, bool, *APIError) {
 	if strings.TrimSpace(sess.ClaimedByUserID) != "" {
 		return "", false, NewError(CodeUnauthorized, "anonymous_session", "anonymous session has been claimed")
 	}
-	return "anon:" + id, true, nil
+	// 匿名 actor 永远不是管理员（SEC-06：避免匿名用户被误标 admin 绕过下游权限检查）
+	return "anon:" + id, false, nil
 }
 
 func (s *Server) authorizeSiteWrite(r *http.Request, code string) *APIError {
@@ -3903,6 +4109,8 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const captchaMaxEntries = 5000
+
 func (s *Server) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 	id := "cap_" + randomHex(12)
 	answer := fmt.Sprintf("%04d", randomIntRange(0, 9999))
@@ -3912,6 +4120,12 @@ func (s *Server) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 		if now.After(item.ExpiresAt) {
 			delete(s.captchas, key)
 		}
+	}
+	// SEC-05：限制 captcha map 大小，防止 OOM DoS
+	if len(s.captchas) >= captchaMaxEntries {
+		s.captchaMu.Unlock()
+		writeError(w, apiErrWithReqID(NewError(CodeRateLimited, "captcha", "too many pending captchas; retry later"), requestIDFromContext(r.Context())))
+		return
 	}
 	s.captchas[id] = captchaChallenge{
 		Answer:    answer,
@@ -3924,6 +4138,24 @@ func (s *Server) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 		Prompt:  "输入图片中的 4 位数字",
 		Image:   captchaSVGDataURL(answer),
 	})
+}
+
+// startCaptchaCleanup 启动后台清理协程（5 分钟一次）。
+func (s *Server) startCaptchaCleanup() {
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.captchaMu.Lock()
+			now := time.Now()
+			for k, item := range s.captchas {
+				if now.After(item.ExpiresAt) {
+					delete(s.captchas, k)
+				}
+			}
+			s.captchaMu.Unlock()
+		}
+	}()
 }
 
 func captchaSVGDataURL(answer string) string {
@@ -4155,6 +4387,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		emailVerified = true
 	}
+	if err := validatePasswordStrength(req.Password); err != nil {
+		writeRegisterError(err, email, emailVerified)
+		return
+	}
 	user, err := s.auth.CreateUserWithEmail(r.Context(), req.Username, email, emailVerified, req.Password, false, 20)
 	if err != nil {
 		writeRegisterError(NewError(CodeInvalidInput, "register", "username already exists or password is invalid"), email, emailVerified)
@@ -4162,7 +4398,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	anonymousClaimed := s.claimCurrentAnonymousSession(r, user.ID, user.IsAdmin, "register")
 	if anonymousClaimed {
-		clearAnonymousSessionCookie(w)
+		clearAnonymousSessionCookie(w, s.cookieSecureForRequest(r))
 	}
 	actorType, actorID, actorRole := auditActorFromOwner("user:"+user.ID, user.IsAdmin)
 	s.recordAuditLog(r, actorType, actorID, actorRole, "auth.register", "", "user", user.ID, map[string]any{
@@ -4193,8 +4429,7 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
-	if len(req.NewPassword) < 8 {
-		apiErr := NewError(CodeInvalidInput, "password", "new password must be at least 8 characters")
+	if apiErr := validatePasswordStrength(req.NewPassword); apiErr != nil {
 		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "account.password", "", "user", user.ID, auditDetail, apiErr)
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
@@ -4224,18 +4459,29 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		s.recordFailedAuditLog(r, "unknown", "", "public", "auth.login", "", "user", strings.TrimSpace(req.Username), loginDetail(), apiErr)
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 	}
+	clientIP := clientIPFromRequest(r)
+	loginKey := s.loginKey(req.Username, clientIP)
+	if remain := s.loginCheckLocked(loginKey); remain > 0 {
+		apiErr := NewError(CodeRateLimited, "rate_limit", fmt.Sprintf("too many failed attempts; retry in %d seconds", int(remain.Seconds()))).
+			WithRetryAfter(int(remain.Seconds()))
+		writeLoginError(apiErr)
+		return
+	}
 	if !s.verifyCaptcha(req.CaptchaID, req.Captcha) {
+		s.loginRecordFail(loginKey)
 		writeLoginError(NewError(CodeInvalidInput, "captcha", "captcha is incorrect or expired"))
 		return
 	}
 	res, err := s.auth.LoginAdmin(r.Context(), req.Username, req.Password, 7*24*time.Hour)
 	if err != nil {
+		s.loginRecordFail(loginKey)
 		writeLoginError(NewError(CodeUnauthorized, "auth", "username or password is incorrect"))
 		return
 	}
+	s.loginReset(loginKey)
 	anonymousClaimed := s.claimCurrentAnonymousSession(r, res.User.ID, res.User.IsAdmin, "login")
 	if anonymousClaimed {
-		clearAnonymousSessionCookie(w)
+		clearAnonymousSessionCookie(w, s.cookieSecureForRequest(r))
 	}
 	actorType, actorID, actorRole := auditActorFromOwner("user:"+res.User.ID, res.User.IsAdmin)
 	s.recordAuditLog(r, actorType, actorID, actorRole, "auth.login", "", "user", res.User.ID, map[string]any{
@@ -4244,7 +4490,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		"isAdmin":          res.User.IsAdmin,
 		"anonymousClaimed": anonymousClaimed,
 	})
-	setAdminSessionCookie(w, res.Plaintext, int((7 * 24 * time.Hour).Seconds()))
+	setAdminSessionCookie(w, res.Plaintext, int((7 * 24 * time.Hour).Seconds()), s.cookieSecureForRequest(r))
 	mode := "prod"
 	if !s.requireAuth {
 		mode = "dev"
@@ -4303,7 +4549,7 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 			_ = s.auth.RevokeAdminSession(r.Context(), c.Value)
 		}
 	}
-	setAdminSessionCookie(w, "", -1)
+	setAdminSessionCookie(w, "", -1, s.cookieSecureForRequest(r))
 	writeJSON(w, http.StatusOK, AdminLogoutResponse{Success: true})
 }
 
@@ -4774,6 +5020,10 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if email == "" {
 		emailVerified = false
+	}
+	if apiErr := validatePasswordStrength(req.Password); apiErr != nil {
+		writeUserCreateError(apiErr)
+		return
 	}
 	user, err := s.auth.CreateUserWithEmail(r.Context(), req.Username, email, emailVerified, req.Password, req.IsAdmin, req.DeployLimit)
 	if err != nil {
