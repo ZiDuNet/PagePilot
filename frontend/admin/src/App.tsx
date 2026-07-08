@@ -1315,6 +1315,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
   const [result, setResult] = useState<any>(null);
   const [deployError, setDeployError] = useState("");
   const [deployErrorDetail, setDeployErrorDetail] = useState<StructuredAPIErrorPayload | null>(null);
+  const [fieldError, setFieldError] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const dirInput = useRef<HTMLInputElement | null>(null);
@@ -1323,12 +1324,22 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
   const setError = (message: string) => {
     setDeployError(message);
     setDeployErrorDetail(null);
+    setFieldError({});
     setGlobalError("");
   };
-  const setValidationError = (message: string, errorCode = "INVALID_INPUT") => {
+  const setValidationError = (message: string, errorCode = "INVALID_INPUT", field?: string) => {
     setDeployError(message);
     setDeployErrorDetail({ errorCode, stage: "validate" });
+    if (field) {
+      setFieldError((prev) => ({ ...prev, [field]: message }));
+    }
     setGlobalError("");
+  };
+  const setFieldErr = (field: string, message: string) => {
+    setFieldError((prev) => ({ ...prev, [field]: message }));
+  };
+  const clearFieldErr = (field: string) => {
+    setFieldError((prev) => { const next = { ...prev }; delete next[field]; return next; });
   };
 
   useEffect(() => {
@@ -1409,9 +1420,9 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
 
   async function submit() {
     setError("");
-    if (append && !code.trim()) return setError("更新现有发布必须填写已有 code");
+    if (append && !code.trim()) return setValidationError("更新现有发布必须填写已有 code", "INVALID_INPUT", "code");
     const effectiveDescription = description.trim() || (append && code.trim() ? `更新 ${code.trim()} 的新版本` : "");
-    if (!effectiveDescription) return setValidationError("请填写一句话描述，说明这个应用是做什么的。", "INVALID_DESCRIPTION");
+    if (!effectiveDescription) return setValidationError("请填写一句话描述，说明这个应用是做什么的。", "INVALID_DESCRIPTION", "description");
     if (mode === "single" && !content.trim()) return setError("请粘贴或上传 HTML / Markdown 内容");
     if (mode === "multi" && !files.length) return setError("请上传多文件项目");
     const isSingleZipUpload = mode === "multi" && files.length === 1 && isZipFile(files[0].path);
@@ -1499,7 +1510,11 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
               <Upload size={18} />{busy ? "部署中..." : "立即部署"}
             </button>
           </div>
-          {deployError && <DeployErrorPanel message={deployError} error={deployErrorDetail} />}
+          {Object.keys(fieldError).length === 0 && deployError && (
+            <div className="deploy-stage-error">
+              <DeployErrorPanel message={deployError} error={deployErrorDetail} />
+            </div>
+          )}
         </div>
 
         <aside className="deploy-props">
@@ -1510,15 +1525,18 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
           <div className="deploy-props-body">
             <label className="field">
               <span>标题</span>
-              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="有意义的中文名字" />
+              <input value={title} onChange={(e) => { setTitle(e.target.value); clearFieldErr("title"); }} placeholder="有意义的中文名字" />
+              {fieldError.title && <span className="field-error">{fieldError.title}</span>}
             </label>
             <label className="field">
               <span>描述 *</span>
-              <input value={description} onChange={(e) => setDescription(e.target.value)} maxLength={240} placeholder="这个应用是做什么的（必填）" />
+              <input value={description} onChange={(e) => { setDescription(e.target.value); clearFieldErr("description"); }} maxLength={240} placeholder="这个应用是做什么的（必填）" />
+              {fieldError.description && <span className="field-error">{fieldError.description}</span>}
             </label>
             <label className="field">
               <span>自定义 / 更新 code</span>
-              <input className="mono" value={code} onChange={(e) => setCode(e.target.value)} placeholder={append ? "填写已有 code" : "可选，例如 my-landing"} />
+              <input className="mono" value={code} onChange={(e) => { setCode(e.target.value); clearFieldErr("code"); }} placeholder={append ? "填写已有 code" : "可选，例如 my-landing"} />
+              {fieldError.code && <span className="field-error">{fieldError.code}</span>}
             </label>
             <label className="check-line">
               <input checked={append} type="checkbox" onChange={(e) => setAppend(e.target.checked)} />
@@ -1552,14 +1570,18 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
       </div>
 
       {result && (
-        <div className="result-toast" role="status">
-          <div><strong>部署成功</strong><span>{result.code} · v{result.versionNumber || 1} · {formatSize(result.size)}</span></div>
-          <div className="actions tight">
-            <a className="button primary compact" href={sameSiteURL(result.url)} target="_blank" rel="noreferrer"><Eye size={15} />打开</a>
-            <button className="button compact" type="button" onClick={() => navigator.clipboard.writeText(sameSiteURL(result.url))}><Copy size={15} />复制链接</button>
-            <button className="button compact" type="button" onClick={() => setResult(null)}>关闭</button>
+        <Modal title="部署成功" onClose={() => setResult(null)}>
+          <div className="result-modal">
+            <InfoRow label="Code" value={result.code} />
+            <InfoRow label="访问地址" value={sameSiteURL(result.url)} copy />
+            <InfoRow label="版本" value={`v${result.versionNumber || "-"}`} />
+            <InfoRow label="大小" value={formatSize(result.size)} />
+            <div className="actions">
+              <a className="button primary" href={sameSiteURL(result.url)} target="_blank" rel="noreferrer"><Eye size={16} />打开</a>
+              <button className="button" type="button" onClick={() => navigator.clipboard.writeText(sameSiteURL(result.url))}><Copy size={16} />复制</button>
+            </div>
           </div>
-        </div>
+        </Modal>
       )}
     </section>
   );

@@ -2554,16 +2554,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
         </div>
       )}
 
-      {result && (
-        <div className="result-toast" role="status">
-          <div><strong>部署成功</strong><span>{result.code} · v{result.versionNumber || 1} · {formatSize(result.size)}</span></div>
-          <div className="actions tight">
-            <a className="button primary compact" href={sameSiteURL(result.url)} target="_blank" rel="noreferrer"><Eye size={15} />打开</a>
-            <button className="button compact" type="button" onClick={() => navigator.clipboard.writeText(sameSiteURL(result.url))}><Copy size={15} />复制链接</button>
-            <button className="button compact" type="button" onClick={() => setResult(null)}>关闭</button>
-          </div>
-        </div>
-      )}
+      {result && <DeployResult result={result} onClose={() => setResult(null)} />}
     </section>
   );
 }
