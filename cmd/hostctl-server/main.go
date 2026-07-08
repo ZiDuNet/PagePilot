@@ -134,7 +134,7 @@ func main() {
 
 	// 构造 server
 	srv := api.New(cfg, deployer, authSvc, *requireAuth, log.Default()).
-		WithVersion("0.2.0")
+		WithVersion("0.3.0")
 
 	// 信号处理：优雅退出
 	go func() {

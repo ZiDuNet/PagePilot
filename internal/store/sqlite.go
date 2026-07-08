@@ -1413,7 +1413,9 @@ func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sor
 		where = append(where, `s.status = ?`)
 		args = append(args, status)
 	}
-	if category != "" {
+	if category == "__uncategorized" {
+		where = append(where, `COALESCE(s.category, '') = ''`)
+	} else if category != "" {
 		where = append(where, `COALESCE(s.category, '') = ?`)
 		args = append(args, category)
 	}

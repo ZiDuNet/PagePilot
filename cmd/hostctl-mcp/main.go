@@ -179,7 +179,7 @@ func toolList() []toolDef {
 	return []toolDef{
 		{
 			Name:        "deploy_site",
-			Description: "把本地 HTML、Markdown、ZIP 或目录部署为可访问的静态网站。修改已有项目时必须传原 custom_code；custom_code 已存在会默认追加版本，保持同一 code 和访问地址。description 必填（≤240 字符）。",
+			Description: "把本地 HTML、Markdown、ZIP 或目录部署为可访问的静态网站。新建发布可传 custom_code；更新已有发布必须传原 custom_code 且设置 create_version=true，保持同一 code 和访问地址。description 必填（≤240 字符）。",
 			InputSchema: jsonSchema{
 				Type: "object",
 				Properties: map[string]*schemaProp{
@@ -190,7 +190,7 @@ func toolList() []toolDef {
 					"create_version":          {Type: "boolean", Description: "custom_code 已存在时，true 追加版本；false/省略 报 CONFLICT"},
 					"visibility":              {Type: "string", Description: "public 进入创作市场；unlisted 仅链接访问", Enum: []string{"public", "unlisted"}},
 					"category":                {Type: "string", Description: "新作品的创作市场分类 slug，例如 landing/dashboard/docs/tool/game/screen。追加版本时通常不传。"},
-					"access_password":         {Type: "string", Description: "Optional visit password for a new site. Empty means public."},
+					"access_password":         {Type: "string", Description: "可选访问密码，仅用于浏览查看；空字符串表示不设置访问密码。"},
 					"template_source_code":    {Type: "string", Description: "复用创作市场作品时传入原作品 code，用于记录来源和增加复用计数。"},
 					"template_source_version": {Type: "number", Description: "复用创作市场作品时传入原作品版本号；省略时使用原作品当前版本。"},
 				},
@@ -210,12 +210,12 @@ func toolList() []toolDef {
 		},
 		{
 			Name:        "set_site_access_password",
-			Description: "Set or clear the visit password for a site owned by the current token/user. Pass an empty password to make it public again.",
+			Description: "为当前 Token / 用户拥有的站点设置或清除访问密码。传空字符串表示清除访问密码，不改变站点公开性。",
 			InputSchema: jsonSchema{
 				Type: "object",
 				Properties: map[string]*schemaProp{
-					"code":     {Type: "string", Description: "Site short code"},
-					"password": {Type: "string", Description: "Visit password. Empty string clears protection."},
+					"code":     {Type: "string", Description: "站点短码"},
+					"password": {Type: "string", Description: "访问密码；空字符串表示清除保护。"},
 				},
 				Required: []string{"code", "password"},
 			},

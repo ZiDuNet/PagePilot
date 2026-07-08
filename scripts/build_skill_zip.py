@@ -12,12 +12,15 @@ SKILL_ROOT = ROOT / "skill" / "hostctl-deploy"
 OUTPUT = ROOT / "internal" / "web" / "skill" / "hostctl-deploy.zip"
 ZIP_PREFIX = Path("pagep")
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
+EXCLUDED_FILENAMES = {"hostctl_deploy_test.py"}
 
 
 def should_include(path: Path) -> bool:
     """判断文件是否应该进入 Skill ZIP。"""
     rel = path.relative_to(SKILL_ROOT)
     if "__pycache__" in rel.parts:
+        return False
+    if path.name in EXCLUDED_FILENAMES:
         return False
     return path.suffix not in EXCLUDED_SUFFIXES
 
@@ -39,7 +42,9 @@ def main() -> None:
         bad = [
             name
             for name in names
-            if "__pycache__" in Path(name).parts or Path(name).suffix in EXCLUDED_SUFFIXES
+            if "__pycache__" in Path(name).parts
+            or Path(name).suffix in EXCLUDED_SUFFIXES
+            or Path(name).name in EXCLUDED_FILENAMES
         ]
         if bad:
             raise SystemExit(f"generated Skill ZIP contains cache files: {bad}")

@@ -724,6 +724,33 @@ td small { color: var(--muted); }
   display: grid;
   gap: 8px;
 }
+.category-sort-section {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+.category-sort-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+.category-sort-head strong,
+.category-sort-head span {
+  display: block;
+}
+.category-sort-head strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+.category-sort-head span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
 .category-list .category-row {
   display: grid;
   grid-template-columns: minmax(180px, 0.64fr) minmax(0, 1fr) auto;
@@ -2718,7 +2745,7 @@ tbody tr:hover {
 .admin-shell .deploy-props-body .field select { min-height: 34px; font-size: 13px; }
 .admin-shell .deploy-props-body .check-line { margin: 0; font-size: 12px; }
 .admin-shell .deploy-props-body .hint-box { font-size: 11px; padding: 8px; }
-.admin-shell .deploy-props-body .field-error { display: block; color: var(--rose, #be123c); font-size: 11px; font-weight: 600; margin-top: 3px; line-height: 1.4; }
+.admin-shell .deploy-props-body .field-error { display: block; color: #be123c !important; font-size: 11px; font-weight: 600; margin-top: 3px; line-height: 1.4; }
 .admin-shell .deploy-stage-error { margin-top: 8px; }
 
 .admin-shell .deploy-submit-bar {

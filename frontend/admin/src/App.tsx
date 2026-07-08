@@ -62,6 +62,7 @@ type SecurityModeValue = "auto" | "strict" | "compatible" | "trusted";
 
 const PREVIEW_IFRAME_SANDBOX =
   "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-top-navigation-by-user-activation";
+const UNCATEGORIZED_CATEGORY_FILTER = "__uncategorized";
 
 interface SessionInfo {
   success?: boolean;
@@ -1511,9 +1512,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
             </button>
           </div>
           {Object.keys(fieldError).length === 0 && deployError && (
-            <div className="deploy-stage-error">
-              <DeployErrorPanel message={deployError} error={deployErrorDetail} />
-            </div>
+            <p className="field-error" style={{marginTop:"8px",fontSize:"13px"}}>{deployError}</p>
           )}
         </div>
 
@@ -1645,7 +1644,8 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
       || tagText.includes(text);
     const statusHit = !status || site.status === status;
     const visibilityHit = !visibility || site.visibility === visibility;
-    const categoryHit = !category || (site.category || "") === category;
+    const categoryHit = !category
+      || (category === UNCATEGORIZED_CATEGORY_FILTER ? !(site.category || "").trim() : (site.category || "") === category);
     const tagHit = !tagFilter || (site.tags || []).some((tag) => tag.toLowerCase() === tagFilter.toLowerCase());
     const ownerHit = !ownerScope
       || (ownerScope === "registered" && String(site.ownerTokenId || "").startsWith("user:"))
@@ -1819,7 +1819,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
         <div className="filter-row">
           <select value={status} onChange={(event) => setStatus(event.target.value)} title="状态"><option value="">全部状态</option><option value="active">运行中</option><option value="inactive">已下架</option></select>
           <select value={visibility} onChange={(event) => setVisibility(event.target.value)} title="可见性"><option value="">全部可见性</option><option value="public">公开</option><option value="unlisted">未公开</option></select>
-          <select value={category} onChange={(event) => setCategory(event.target.value)} title="分类"><option value="">全部分类</option>{categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}</select>
+          <select value={category} onChange={(event) => setCategory(event.target.value)} title="分类"><option value="">全部分类</option><option value={UNCATEGORIZED_CATEGORY_FILTER}>未分类</option>{categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}</select>
         </div>
         <details className="filter-advanced">
           <summary>高级筛选</summary>
@@ -2333,6 +2333,16 @@ function CategoriesPanel({ showToast, setError }: { showToast: (msg: string) => 
     setCategories((current) => current.filter((_, itemIndex) => itemIndex !== index));
   }
 
+  function moveCategory(index: number, direction: -1 | 1) {
+    setCategories((current) => {
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = current.slice();
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+  }
+
   return (
     <section className="panel">
       <div className="panel-head">
@@ -2346,24 +2356,34 @@ function CategoriesPanel({ showToast, setError }: { showToast: (msg: string) => 
         <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索分类名称、标识或备注" /></label>
         <span className="summary-chip">{categories.length} 个分类</span>
       </div>
-      <div className="category-list">
-        {filtered.map((item) => {
-          const index = categories.findIndex((categoryItem) => categoryItem.slug === item.slug);
-          return (
-            <div className="category-row" key={item.slug}>
-              <div>
-                <strong>{item.label}</strong>
-                <code>{item.slug}</code>
+      <div className="category-sort-section">
+        <div className="category-sort-head">
+          <div>
+            <strong>分类排序</strong>
+            <span>列表顺序会用于创作市场筛选展示；未分类是系统内置筛选项，固定显示在全部分类后。</span>
+          </div>
+        </div>
+        <div className="category-list">
+          {filtered.map((item) => {
+            const index = categories.findIndex((categoryItem) => categoryItem.slug === item.slug);
+            return (
+              <div className="category-row" key={item.slug}>
+                <div>
+                  <strong>{item.label}</strong>
+                  <code>{item.slug}</code>
+                </div>
+                <p>{item.note || "暂无备注"}</p>
+                <div className="actions tight">
+                  <button className="button compact" type="button" disabled={index <= 0} onClick={() => moveCategory(index, -1)}>上移</button>
+                  <button className="button compact" type="button" disabled={index >= categories.length - 1} onClick={() => moveCategory(index, 1)}>下移</button>
+                  <button className="button compact" type="button" onClick={() => openEditor(item, index)}>编辑</button>
+                  <button className="icon-button danger" type="button" title="删除" onClick={() => setDeleteIndex(index)}><Trash2 size={14} /></button>
+                </div>
               </div>
-              <p>{item.note || "暂无备注"}</p>
-              <div className="actions tight">
-                <button className="button compact" type="button" onClick={() => openEditor(item, index)}>编辑</button>
-                <button className="icon-button danger" type="button" title="删除" onClick={() => setDeleteIndex(index)}><Trash2 size={14} /></button>
-              </div>
-            </div>
-          );
-        })}
-        {!filtered.length && <div className="empty">没有匹配的分类。</div>}
+            );
+          })}
+          {!filtered.length && <div className="empty">没有匹配的分类。</div>}
+        </div>
       </div>
       {draft && (
         <Modal title={draft.index == null ? "新增分类" : "编辑分类"} onClose={() => setDraft(null)}>

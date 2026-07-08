@@ -1,13 +1,13 @@
 ---
 name: pagep
-description: 当 Agent 需要生成 HTML、Markdown、Reveal.js 幻灯片、多文件静态站点，发布或更新 PagePilot 应用，复用创作市场作品，管理访问密码、版本、Token、屏幕投放和截图时使用。
+description: 当 Agent 需要生成 HTML、Markdown、ZIP 或多文件静态站点，发布或更新 PagePilot 应用，复用创作市场作品，管理访问密码、版本、Token、屏幕投放和截图时使用。
 ---
 
 # PagePilot pagep Skill
 
 ## 核心规则
 
-当用户要求生成网页、报告、仪表板、简历、可视化、Markdown 文档、Reveal.js 幻灯片，或要求「发布到 PagePilot」「生成访问链接」「投放到屏幕」时，统一走本 Skill。
+当用户要求生成网页、报告、仪表板、简历、可视化、Markdown 文档，或要求「发布到 PagePilot」「生成访问链接」「投放到屏幕」时，统一走本 Skill。
 
 内容生成后必须发布到 PagePilot，并把服务端返回的 `url`、`detailUrl` 或 `versionUrl` 交给用户。不要只输出代码块让用户自己复制，也不要自行拼接最终公网链接。
 
@@ -36,7 +36,7 @@ python scripts/pagep.py doctor --server https://pagepilot.example.com
 ## 入口优先级
 
 1. 能执行本地命令时，优先使用 `pagep` 或 `python scripts/pagep.py`。
-2. 发布、追加或覆盖版本时，只要来源是目录、ZIP、图片、字体、Reveal.js 演示或大文件，优先走命令行 multipart 上传，避免把大段 base64 放进模型上下文。
+2. 发布、追加或覆盖版本时，只要来源是目录、ZIP、图片、字体或大文件，优先走命令行 multipart 上传，避免把大段 base64 放进模型上下文。
 3. 不能执行本地命令、只能使用 MCP 时，再调用 `pagep-mcp` 工具。
 4. Skill、CLI、MCP 必须使用同一个 PagePilot 服务器地址和同一个用户 Token。
 5. 所有入口都只展示服务端返回的链接，不按本地 host、端口或域名规则自行拼接。
@@ -114,7 +114,6 @@ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
 - 多页面应用。
 - CSS、JS、图片、字体、视频资源较多。
 - 用户已经提供项目目录或 ZIP。
-- Reveal.js 幻灯片。
 - 需要离线稳定展示。
 - Markdown 引用相对图片或附件。
 
@@ -166,144 +165,6 @@ PagePilot Markdown 渲染链路内置以下能力：
 - 主题：Markdown 页面默认 `theme=auto`，也支持访问 URL 追加 `?theme=light` 或 `?theme=dark`；PagePilot 的渲染缓存会按主题、入口、版本、内容 hash 和 renderer version 区分。
 
 只有在用户需要复杂交互组件、第三方可视化库、完整前端状态管理或高度定制脚本时，才改用 HTML / ZIP / 多文件静态站点，并把额外运行时资源随站点一起打包。
-
-## Reveal.js 幻灯片规范
-
-用户要求 PPT、幻灯片、演示文稿、deck、路演、答辩 slides 时，必须使用多文件 Bundle，不要生成单个超大 HTML。
-
-### 规划结构
-
-常见结构：
-
-- 简单式：封面 → N 张内容 → 总结。
-- 章节式：封面 → 章节分隔页 → 内容页 → 下一章节 → 总结。
-
-结构语法：
-
-- `1` 表示一张水平页。
-- `N` 表示 N 张垂直堆叠页。
-- `d` 表示居中大字分隔页。
-
-示例：`1,d,3,d,2,d,1` 表示封面、分隔、3 页内容、分隔、2 页内容、分隔、总结。
-
-### 选择主题
-
-| 用户表达 | 主题 | 风格 |
-|---|---|---|
-| 商务、汇报、正式、提案、季度、年终 | `business` | 深蓝、白底、清晰信息层级 |
-| 学术、论文、答辩、研究 | `academic` | 深灰、米白、克制排版 |
-| 创意、产品、发布、活泼、设计 | `creative` | 高饱和、强视觉记忆点 |
-| 极简、简约、Keynote、苹果风 | `minimal` | 黑白、留白、一个强调色 |
-
-用户没有指定时默认 `business`。
-
-### 目录结构
-
-```text
-deck/
-├── index.html
-└── assets/
-    ├── reveal.js
-    ├── reveal-base.css
-    └── theme.css
-```
-
-### index.html 要求
-
-```html
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>幻灯片标题</title>
-  <link rel="stylesheet" href="assets/reveal-base.css">
-  <link rel="stylesheet" href="assets/theme.css">
-</head>
-<body>
-  <div class="reveal">
-    <div class="slides">
-      <section><h1>标题</h1><p>副标题</p></section>
-      <section>水平页</section>
-      <section>
-        <section>垂直堆叠页 1</section>
-        <section>垂直堆叠页 2</section>
-      </section>
-    </div>
-  </div>
-  <script src="assets/reveal.js"></script>
-  <script>
-    Reveal.initialize({
-      embedded: true,
-      hash: false,
-      history: false,
-      controls: true,
-      progress: true,
-      slideNumber: true,
-      transition: "slide",
-      plugins: []
-    });
-  </script>
-</body>
-</html>
-```
-
-关键约束：
-
-- `Reveal.initialize` 必须设置 `embedded: true`，避免 iframe 父页面抢键盘事件。
-- 默认关闭 `hash` 和 `history`，避免市场预览、详情预览或屏幕 WebView 中修改父页面 URL。
-- 不要引用 jsdelivr、unpkg、cdnjs 等 CDN；所有资源放进 `assets/`。
-- 每页内容必须精简；Reveal.js 不会自动滚动，溢出会被裁切。
-- `reveal-base.css` 在前，`theme.css` 在后。
-- 代码高亮不是必需项；没有代码页时不要引入额外高亮资源。
-- 不要把 ESM 插件源码当普通 script 引入；普通 `<script>` 只能加载无 `import` / `export` 的浏览器脚本。
-
-### 复制随包资源
-
-Skill 包内置了 Reveal.js 资源和主题。默认生成幻灯片时只复制必要资源：
-
-```bash
-mkdir -p deck/assets
-cp assets/reveal.js deck/assets/
-cp assets/reveal-base.css deck/assets/
-cp assets/themes/business.css deck/assets/theme.css
-```
-
-只有确实需要代码高亮时，才额外复制随包的浏览器安全高亮适配器：
-
-```bash
-mkdir -p deck/assets/plugin/highlight
-cp assets/plugin/highlight/plugin.js deck/assets/plugin/highlight/
-cp assets/plugin/highlight/monokai.css deck/assets/plugin/highlight/
-```
-
-并把默认 HTML 中的初始化段替换为：
-
-```html
-<link rel="stylesheet" href="assets/plugin/highlight/monokai.css">
-<script src="assets/plugin/highlight/plugin.js"></script>
-<script>
-  Reveal.initialize({
-    embedded: true,
-    hash: false,
-    history: false,
-    plugins: [RevealHighlight]
-  });
-</script>
-```
-
-随包 `RevealHighlight` 适配器不会内置完整 highlight.js 运行时；没有 `window.hljs` 时只做安全降级，不会抛出 `RevealHighlight is not defined`。如果用户明确要求真正语法着色，可以生成预高亮 HTML，或额外随站点打包一个浏览器版 `hljs` 后再启用该插件。
-
-发布：
-
-```bash
-pagep deploy ./deck \
-  --title "企业季度经营汇报" \
-  --description "适合大屏和会议展示的季度经营汇报幻灯片。" \
-  --visibility unlisted
-```
-
-发布成功后提示用户：打开幻灯片后先点击页面区域聚焦，再用方向键翻页；如果键盘不响应，使用新窗口打开。
 
 ## 创作市场复用
 
@@ -497,12 +358,8 @@ MCP 返回里的 URL 同样以服务端 API 返回值为准。
 | ZIP 发布失败 | `stage=zip_bundle`，目录结构不安全、入口缺失、多个网站根或超限 | 优先展示接口 `hint`，按 `errorCode` 重新打包或指定入口 |
 | 样式或脚本丢失 | 多文件站点使用了根路径资源 | 改成相对路径，例如 `assets/app.css` |
 | 更新变成新建 | 没有明确已有 code | 先列出自己的站点，再用 `--update` 或 `append` |
-| 幻灯片空白 | Reveal.js 资源未打包或路径错误 | 确保 `assets/reveal.js`、`reveal-base.css`、`theme.css` 都存在 |
-| 幻灯片翻页键不响应 | iframe 焦点问题 | 设置 `embedded: true`，提示用户点击页面区域聚焦 |
-| `Cannot use import statement outside a module` | 把 ESM 插件源码当成普通 `<script>` 加载 | 移除该插件，或使用 Skill 随包的浏览器安全 `plugin.js` |
-| `RevealHighlight is not defined` | 初始化里写了 `plugins: [RevealHighlight]`，但高亮插件没有正确加载 | 无代码页时改成 `plugins: []`；有代码页时复制 `assets/plugin/highlight/plugin.js` |
-| `Unsafe attempt to load URL ... Domains, protocols and ports must match` | 预览 iframe 或 hosted CSP 的 sandbox 让页面处于隔离 origin，脚本尝试改父页面或 URL | Reveal 默认使用 `hash: false` / `history: false`；需要完整浏览器能力时打开正式页面，或由管理员审查后调整安全模式 |
-| 幻灯片文字被裁切 | 单页内容过多 | 拆页，每页只放一个核心观点 |
+| `Cannot use import statement outside a module` | 用户页面把 ESM 脚本当成普通 `<script>` 加载 | 改为 `type="module"`，或换成浏览器普通脚本版本 |
+| `Unsafe attempt to load URL ... Domains, protocols and ports must match` | 预览 iframe 或 hosted CSP 的 sandbox 让页面处于隔离 origin，脚本尝试改父页面或 URL | 使用相对链接，避免脚本改父页面；需要完整浏览器能力时打开正式页面，或由管理员审查后调整安全模式 |
 | 屏幕投放失败 | 未使用注册用户 Token 或屏幕不属于该用户 | 先 `screen list`，确认 Token 和屏幕归属 |
 | 加密作品无法预览 | 需要访问密码授权 | 打开应用输入密码；授权有效期为 5 分钟，且绑定目标版本 |
 | 页面脚本或资源被拦截 | CSP / sandbox 安全策略生效 | 管理员查询审计日志 `security.csp_report`，按站点 code、IP、UA 或 blockedUri 定位 |

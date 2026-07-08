@@ -62,6 +62,7 @@ const PREVIEW_IFRAME_SANDBOX =
 const MARKET_CARD_IFRAME_SANDBOX = "allow-scripts";
 const MARKET_PREVIEW_CONCURRENCY = 3;
 const MARKET_PREVIEW_TIMEOUT_MS = 3600;
+const UNCATEGORIZED_CATEGORY_FILTER = "__uncategorized";
 type MarketPreviewQueueItem = {
   cancelled: boolean;
   release?: () => void;
@@ -876,15 +877,21 @@ function HomePage({
   ];
   const releaseNotes = [
     {
+      version: "V0.3.0",
+      title: "安全治理、Markdown 高级渲染和 Skill/MCP 对齐",
+      date: "2026-07-08",
+      body: "完善 Markdown 公式、图表和代码高亮，补齐审计日志、文件树、模板复用、安全模式、分页筛选、未分类筛选，以及更纯粹的 pagep Skill / MCP 发布链路。"
+    },
+    {
       version: "V0.2",
       title: "PagePilot 品牌、创作市场和多文件发布",
-      date: "2026-06",
+      date: "2026-06-30",
       body: "支持 HTML / Markdown / ZIP、多文件静态站点、分类、收藏、点赞、版本历史、广告屏菜单和 pagep Skill。"
     },
     {
       version: "V0.1",
       title: "从 Agent 发布 API 起步",
-      date: "2026-05",
+      date: "2026-05-31",
       body: "建立部署 API、访问链接、基础后台、Token 与匿名 Agent session，让 AI 生成页面可以直接上线。"
     }
   ];
@@ -954,8 +961,8 @@ function HomePage({
             <Logo />
             <span><em>Page</em><b>Pilot</b></span>
           </h1>
-          <h2>Agent 生成应用的发布控制台</h2>
-          <p>让 Agent 负责生成，让 PagePilot 负责上线、加密、版本、市场复用和广告屏投放。它不是一个 HTML 托管页，而是一套 AI 时代的应用交付工作流。</p>
+          <h2>AI 生成 → 自动发布 → 版本治理 → 市场复用</h2>
+          <p>PagePilot 是面向 AI Agent 和开发者的应用交付平台。Agent 生成 HTML / Markdown / ZIP 后直接上线，自动获得访问链接、版本管理、访问加密、创作市场分发和广告屏投放能力。</p>
           <div className="ant-hero-actions">
             <Button type="primary" size="large" icon={<Bot size={18} />} onClick={() => onNavigate('agents', '/agents/')}>交给 Agent 部署</Button>
             <Button size="large" icon={<Upload size={18} />} onClick={() => onNavigate('deploy', '/deploy')}>手动发布</Button>
@@ -988,40 +995,28 @@ function HomePage({
       <section className="home-screen home-second-screen" data-home-screen>
         <div className="ant-section ant-instant-section">
           <div className="ant-section-copy">
-            <span>TRY IT NOW</span>
+            <span>HOW IT WORKS</span>
             <h2>一次发布，补齐应用交付闭环</h2>
-            <p>PagePilot 把 Agent 生成的文件变成可访问、可治理、可复用、可投放的应用资产。你只负责说清需求，剩下的交给发布链路。</p>
+            <p>Agent 生成 HTML、Markdown、ZIP 或多文件目录，PagePilot 自动上线、记录版本、管理权限，并接入创作市场和广告屏投放。</p>
             <div className="delivery-chain" aria-label="PagePilot 发布链路">
-              <div><em>01</em><strong>接收产物</strong><span>HTML / Markdown / ZIP / 多文件站点</span></div>
-              <div><em>02</em><strong>发布治理</strong><span>访问密码、分类、版本、锁定和下架</span></div>
-              <div><em>03</em><strong>交付复用</strong><span>创作市场、源码下载、Agent 二次创作、广告屏投放</span></div>
+              <div><em>01</em><strong>接收</strong><span>HTML / MD / ZIP / 多文件</span></div>
+              <div><em>02</em><strong>发布</strong><span>版本、加密、分类、锁定</span></div>
+              <div><em>03</em><strong>复用</strong><span>市场、源码、广告屏</span></div>
             </div>
           </div>
           <div className="ant-live-editor" aria-label="PagePilot 快速发布预览">
             <div className="editor-tabs" role="tablist" aria-label="发布预览步骤">
               {previewTabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  role="tab"
-                  aria-selected={homePreviewTab === tab.key}
-                  className={homePreviewTab === tab.key ? "active" : ""}
-                  onClick={() => setHomePreviewTab(tab.key)}
-                >
-                  {tab.label}
-                </button>
+                <button key={tab.key} type="button" role="tab" aria-selected={homePreviewTab === tab.key} className={homePreviewTab === tab.key ? "active" : ""} onClick={() => setHomePreviewTab(tab.key)}>{tab.label}</button>
               ))}
             </div>
             <pre>{activePreview.content}</pre>
-            <div className="preview-result-bar">
-              <span>{activePreview.meta}</span>
-              <Button type="link" onClick={() => onNavigate('deploy', '/deploy')}>立即发布</Button>
-            </div>
+            <div className="preview-result-bar"><span>{activePreview.meta}</span><Button type="link" onClick={() => onNavigate('deploy', '/deploy')}>立即发布</Button></div>
           </div>
         </div>
 
         <div className="second-feature-strip" aria-label="PagePilot 核心能力">
-          <span>FEATURES</span>
+          <span>六大核心能力</span>
           <div>
             {capabilities.map(([title], index) => <strong key={title}><em>{String(index + 1).padStart(2, '0')}</em>{title}</strong>)}
           </div>
@@ -1032,8 +1027,8 @@ function HomePage({
         <div className="ant-section ant-market-section">
           <div className="ant-section-copy">
             <span>CREATION MARKET</span>
-            <h2>把一次性交付变成可复用的应用资产</h2>
-            <p>创作市场不是模板橱窗，而是 Agent 继续工作的上下文。公开作品可以被发现、收藏、下载源码、复制 CLI，或者作为下一次生成的参考。</p>
+            <h2>从"写后即弃"到"持续复用"</h2>
+            <p>公开作品进入创作市场后，可被发现、收藏、下载源码、复制 CLI / MCP 参数，或作为 Agent 下一次生成的知识上下文。每一次发布都在为 AI 积累可用的应用资产。</p>
             <Button icon={<PackageOpen size={17} />} onClick={() => onNavigate('market', '/market')}>浏览创作市场</Button>
           </div>
           <div className="market-scenario-list">
@@ -1042,11 +1037,11 @@ function HomePage({
         </div>
 
         <div className="ant-section ant-workflow-section">
-          <div className="ant-section-copy wide"><span>HOW IT WORKS</span><h2>三步，从 Agent 产物到可访问应用</h2></div>
+          <div className="ant-section-copy wide"><span>DELIVERY PIPELINE</span><h2>三步，从 Agent 产物到可访问应用</h2></div>
           <Steps className="ant-home-steps" items={[
-            { title: '生成或上传', description: 'Agent 生成 HTML、Markdown、ZIP，或你手动上传目录与文件。' },
-            { title: '发布与治理', description: 'PagePilot 生成访问地址，记录版本、权限、分类和市场状态。' },
-            { title: '分享与复用', description: '复制链接、投放屏幕、下载源码，或让 Agent 基于旧作品继续迭代。' }
+            { title: '生成或上传', description: 'Agent 生成 HTML、Markdown、ZIP，或手动上传目录与文件' },
+            { title: '发布与治理', description: '生成访问地址，记录版本、权限、分类和市场状态' },
+            { title: '分享与复用', description: '复制链接、投放屏幕、下载源码、Agent 二次创作' }
           ]} />
           <div className="ant-stat-line"><div><strong>{publishLimit}</strong><span>匿名额度</span></div><div><strong>{maxSize}</strong><span>整站上限</span></div><div><strong>{fileLimit}</strong><span>文件上限</span></div><div><strong>pagep</strong><span>CLI / Skill</span></div></div>
         </div>
@@ -1054,15 +1049,15 @@ function HomePage({
 
       <section className="home-screen home-fourth-screen" data-home-screen>
         <div className="ant-section ant-version-section">
-          <div className="ant-section-copy"><span>VERSION HISTORY</span><h2>持续进化的产品能力</h2><p>每次迭代都围绕 Agent 生成应用的真实交付链路展开。后续版本会继续追加到这里，形成可回顾的产品路线。</p></div>
-          <Timeline items={releaseNotes.map((note, index) => ({ color: index === 0 ? '#575ff5' : '#001541', children: <><strong>{note.version} · {note.title}</strong><p><span>{note.date}</span>{note.body}</p></> }))} />
+          <div className="ant-section-copy"><span>PRODUCT ROADMAP</span><h2>持续进化的交付能力</h2><p>每一次迭代都围绕 Agent 生成应用的真实交付链路，从部署→治理→市场逐步丰满产品。</p></div>
+          <Timeline items={releaseNotes.map((note, index) => ({ color: index === 0 ? '#067fa9' : '#64748b', children: <><strong>{note.version} · {note.title}</strong><p><span>{note.date}</span>{note.body}</p></> }))} />
         </div>
 
-        <section className="ant-philosophy-section">
-          <div><strong>AI-Native</strong><span>让 Agent 成为内容生产者，PagePilot 成为交付系统。</span></div>
-          <div><strong>可治理</strong><span>版本、权限、密码、下架、分类和审计是发布平台的核心。</span></div>
-          <div><strong>可复用</strong><span>每个公开作品都可以成为下一次生成和二次创作的上下文。</span></div>
-        </section>
+        <div className="ant-philosophy-section">
+          <div><strong>AI-Native</strong><span>Agent 生产内容，PagePilot 交付和管理。</span></div>
+          <div><strong>可治理</strong><span>版本、权限、密码、下架、分类、审计一个不少。</span></div>
+          <div><strong>可复用</strong><span>公开作品成为 Agent 下一次创作的上下文。</span></div>
+        </div>
       </section>
     </div>
   );
@@ -1090,6 +1085,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
   const pinnedCount = items.filter((item) => item.isPinned).length;
   const categories: Array<{ key: MarketCategory; label: string; note: string; icon: React.ReactNode }> = [
     { key: "all", label: "全部分类", note: "不过滤应用分类", icon: <PackageOpen /> },
+    { key: UNCATEGORIZED_CATEGORY_FILTER, label: "未分类", note: "未设置应用分类", icon: <PackageOpen /> },
     ...marketCategories.map((item) => ({
       key: item.slug,
       label: item.label,
@@ -2259,8 +2255,13 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [errorDetail, setErrorDetail] = useState<StructuredAPIErrorPayload | null>(null);
+  const [fieldError, setFieldError] = useState<Record<string, string>>({});
   const [result, setResult] = useState<DeployResponse | null>(null);
   const canPublishToMarket = Boolean(session?.success || session?.userId);
+
+  const showFieldError = (field: string, msg: string) => setFieldError((prev) => ({ ...prev, [field]: msg }));
+  const clearFieldError = (field: string) => setFieldError((prev) => { const next = { ...prev }; delete next[field]; return next; });
+  const clearAllErrors = () => { setError(""); setErrorDetail(null); setFieldError({}); };
 
   const totalSize = mode === "single" ? fileTextSize(content) : files.reduce((sum, file) => sum + (file.size ?? fileTextSize(file.content)), 0);
   const ready = mode === "single"
@@ -2352,16 +2353,17 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
 
   const submit = async () => {
     setBusy(true);
-    setError("");
-    setErrorDetail(null);
+    clearAllErrors();
     setResult(null);
     try {
       if (createVersion && !customCode.trim()) {
-        throw new Error("请先从可更新发布列表中选择一个作品。");
+        showFieldError("code", "选择要更新的发布");
+        throw new Error("请从可更新发布列表中选择一个作品。");
       }
       const effectiveDescription = description.trim() || selectedUpdatableSite?.description?.trim() || "";
       const effectiveTitle = title.trim() || selectedUpdatableSite?.title?.trim() || "";
       if (!effectiveDescription) {
+        showFieldError("description", "请填写一句话描述");
         throw new APIError("请填写一句话描述，说明这个应用是做什么的。", 0, {
           errorCode: "INVALID_DESCRIPTION",
           stage: "validate"
@@ -2404,7 +2406,8 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
       });
       setResult(data);
     } catch (err) {
-      setError(plainErrorMessage(err));
+      const msg = plainErrorMessage(err);
+      setError(msg);
       setErrorDetail(structuredAPIError(err));
     } finally {
       setBusy(false);
@@ -2493,11 +2496,13 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
           <div className="deploy-props-body">
             <label className="field">
               <span>作品标题</span>
-              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="给作品起一个可读名称" />
+              <input value={title} onChange={(e) => { setTitle(e.target.value); clearFieldError("title"); }} placeholder="给作品起一个可读名称" />
+              {fieldError.title && <span className="field-error">{fieldError.title}</span>}
             </label>
             <label className="field">
               <span>描述 *</span>
-              <input value={description} onChange={(e) => setDescription(e.target.value)} maxLength={240} placeholder="一句话说明用途（必填）" />
+              <input value={description} onChange={(e) => { setDescription(e.target.value); clearFieldError("description"); }} maxLength={240} placeholder="一句话说明用途（必填）" />
+              {fieldError.description && <span className="field-error">{fieldError.description}</span>}
             </label>
             <label className="field">
               <span>可见性</span>
@@ -2547,11 +2552,8 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
         </aside>
       </div>
 
-      {error && (
-        <div className="deploy-error-banner">
-          <DeployErrorPanel message={error} error={errorDetail} />
-          <button className="button compact" type="button" onClick={() => { setError(""); setErrorDetail(null); }}>关闭</button>
-        </div>
+      {error && !fieldError.description && !fieldError.code && (
+        <p className="field-error" style={{margin:"12px 28px",fontSize:"13px"}}>{error}</p>
       )}
 
       {result && <DeployResult result={result} onClose={() => setResult(null)} />}

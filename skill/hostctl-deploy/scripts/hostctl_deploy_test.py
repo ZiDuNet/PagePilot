@@ -11,7 +11,6 @@ import zipfile
 
 SCRIPT = pathlib.Path(__file__).with_name("hostctl_deploy.py")
 SKILL_DOC = SCRIPT.parent.parent / "SKILL.md"
-HIGHLIGHT_PLUGIN = SCRIPT.parent.parent / "assets" / "plugin" / "highlight" / "plugin.js"
 SPEC = importlib.util.spec_from_file_location("hostctl_deploy", SCRIPT)
 hostctl_deploy = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
@@ -26,20 +25,32 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("multipart", text)
         self.assertIn("不要在覆盖版本时把文件塞进 JSON/base64", text)
 
-    def test_reveal_default_example_is_iframe_safe(self):
+    def test_skill_focuses_on_static_site_publishing(self):
         text = SKILL_DOC.read_text(encoding="utf-8")
 
-        self.assertIn("hash: false", text)
-        self.assertIn("history: false", text)
-        self.assertIn("plugins: []", text)
-        self.assertIn("不要把 ESM 插件源码当普通 script 引入", text)
+        for required in [
+            "HTML",
+            "Markdown",
+            "ZIP",
+            "多文件静态站点",
+            "MCP",
+            "Token",
+            "屏幕投放",
+        ]:
+            self.assertIn(required, text)
 
-    def test_reveal_highlight_asset_is_classic_script(self):
-        text = HIGHLIGHT_PLUGIN.read_text(encoding="utf-8")
-
-        self.assertNotIn("import ", text)
-        self.assertNotIn("export default", text)
-        self.assertIn("global.RevealHighlight", text)
+        for forbidden in [
+            "Reveal",
+            "reveal",
+            "PPT",
+            "PowerPoint",
+            "幻灯",
+            "演示文稿",
+            "slides",
+            "deck",
+            "RevealHighlight",
+        ]:
+            self.assertNotIn(forbidden, text)
 
 
 class ScreenOrientationTests(unittest.TestCase):

@@ -54,16 +54,7 @@ PagePilot 的定位是 **Agent 生成应用的发布控制台**。它不只是 H
 
 - 短链 `/s/:key`：PagePilot 先继续使用 `/agent/{code}/` 和预留泛域名模式。
 - Token 可再次查看明文：安全上不建议，PagePilot 仍采用一次性显示。
-- Reveal.js 作为核心代码渲染链路：暂不在服务端单独内置 Reveal 引擎。
-
-### Reveal.js 处理方式
-
-Reveal.js Bundle 模式作为 **Skill/CLI 的可选创作能力**：
-
-- Skill 可以建议 Agent 生成 Reveal.js 演示站点，并以 ZIP/多文件站点发布。
-- PagePilot 服务端只需要按普通 ZIP/多文件站点托管，不新增专门 Reveal 后端。
-- 创作市场可增加“演示文稿/路演汇报/大屏展示”分类或标签。
-- 后续若 Markdown Slides 需求强，再作为 Markdown 渲染增强独立立项。
+- 演示类专项创作链路：不作为 PagePilot Skill 的内置生成能力；平台仍可按普通 HTML/ZIP 静态站点托管用户自行上传的相关资源。
 
 ## 4. 阶段一：安全默认值与发布链路
 
@@ -241,7 +232,7 @@ OSS_PUBLIC_BASE_URL=
 
 ### 目标
 
-让 Markdown 文档页成为一等应用，同时支持 Reveal.js Bundle 作为可选发布形态。
+让 Markdown 文档页成为一等应用，同时继续支持 HTML、ZIP 和多文件静态站点作为通用发布形态。
 
 详细当前状态和跨阶段待办见 [CURRENT_STATUS_AND_TODO.md](CURRENT_STATUS_AND_TODO.md)。
 
@@ -268,17 +259,15 @@ OSS_PUBLIC_BASE_URL=
 - Markdown 渲染支持代码高亮、KaTeX、Mermaid、明暗主题。
 - Markdown ZIP 支持图片和相对资源。
 - ZIP 自动识别包含 HTML/Markdown 入口的真实层级。
-- Skill 增加 Reveal.js Bundle 指南：
-  - 适合路演、汇报、课程、广告屏展示。
-  - 建议输出 `index.html`、`dist/`、`assets/` 或 `slides.md` + reveal runtime。
-  - 通过普通 ZIP/多文件站点发布。
+- Skill 回归 HTML / Markdown / ZIP / 多文件静态站点发布指南，不内置演示类专项生成动作和运行时资源。
+- 用户自行提供的复杂静态站点仍按普通 ZIP/多文件站点发布，由 Bundle 入口识别和安全策略兜底。
 
 ### 验收
 
 - Markdown 图片相对路径可访问。
 - Mermaid/KaTeX 不破坏 CSP。
-- Reveal Bundle 按普通站点访问正常。
-- Skill 不承诺服务端内置 Reveal 引擎。
+- HTML、Markdown、ZIP、多文件静态站点按各自 Bundle 类型访问正常。
+- Skill、CLI、MCP 对发布类型和安全边界的描述一致。
 
 ## 10. 阶段七：Skill / CLI / MCP / API / 文档对齐
 
@@ -294,7 +283,7 @@ OSS_PUBLIC_BASE_URL=
 - 更新前先列当前可更新项目，不允许猜 code。
 - 匿名更新只限当前匿名 session。
 - 认领后更新权转给用户。
-- Reveal.js Bundle 作为可选创作建议。
+- Skill 聚焦 HTML、Markdown、ZIP 和多文件静态站点，不再提供演示类专项创作建议。
 
 ### CLI / MCP
 
@@ -353,7 +342,6 @@ OSS_PUBLIC_BASE_URL=
 | OSS | env 切换后发布资源可正常读写 |
 | Markdown | 高级渲染、图片、主题正常 |
 | 模板复用 | 下载源文件、文件树、Agent 提示词、CLI/MCP 参数都可从详情页一致生成 |
-| Reveal Bundle | 作为普通 ZIP/多文件站点可发布 |
 | Skill | 默认不公开/不加密但询问，不猜 code 更新 |
 | Docker 升级 | 使用旧数据库和旧 hosted 目录升级后数据不丢失 |
 | 视觉 QA | 主要页面桌面和移动视口无明显遮挡、截断、横向滚动和空状态缺失 |

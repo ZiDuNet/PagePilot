@@ -2,7 +2,7 @@
 
 PagePilot 是面向 AI Agent 的 HTML / Markdown / ZIP / 多文件静态站点发布平台。你把需求告诉 Agent，Agent 生成页面或应用，PagePilot 负责上线、访问密码、版本回滚、锁定下架、创作市场复用、API/CLI/MCP 接入和广告屏投放。
 
-当前版本：`0.2.0`
+当前版本：`0.3.0`
 
 ![PagePilot 首页](docs/screenshots/home.png)
 
@@ -341,7 +341,7 @@ python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
 
 `node scripts/docker-upgrade-qa.mjs` 会在临时目录构造旧 SQLite + hosted 数据，生成临时 compose override，执行真实 `docker compose up -d --build`，再通过容器 HTTP 接口和直接 SQLite 校验检查站点、版本、Token、匿名 session、屏幕、访问密码、FTS、Bundle、审计表和 Skill ZIP。该脚本需要服务器已安装 Docker Compose 和 Go；可加 `--keep` 保留临时目录便于排查。
 
-`python scripts/build_skill_zip.py` 会把 `skill/hostctl-deploy` 重新打包为内置下载包，ZIP 内固定使用 `pagep/` 前缀，并校验 `pagep/SKILL.md` 存在、`__pycache__` / `.pyc` / `.pyo` 不会被打进去。`make build`、`make build-linux` 和 `make docker` 会自动先执行该步骤；直接运行 `docker compose up -d --build` 时，Dockerfile 的 Go builder 阶段也会在编译前执行同一脚本，避免二进制 embed 到旧 Skill ZIP。
+`python scripts/build_skill_zip.py` 会把 `skill/hostctl-deploy` 重新打包为内置下载包，ZIP 内固定使用 `pagep/` 前缀，并校验 `pagep/SKILL.md` 存在、`__pycache__`、`.pyc`、`.pyo` 和测试脚本不会被打进去。`make build`、`make build-linux` 和 `make docker` 会自动先执行该步骤；直接运行 `docker compose up -d --build` 时，Dockerfile 的 Go builder 阶段也会在编译前执行同一脚本，避免二进制 embed 到旧 Skill ZIP。
 
 旧 `test_e2e.sh` 仍需要在 `http://127.0.0.1:8787` 上有本地开发服务器。
 

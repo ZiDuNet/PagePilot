@@ -43,15 +43,13 @@ The work is not complete yet. The repository has made large progress and now has
 - Added and rebuilt Skill ZIP assets:
   - `/skill/pagep.zip` primary route
   - `/skill/hostctl-deploy.zip` compatibility alias
-  - `skill/hostctl-deploy/assets/reveal.js`
-  - `skill/hostctl-deploy/assets/reveal-base.css`
-  - Reveal highlight/notes plugins and themes copied from the local jpage reference
+- Removed built-in special-format generation assets from the Skill package so pagep stays focused on HTML, Markdown, ZIP and multi-file static sites.
 - Updated `skill/hostctl-deploy/SKILL.md`:
   - PagePilot/pagep wording
   - default visibility guidance
   - category/tag/access-password questions
   - anonymous/session rules
-  - Reveal.js Bundle as optional user-built static bundle
+  - HTML / Markdown / ZIP / multi-file static site boundaries
 - Enhanced Markdown hosted rendering:
   - fenced code language class
   - tables

@@ -395,6 +395,26 @@ func TestMarketplacePinnedDeploysStayAboveLikeRanking(t *testing.T) {
 	}
 }
 
+func TestListMarketplaceDeploysCanFilterUncategorized(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-2 * time.Hour)
+
+	seedMarketplaceSite(t, store, "uncategorized", 0, base)
+	seedMarketplaceSite(t, store, "categorized", 0, base.Add(time.Hour))
+	if err := store.SetSiteCategory(ctx, "categorized", "tool"); err != nil {
+		t.Fatalf("set category: %v", err)
+	}
+
+	deploys, total, err := store.ListMarketplaceDeploys(ctx, "", "", "newest", "__uncategorized", "", "", "", 1, 10)
+	if err != nil {
+		t.Fatalf("list marketplace: %v", err)
+	}
+	if total != 1 || len(deploys) != 1 || deploys[0].Code != "uncategorized" {
+		t.Fatalf("uncategorized filter = total:%d deploys:%v; want only uncategorized", total, deploys)
+	}
+}
+
 func TestCreateSiteDefaultsToUnlistedAndStaysOutOfMarketplace(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()

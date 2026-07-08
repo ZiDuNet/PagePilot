@@ -6,7 +6,7 @@ This file is committed on purpose so another machine or Codex session can resume
 
 - Product name: PagePilot.
 - Repository: `ZiDuNet/PagePilot`.
-- Current release version: `0.2.0`.
+- Current release version: `0.3.0`.
 - Main working branch after this cleanup: `main`.
 - Historical implementation branch: `codex/public-url-embed-settings`; it has been promoted into `main`.
 - Do not commit `竞品/`; it is a local read-only competitor reference checkout.
