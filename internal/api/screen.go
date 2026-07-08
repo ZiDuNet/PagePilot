@@ -15,7 +15,10 @@ import (
 	"github.com/yourorg/hostctl/internal/store"
 )
 
-const screenPairingTTL = 5 * time.Minute
+const (
+	screenPairingTTL           = 5 * time.Minute
+	screenOnlineHeartbeatGrace = 60 * time.Second
+)
 
 func (s *Server) handleListScreens(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -533,7 +536,7 @@ func (s *Server) toScreenItem(ctx context.Context, screen store.Screen) ScreenIt
 		OwnerUsername:         s.ownerUsername(ctx, screen.OwnerUserID),
 		Name:                  screen.Name,
 		DeviceName:            screen.DeviceName,
-		Status:                screen.Status,
+		Status:                s.screenRuntimeStatus(screen),
 		CurrentSiteCode:       screen.CurrentSiteCode,
 		CurrentVersion:        screen.CurrentVersion,
 		LastSeenAt:            screen.LastSeenAt,
@@ -548,6 +551,36 @@ func (s *Server) toScreenItem(ctx context.Context, screen store.Screen) ScreenIt
 		CreatedAt:             screen.CreatedAt,
 		UpdatedAt:             screen.UpdatedAt,
 	}
+}
+
+func (s *Server) screenRuntimeStatus(screen store.Screen) string {
+	status := strings.TrimSpace(screen.Status)
+	switch status {
+	case "revoked", "pairing":
+		return status
+	}
+	if strings.TrimSpace(screen.OwnerUserID) == "" {
+		if status != "" {
+			return status
+		}
+		return "pairing"
+	}
+	if strings.TrimSpace(screen.DeviceTokenHash) == "" {
+		if status == "online" {
+			return "bound"
+		}
+		if status != "" {
+			return status
+		}
+		return "bound"
+	}
+	if len(s.screenHub.clientsFor(screen.ID)) > 0 {
+		return "online"
+	}
+	if screen.LastSeenAt != nil && time.Since(screen.LastSeenAt.UTC()) <= screenOnlineHeartbeatGrace {
+		return "online"
+	}
+	return "offline"
 }
 
 func (s *Server) ownerUsername(ctx context.Context, ownerUserID string) string {

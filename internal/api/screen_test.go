@@ -558,6 +558,55 @@ func TestScreenWebSocketAcceptsDeviceTokenQueryFallback(t *testing.T) {
 	}
 }
 
+func TestScreenRuntimeStatusExpiresStaleOnlineHeartbeat(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+
+	stale := time.Now().UTC().Add(-2 * screenOnlineHeartbeatGrace)
+	screen := store.Screen{
+		ID:              "screen-stale",
+		OwnerUserID:     "user-1",
+		DeviceTokenHash: "token-hash",
+		Status:          "online",
+		LastSeenAt:      &stale,
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+
+	if got := srv.toScreenItem(context.Background(), screen).Status; got != "offline" {
+		t.Fatalf("stale heartbeat status = %q, want offline", got)
+	}
+
+	fresh := time.Now().UTC().Add(-screenOnlineHeartbeatGrace / 2)
+	screen.LastSeenAt = &fresh
+	if got := srv.toScreenItem(context.Background(), screen).Status; got != "online" {
+		t.Fatalf("fresh heartbeat status = %q, want online", got)
+	}
+}
+
+func TestScreenRuntimeStatusTreatsLiveWebSocketAsOnline(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+
+	stale := time.Now().UTC().Add(-2 * screenOnlineHeartbeatGrace)
+	screen := store.Screen{
+		ID:              "screen-ws",
+		OwnerUserID:     "user-1",
+		DeviceTokenHash: "token-hash",
+		Status:          "online",
+		LastSeenAt:      &stale,
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+	client := &screenWSClient{screenID: screen.ID}
+	srv.screenHub.register(client)
+	defer srv.screenHub.unregister(client)
+
+	if got := srv.toScreenItem(context.Background(), screen).Status; got != "online" {
+		t.Fatalf("live websocket status = %q, want online", got)
+	}
+}
+
 func TestAdminCanPublishAnyOwnedSiteToAnyScreen(t *testing.T) {
 	srv, cleanup := newScreenAPITestServer(t)
 	defer cleanup()

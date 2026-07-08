@@ -3764,6 +3764,10 @@ function DeviceInfoBlock({ screen }: { screen: ScreenItem }) {
 
 function statusBadge(status: string, protectedSite = false) {
   if (protectedSite) return <span className="badge amber">加密</span>;
+  if (status === "online") return <span className="badge green">在线</span>;
+  if (status === "offline") return <span className="badge slate">离线</span>;
+  if (status === "pairing") return <span className="badge amber">待配对</span>;
+  if (status === "revoked") return <span className="badge rose">已解绑</span>;
   if (status === "active") return <span className="badge green">运行中</span>;
   if (status === "inactive") return <span className="badge rose">已下架</span>;
   return <span className="badge slate">{status}</span>;
