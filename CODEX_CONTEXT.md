@@ -62,7 +62,7 @@ python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py skill/hostct
 python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
 ```
 
-Do not use plain `go test ./...` while the local `竞品/jpage` checkout exists under this workspace; it includes nested Go files under `node_modules` and causes invalid import path failures.
+Do not use plain `go test ./...` while the local reference checkout exists under this workspace; it includes nested Go files and causes invalid import path failures.
 
 ## Skill Packaging
 
@@ -103,7 +103,7 @@ Implemented and verified in the current round:
 - Anonymous/public visibility tests.
 - Markdown hosted rendering improvements: code blocks, tables, task lists, Mermaid/math semantic blocks, relative images, safer URL handling.
 - Stricter no-script CSP for hosted Markdown while keeping HTML app compatibility.
-- Skill ZIP includes jpage-derived Reveal.js assets as optional user-bundled static presentation support.
+- Skill ZIP includes Reveal.js assets as optional user-bundled static presentation support.
 - README, Docker/deploy docs, remediation plan, and Skill docs were updated.
 - `docs/CURRENT_STATUS_AND_TODO.md` is the canonical checklist for the current code state and remaining productization work.
 
@@ -127,11 +127,11 @@ High-priority remaining work:
 - Productize admin audit-log API/UI. Store tables and methods exist, but no admin API/page is exposed yet.
 - Productize file tree, Bundle type, security mode, and reuse-parameter display in creation-market detail and admin site detail.
 - Upgrade Markdown from safe semantic rendering to a maintained local high-level pipeline only after CSP/XSS review.
-- Complete jpage-style template reuse flow, runtime visual QA, and real Docker old-database upgrade validation.
+- Complete template reuse flow, runtime visual QA, and real Docker old-database upgrade validation.
 - Full UI/UX review of homepage, market, deploy, screens, login/register, encrypted page, and all admin pages.
 - Marketplace product-logic review for categories, tags, owned updates, anonymous claim, favorites, deletes, and permissions.
 - Live-test SMTP email verification with a real provider, and decide whether login should require verified email for non-admin accounts.
 - Live-test OSS with real Aliyun credentials; still consider local-to-OSS migration tooling and signed/private object access policy.
-- Decide whether to keep the minimal safe Markdown renderer or add a jpage-style advanced pipeline: server-side Markdown parsing, highlight.js, KaTeX, CSP nonce handling, render cache, theme switching, and a platform-owned Mermaid browser runtime.
+- Decide whether to keep the minimal safe Markdown renderer or add an advanced pipeline: server-side Markdown parsing, highlight.js, KaTeX, CSP nonce handling, render cache, theme switching, and a platform-owned Mermaid browser runtime.
 - Continue tightening preview isolation: independent preview endpoints, sandbox/CSP by content type, and no parent-context access from user HTML.
 - Consider public share-key separation later, but not in the current product plan.
