@@ -998,6 +998,22 @@ def cmd_screen_bind(args) -> int:
     return print_result(status, data)
 
 
+def cmd_screen_assign(args) -> int:
+    token = registered_token(args, "screen assign")
+    screen_id = urllib.parse.quote(args.screen, safe="")
+    payload = {"ownerUserId": args.owner_user_id}
+    if args.name:
+        payload["name"] = args.name
+    status, data = request_json(
+        server_url(args),
+        token,
+        f"/api/admin/screens/{screen_id}/assign",
+        "POST",
+        payload,
+    )
+    return print_result(status, data)
+
+
 def cmd_screen_publish(args) -> int:
     token = registered_token(args, "screen publish")
     base = server_url(args)
@@ -1274,6 +1290,11 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("pairing_code")
     ps.add_argument("--name", default="", help="Optional display name for the screen")
     ps.set_defaults(func=cmd_screen_bind)
+    ps = screen_sub.add_parser("assign", help="Admin: assign an unpaired connected screen to a user")
+    ps.add_argument("screen", help="Unpaired screen id shown in admin /api/screens")
+    ps.add_argument("--owner-user-id", required=True, help="Target registered user id")
+    ps.add_argument("--name", default="", help="Optional display name for the screen")
+    ps.set_defaults(func=cmd_screen_assign)
     ps = screen_sub.add_parser("publish", help="Publish an app or local HTML project to a screen")
     ps.add_argument("--screen", required=True, help="Target screen id")
     ps.add_argument("--app", default="", help="Existing PagePilot app code")

@@ -42,6 +42,16 @@ type ScreenBindResponse struct {
 	Screen  ScreenItem `json:"screen"`
 }
 
+type ScreenAssignRequest struct {
+	OwnerUserID string `json:"ownerUserId"`
+	Name        string `json:"name,omitempty"`
+}
+
+type ScreenAssignResponse struct {
+	Success bool       `json:"success"`
+	Screen  ScreenItem `json:"screen"`
+}
+
 type ScreenPublishRequest struct {
 	Code          string `json:"code"`
 	VersionNumber *int64 `json:"versionNumber,omitempty"`

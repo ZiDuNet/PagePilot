@@ -96,8 +96,9 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 | `PATCH` | `/api/deploys/{code}/access` | 站点 owner 或管理员设置 / 清除访问密码 |
 | `PATCH` | `/api/admin/sites/{code}/reuse-policy` | 管理员设置源码下载和模板复用策略 |
 | `PATCH` | `/api/admin/sites/{code}/security-mode` | 管理员设置站点运行安全模式 |
-| `GET` | `/api/screens` | 列出当前注册用户绑定的硬件屏幕 |
+| `GET` | `/api/screens` | 列出当前注册用户绑定的硬件屏幕；管理员可看到待分配设备 |
 | `POST` | `/api/screens/bind` | 使用短期配对码绑定硬件屏幕 |
+| `POST` | `/api/admin/screens/{screenId}/assign` | 管理员将已连接但未配对的设备分配给用户 |
 | `POST` | `/api/screens/{screenId}/publish` | 将自己的应用投放到自己的屏幕 |
 | `POST` | `/api/screens/{screenId}/screenshot` | 下发屏幕截图指令 |
 | `GET` | `/api/screens/{screenId}/screenshot` | 查看屏幕最近一次截图 |
@@ -143,7 +144,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 账号注册、登录、登出和修改密码会分别以 `auth.register`、`auth.login`、`auth.logout`、`account.password` 写入审计日志，成功 / 失败都会记录操作者、目标用户和错误阶段等非敏感信息，不记录密码明文。
 - 访问密码输入入口保持公开，匿名访客也可以输入密码查看加密站点；验证通过后浏览器获得 5 分钟签名访问票据。票据同时绑定站点密码哈希和版本号，站点改密码或切换当前版本后旧票据立即失效；显式历史版本 URL 会按该版本单独签发票据。访问密码验证成功 / 失败会以 `site.access_login` 写入安全审计日志，记录站点、版本、结果和失败原因，不记录密码明文。
 - 访问密码只授权浏览页面，不等于源码下载或模板复用权限。源码下载和模板复用需要登录用户或已绑定注册用户的 Token；公开且未加密的作品在登录后默认可下载源码和复用，加密、不公开、下架或策略受限作品对普通用户默认禁止下载源码和复用。站点所有者和管理员拥有管理权限，可直接下载加密作品源码用于审计、备份或二次修改。详情接口会返回 `reuse.allowDownload`、`reuse.allowReuse`、`reuse.policyNote`、CLI 命令、Agent 提示词和 MCP 参数。
-- 屏幕投放只允许注册用户 Token 或登录用户会话调用；匿名 session 不能绑定屏幕或投屏。
+- 屏幕投放只允许注册用户 Token 或登录用户会话调用；匿名 session 不能绑定屏幕或投屏。APP 已连接但未配对时只会出现在管理员后台的“待分配设备”，不会出现在普通用户屏幕列表里。
 - 屏幕 APP 不持有用户 Token，只持有可吊销的 Device Token；Device Token 只能拉取自己的 manifest、建立自己的 WebSocket 控制通道、上报心跳和按指令回传截图。
 - 屏幕配对码是 5 分钟一次性短码，只用于首次绑定，不是长期权限。
 - 内置页面 `/deploy`、`/market`、`/agents/`、`/screens/` 由 Go 服务内嵌返回；后台 API 文档位于 `/admin?tab=apiDocs`。反向代理应把这些路径原样转发给 PagePilot。
@@ -235,6 +236,7 @@ python scripts/pagep.py admin pin-site my-landing
 ```bash
 python scripts/pagep.py screen list --server https://host.example.com
 python scripts/pagep.py screen bind 123456 --name "大厅屏"
+python scripts/pagep.py screen assign screen_xxx --owner-user-id user_xxx --name "大厅屏"  # 管理员
 python scripts/pagep.py screen publish --screen screen_xxx --app my-landing
 python scripts/pagep.py screen publish --screen screen_xxx --source ./site --title "大屏展示" --description "Fullscreen display for the lobby."
 python scripts/pagep.py screen screenshot screen_xxx --output ./screen-shot.jpg

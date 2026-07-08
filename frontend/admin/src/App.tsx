@@ -212,6 +212,7 @@ interface MarketCategoriesResponse {
 
 interface ScreenItem {
   id: string;
+  ownerUserId?: string;
   name?: string;
   deviceName?: string;
   ownerUsername?: string;
@@ -227,6 +228,8 @@ interface ScreenItem {
   commandType?: string;
   commandRequestedAt?: string;
   commandCompletedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 interface ScreenScreenshotCommand {
@@ -2403,32 +2406,40 @@ function CategoriesPanel({ showToast, setError }: { showToast: (msg: string) => 
   );
 }
 
-function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (msg: string) => void; setError: (msg: string) => void }) {
+function ScreensPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [screens, setScreens] = useState<ScreenItem[]>([]);
   const [sites, setSites] = useState<SiteItem[]>([]);
   const [market, setMarket] = useState<MarketplaceItem[]>([]);
+  const [users, setUsers] = useState<UserItem[]>([]);
   const [pairingCode, setPairingCode] = useState("");
   const [screenName, setScreenName] = useState("");
   const [pickScreen, setPickScreen] = useState<ScreenItem | null>(null);
   const [pickTab, setPickTab] = useState<ScreenPickTab>("mine");
+  const [assignTarget, setAssignTarget] = useState<ScreenItem | null>(null);
+  const [assignUserId, setAssignUserId] = useState("");
+  const [assignName, setAssignName] = useState("");
   const [screenshotDialog, setScreenshotDialog] = useState<ScreenshotDialog | null>(null);
   const [unbindTarget, setUnbindTarget] = useState<ScreenItem | null>(null);
   const screenshotSeq = useRef(0);
 
   const load = useCallback(async () => {
     try {
-      const [screenData, siteData, marketData] = await Promise.all([
+      const [screenData, siteData, marketData, userData] = await Promise.all([
         api<{ screens?: ScreenItem[] }>("/api/screens"),
         api<{ sites?: SiteItem[] }>("/api/admin/sites"),
-        api<{ deploys?: MarketplaceItem[] }>("/api/deploys?pageSize=100&sort=newest")
+        api<{ deploys?: MarketplaceItem[] }>("/api/deploys?pageSize=100&sort=newest"),
+        isAdmin ? api<{ users?: UserItem[] }>("/api/admin/users") : Promise.resolve({ users: [] })
       ]);
       setScreens(screenData.screens || []);
       setSites(siteData.sites || []);
       setMarket(marketData.deploys || []);
+      const loadedUsers = userData.users || [];
+      setUsers(loadedUsers);
+      if (!assignUserId && loadedUsers[0]) setAssignUserId(loadedUsers[0].id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [setError]);
+  }, [assignUserId, isAdmin, setError]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -2458,6 +2469,29 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
       });
       showToast("投放已下发");
       setPickScreen(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function openAssign(screen: ScreenItem) {
+    setAssignTarget(screen);
+    setAssignName(screen.name || screen.deviceName || "");
+    setAssignUserId((current) => current || users[0]?.id || "");
+  }
+
+  async function assignScreen() {
+    if (!assignTarget) return;
+    if (!assignUserId) return setError("请选择要分配的用户");
+    try {
+      await api(`/api/admin/screens/${encodeURIComponent(assignTarget.id)}/assign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ownerUserId: assignUserId, name: assignName.trim() || undefined })
+      });
+      showToast("屏幕已分配，设备端会自动完成配对");
+      setAssignTarget(null);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2595,6 +2629,9 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
     }
   }
 
+  const pendingScreens = isAdmin ? screens.filter((screen) => !screen.ownerUserId) : [];
+  const boundScreens = isAdmin ? screens.filter((screen) => screen.ownerUserId) : screens;
+
   return (
     <section className="page-grid">
       <div className="two-col">
@@ -2611,12 +2648,36 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
           <InfoRow label="远程指令" value="刷新、截图、休眠、唤醒、软关机" />
         </div>
       </div>
+      {isAdmin && (
+        <div className="panel">
+          <div className="panel-head">
+            <div><h2>待分配设备</h2><p>APP 已连接服务器但还没有归属用户。分配后设备端会自动完成配对并保存长期 Device Token。</p></div>
+            <button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button>
+          </div>
+          <div className="screen-grid pending">
+            {pendingScreens.map((screen) => (
+              <article className="screen-card pending" key={screen.id}>
+                <div className="screen-head"><strong>{screen.deviceName || screen.name || screen.id}</strong>{statusBadge(screen.status || "pairing")}</div>
+                <InfoRow label="设备 ID" value={screen.id} />
+                <InfoRow label="最后在线" value={formatDate(screen.lastSeenAt || screen.updatedAt)} />
+                <DeviceInfoBlock screen={screen} />
+                <div className="actions">
+                  <button className="button compact primary" type="button" onClick={() => openAssign(screen)}>分配给用户</button>
+                  <button className="button compact danger" type="button" onClick={() => setUnbindTarget(screen)}>移除</button>
+                </div>
+              </article>
+            ))}
+            {!pendingScreens.length && <div className="empty">暂无待分配设备。打开屏幕 APP 并配置服务器后会出现在这里。</div>}
+          </div>
+        </div>
+      )}
       <div className="panel">
-        <div className="panel-head"><div><h2>硬件屏幕</h2><p>查看在线状态、设备信息和当前播放内容。</p></div><button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button></div>
+        <div className="panel-head"><div><h2>已绑定屏幕</h2><p>查看在线状态、设备信息和当前播放内容。</p></div><button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button></div>
         <div className="screen-grid">
-          {screens.map((screen) => (
+          {boundScreens.map((screen) => (
             <article className="screen-card" key={screen.id}>
               <div className="screen-head"><strong>{screen.name || screen.id}</strong>{statusBadge(screen.status || "unknown")}</div>
+              {isAdmin && <InfoRow label="归属用户" value={screen.ownerUsername || screen.ownerUserId || "-"} />}
               <InfoRow label="当前应用" value={screen.currentSiteCode || "未投放"} />
               <InfoRow label="最后在线" value={formatDate(screen.lastSeenAt)} />
               <DeviceInfoBlock screen={screen} />
@@ -2637,9 +2698,19 @@ function ScreensPanel({ showToast, setError }: { isAdmin: boolean; showToast: (m
               </div>
             </article>
           ))}
-          {!screens.length && <div className="empty">还没有绑定屏幕。</div>}
+          {!boundScreens.length && <div className="empty">还没有绑定屏幕。</div>}
         </div>
       </div>
+      {assignTarget && (
+        <Modal title={`分配设备 · ${assignTarget.deviceName || assignTarget.id}`} onClose={() => setAssignTarget(null)}>
+          <label className="field"><span>归属用户</span><select value={assignUserId} onChange={(event) => setAssignUserId(event.target.value)}>{users.map((user) => <option value={user.id} key={user.id}>{user.username}{user.isAdmin ? " · admin" : ""}</option>)}</select></label>
+          <label className="field"><span>屏幕名称</span><input value={assignName} onChange={(event) => setAssignName(event.target.value)} placeholder="大厅屏 / 门店一号屏" /></label>
+          <div className="actions">
+            <button className="button primary" type="button" onClick={() => void assignScreen()}>确认分配</button>
+            <button className="button" type="button" onClick={() => setAssignTarget(null)}>取消</button>
+          </div>
+        </Modal>
+      )}
       {pickScreen && (
         <Modal title={`投放到 ${pickScreen.name || pickScreen.id}`} onClose={() => setPickScreen(null)}>
           <div className="segmented">
@@ -3003,6 +3074,7 @@ const auditActionOptions = [
   { value: "deploy.create", label: "新建发布" },
   { value: "deploy.version.create", label: "追加版本" },
   { value: "screen.bind", label: "绑定屏幕" },
+  { value: "screen.assign", label: "分配屏幕" },
   { value: "screen.command.request", label: "下发屏幕指令" },
   { value: "screen.publish", label: "屏幕投放" },
   { value: "screen.screenshot.request", label: "请求屏幕截图" },

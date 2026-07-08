@@ -79,6 +79,66 @@ func (s *Server) handleBindScreen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ScreenBindResponse{Success: true, Screen: s.toScreenItem(r.Context(), screen)})
 }
 
+func (s *Server) handleAdminAssignScreen(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	actorUserID, isAdmin, authErr := s.screenActor(r)
+	if authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
+		return
+	}
+	actorType, actorID, actorRole := auditActorFromOwner("user:"+actorUserID, isAdmin)
+	if !isAdmin {
+		apiErr := NewError(CodeForbidden, "auth", "admin required")
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.assign", "", "screen", r.PathValue("screenId"), nil, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+		return
+	}
+	screenID := strings.TrimSpace(r.PathValue("screenId"))
+	if screenID == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "screen", "screen id is required"), reqID))
+		return
+	}
+	var req ScreenAssignRequest
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
+		return
+	}
+	ownerUserID := strings.TrimSpace(req.OwnerUserID)
+	if ownerUserID == "" {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "ownerUserId", "ownerUserId is required"), reqID))
+		return
+	}
+	owner, err := s.auth.GetUser(r.Context(), ownerUserID)
+	if err != nil || !owner.IsActive {
+		apiErr := NewError(CodeInvalidInput, "ownerUserId", "user not found or inactive")
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.assign", "", "screen", screenID,
+			map[string]any{"ownerUserId": ownerUserID}, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+		return
+	}
+	screen, err := s.deployer.AssignScreenOwner(r.Context(), screenID, owner.ID, strings.TrimSpace(req.Name))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			apiErr := NewError(CodeNotFound, "screen", "unpaired screen not found or pairing expired")
+			s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.assign", "", "screen", screenID,
+				map[string]any{"ownerUserId": owner.ID}, apiErr)
+			writeError(w, apiErrWithReqID(apiErr, reqID))
+			return
+		}
+		apiErr := NewError(CodeInternal, "screen_assign", err.Error())
+		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "screen.assign", "", "screen", screenID,
+			map[string]any{"ownerUserId": owner.ID}, apiErr)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
+		return
+	}
+	s.recordAuditLog(r, actorType, actorID, actorRole, "screen.assign", "", "screen", screen.ID, map[string]any{
+		"ownerUserId":   owner.ID,
+		"ownerUsername": owner.Username,
+		"name":          screen.Name,
+		"deviceName":    screen.DeviceName,
+	})
+	writeJSON(w, http.StatusOK, ScreenAssignResponse{Success: true, Screen: s.toScreenItem(r.Context(), screen)})
+}
+
 func (s *Server) handlePublishScreen(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	userID, isAdmin, authErr := s.screenActor(r)
@@ -255,6 +315,8 @@ func (s *Server) handleDevicePairingStart(w http.ResponseWriter, r *http.Request
 			PairingSecretHash: auth.HashToken(pairingSecret),
 			ScreenID:          "screen_" + randomHex(12),
 			DeviceName:        deviceName,
+			AppVersion:        strings.TrimSpace(req.AppVersion),
+			Runtime:           strings.TrimSpace(req.Runtime),
 			DeviceInfo:        deviceInfoPayload(req.DeviceInfo),
 			ExpiresAt:         now.Add(screenPairingTTL),
 			CreatedAt:         now,
@@ -387,10 +449,16 @@ func (s *Server) handleDeviceHeartbeat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) authenticateDevice(r *http.Request) (store.Screen, *APIError) {
 	header := strings.TrimSpace(r.Header.Get("Authorization"))
 	const prefix = "Device "
-	if !strings.HasPrefix(header, prefix) {
-		return store.Screen{}, NewError(CodeUnauthorized, "device", "device token required")
+	token := ""
+	if strings.HasPrefix(header, prefix) {
+		token = strings.TrimSpace(strings.TrimPrefix(header, prefix))
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	if token == "" {
+		token = strings.TrimSpace(r.URL.Query().Get("deviceToken"))
+	}
+	if token == "" {
+		token = strings.TrimSpace(r.URL.Query().Get("token"))
+	}
 	if token == "" {
 		return store.Screen{}, NewError(CodeUnauthorized, "device", "device token required")
 	}

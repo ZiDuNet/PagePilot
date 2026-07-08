@@ -223,7 +223,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/screens": map[string]any{
 				"get": map[string]any{
 					"summary":     "List bound hardware screens",
-					"description": "Registered user token or login cookie required. Admins see all screens; normal users see their own screens.",
+					"description": "Registered user token or login cookie required. Admins see bound screens and unpaired connected devices; normal users see only their own bound screens.",
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Screen list", "content": jsonSchemaRef("ScreenListResponse")},
 						"401": errorResponse(),
@@ -238,6 +238,20 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Screen bound", "content": jsonSchemaRef("ScreenBindResponse")},
 						"401": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+			},
+			"/api/admin/screens/{screenId}/assign": map[string]any{
+				"post": map[string]any{
+					"summary":     "Assign an unpaired connected screen to a user",
+					"description": "Admin token or admin login cookie required. Assigns a pending device created by /api/device/pairing/start; the device can then complete pairing and receive its long-lived Device Token.",
+					"parameters":  []map[string]any{pathParam("screenId", "string")},
+					"requestBody": jsonBodyRef("ScreenAssignRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Screen assigned", "content": jsonSchemaRef("ScreenAssignResponse")},
+						"401": errorResponse(),
+						"403": errorResponse(),
 						"404": errorResponse(),
 					},
 				},
@@ -331,6 +345,14 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"description": "Requires Authorization: Device <deviceToken>.",
 					"security":    []any{},
 					"responses":   map[string]any{"200": map[string]any{"description": "Playback manifest", "content": jsonSchemaRef("ScreenManifestResponse")}, "401": errorResponse()},
+				},
+			},
+			"/api/device/ws": map[string]any{
+				"get": map[string]any{
+					"summary":     "Open the realtime screen control WebSocket",
+					"description": "Requires Authorization: Device <deviceToken>. For reverse proxies that drop Authorization during Upgrade, deviceToken or token query parameter is also accepted.",
+					"security":    []any{},
+					"responses":   map[string]any{"101": map[string]any{"description": "WebSocket upgrade"}, "401": errorResponse()},
 				},
 			},
 			"/api/device/heartbeat": map[string]any{
@@ -843,6 +865,12 @@ func openAPISchemas() map[string]any {
 			"pairingCode": str, "name": str,
 		}},
 		"ScreenBindResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "screen": map[string]any{"$ref": "#/components/schemas/ScreenItem"},
+		}},
+		"ScreenAssignRequest": map[string]any{"type": "object", "required": []string{"ownerUserId"}, "properties": map[string]any{
+			"ownerUserId": str, "name": str,
+		}},
+		"ScreenAssignResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "screen": map[string]any{"$ref": "#/components/schemas/ScreenItem"},
 		}},
 		"ScreenPublishRequest": map[string]any{"type": "object", "required": []string{"code"}, "properties": map[string]any{

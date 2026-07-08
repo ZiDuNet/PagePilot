@@ -39,9 +39,12 @@ func (s *SQLiteStore) CreateScreenPairing(ctx context.Context, pairing ScreenPai
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO screens (id, name, device_name, status, device_info, created_at, updated_at)
-		VALUES (?, ?, ?, 'pairing', ?, ?, ?)
-	`, pairing.ScreenID, pairing.DeviceName, pairing.DeviceName, normalizeDeviceInfo(pairing.DeviceInfo), pairing.CreatedAt.UTC(), pairing.CreatedAt.UTC())
+		INSERT INTO screens
+		  (id, name, device_name, status, last_seen_at, app_version, runtime, device_info, created_at, updated_at)
+		VALUES (?, ?, ?, 'pairing', ?, ?, ?, ?, ?, ?)
+	`, pairing.ScreenID, pairing.DeviceName, pairing.DeviceName, pairing.CreatedAt.UTC(),
+		strings.TrimSpace(pairing.AppVersion), strings.TrimSpace(pairing.Runtime),
+		normalizeDeviceInfo(pairing.DeviceInfo), pairing.CreatedAt.UTC(), pairing.CreatedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("insert screen: %w", err)
 	}
@@ -115,6 +118,69 @@ func (s *SQLiteStore) BindScreenPairing(ctx context.Context, code, ownerUserID, 
 	return s.GetScreen(ctx, pairing.ScreenID)
 }
 
+func (s *SQLiteStore) AssignScreenOwner(ctx context.Context, screenID, ownerUserID, name string) (Screen, error) {
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Screen{}, fmt.Errorf("begin assign screen owner: %w", err)
+	}
+	defer tx.Rollback()
+
+	var deviceName string
+	err = tx.QueryRowContext(ctx, `
+		SELECT device_name
+		FROM screens
+		WHERE id = ? AND (owner_user_id IS NULL OR owner_user_id = '') AND revoked_at IS NULL
+	`, screenID).Scan(&deviceName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Screen{}, ErrNotFound
+	}
+	if err != nil {
+		return Screen{}, fmt.Errorf("load unowned screen: %w", err)
+	}
+
+	var pairingID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM screen_pairings
+		WHERE screen_id = ? AND consumed_at IS NULL AND expires_at > ?
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, screenID, now).Scan(&pairingID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Screen{}, ErrNotFound
+	}
+	if err != nil {
+		return Screen{}, fmt.Errorf("load active screen pairing: %w", err)
+	}
+
+	if strings.TrimSpace(name) == "" {
+		name = deviceName
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE screens
+		SET owner_user_id = ?, name = ?, status = 'bound',
+		    last_seen_at = COALESCE(last_seen_at, ?), updated_at = ?
+		WHERE id = ? AND (owner_user_id IS NULL OR owner_user_id = '') AND revoked_at IS NULL
+	`, ownerUserID, strings.TrimSpace(name), now, now, screenID)
+	if err != nil {
+		return Screen{}, fmt.Errorf("assign screen owner: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Screen{}, ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE screen_pairings SET consumed_at = ? WHERE id = ?
+	`, now, pairingID); err != nil {
+		return Screen{}, fmt.Errorf("consume assigned screen pairing: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Screen{}, fmt.Errorf("commit assign screen owner: %w", err)
+	}
+	return s.GetScreen(ctx, screenID)
+}
+
 func (s *SQLiteStore) CompleteScreenPairing(ctx context.Context, pairingID, pairingSecretHash, deviceTokenHash string) error {
 	now := time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -125,19 +191,30 @@ func (s *SQLiteStore) CompleteScreenPairing(ctx context.Context, pairingID, pair
 
 	var screenID string
 	var ownerUserID sql.NullString
+	var consumedAt sql.NullTime
 	err = tx.QueryRowContext(ctx, `
-		SELECT p.screen_id, sc.owner_user_id
+		SELECT p.screen_id, sc.owner_user_id, p.consumed_at
 		FROM screen_pairings p
 		JOIN screens sc ON sc.id = p.screen_id
-		WHERE p.id = ? AND p.pairing_secret_hash = ? AND p.consumed_at IS NOT NULL
-	`, pairingID, pairingSecretHash).Scan(&screenID, &ownerUserID)
+		WHERE p.id = ? AND p.pairing_secret_hash = ? AND p.expires_at > ? AND sc.revoked_at IS NULL
+	`, pairingID, pairingSecretHash, now).Scan(&screenID, &ownerUserID, &consumedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("load completed screen pairing: %w", err)
 	}
-	if !ownerUserID.Valid || ownerUserID.String == "" {
+	if !consumedAt.Valid || !ownerUserID.Valid || ownerUserID.String == "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE screens
+			SET status = 'pairing', last_seen_at = ?, updated_at = ?
+			WHERE id = ? AND (owner_user_id IS NULL OR owner_user_id = '') AND revoked_at IS NULL
+		`, now, now, screenID); err != nil {
+			return fmt.Errorf("touch pending screen pairing: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit pending screen pairing touch: %w", err)
+		}
 		return ErrNotFound
 	}
 	res, err := tx.ExecContext(ctx, `

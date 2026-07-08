@@ -33,7 +33,7 @@ def main() -> None:
             if not path.is_file() or not should_include(path):
                 continue
             rel = path.relative_to(SKILL_ROOT)
-            archive.write(path, ZIP_PREFIX / rel)
+            archive.write(path, (ZIP_PREFIX / rel).as_posix())
 
     with zipfile.ZipFile(OUTPUT, "r") as archive:
         names = set(archive.namelist())

@@ -60,6 +60,89 @@ func TestScreenBindInvalidPairingCodeReturnsActionableError(t *testing.T) {
 	}
 }
 
+func TestAdminCanAssignUnpairedScreenToUser(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	user, userToken := createScreenAPIUser(t, srv, "alice")
+	admin, err := srv.auth.CreateUser(ctx, "root", "password123", true, -1)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	adminToken, err := srv.auth.Generate(ctx, "admin-token", true, admin.ID, nil)
+	if err != nil {
+		t.Fatalf("generate admin token: %v", err)
+	}
+	seedScreenPairing(t, srv, "pair-assign", "123456", "pair-secret", "screen-assign")
+
+	userListReq := httptest.NewRequest(http.MethodGet, "/api/screens", nil)
+	userListReq.Header.Set("Authorization", "Bearer "+userToken)
+	userListRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(userListRR, userListReq)
+	if userListRR.Code != http.StatusOK {
+		t.Fatalf("user list status = %d, body = %s", userListRR.Code, userListRR.Body.String())
+	}
+	var userList ScreenListResponse
+	if err := json.Unmarshal(userListRR.Body.Bytes(), &userList); err != nil {
+		t.Fatalf("decode user list: %v", err)
+	}
+	if len(userList.Screens) != 0 {
+		t.Fatalf("user screens before assign = %+v, want none", userList.Screens)
+	}
+
+	adminListReq := httptest.NewRequest(http.MethodGet, "/api/screens", nil)
+	adminListReq.Header.Set("Authorization", "Bearer "+adminToken.Plaintext)
+	adminListRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(adminListRR, adminListReq)
+	if adminListRR.Code != http.StatusOK {
+		t.Fatalf("admin list status = %d, body = %s", adminListRR.Code, adminListRR.Body.String())
+	}
+	var adminList ScreenListResponse
+	if err := json.Unmarshal(adminListRR.Body.Bytes(), &adminList); err != nil {
+		t.Fatalf("decode admin list: %v", err)
+	}
+	if len(adminList.Screens) != 1 || adminList.Screens[0].OwnerUserID != "" || adminList.Screens[0].Status != "pairing" {
+		t.Fatalf("admin pending screens = %+v, want one unowned pairing screen", adminList.Screens)
+	}
+
+	assignBody, _ := json.Marshal(ScreenAssignRequest{OwnerUserID: user.ID, Name: "front desk"})
+	assignReq := httptest.NewRequest(http.MethodPost, "/api/admin/screens/screen-assign/assign", bytes.NewReader(assignBody))
+	assignReq.Header.Set("Content-Type", "application/json")
+	assignReq.Header.Set("Authorization", "Bearer "+adminToken.Plaintext)
+	assignRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(assignRR, assignReq)
+	if assignRR.Code != http.StatusOK {
+		t.Fatalf("assign status = %d, body = %s; want %d", assignRR.Code, assignRR.Body.String(), http.StatusOK)
+	}
+	var assignResp ScreenAssignResponse
+	if err := json.Unmarshal(assignRR.Body.Bytes(), &assignResp); err != nil {
+		t.Fatalf("decode assign response: %v", err)
+	}
+	if assignResp.Screen.OwnerUserID != user.ID || assignResp.Screen.Name != "front desk" || assignResp.Screen.Status != "bound" {
+		t.Fatalf("assign response = %+v", assignResp)
+	}
+
+	if err := srv.deployer.CompleteScreenPairing(ctx, "pair-assign", auth.HashToken("pair-secret"), auth.HashToken("device-token")); err != nil {
+		t.Fatalf("complete assigned pairing: %v", err)
+	}
+
+	userListAfterReq := httptest.NewRequest(http.MethodGet, "/api/screens", nil)
+	userListAfterReq.Header.Set("Authorization", "Bearer "+userToken)
+	userListAfterRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(userListAfterRR, userListAfterReq)
+	if userListAfterRR.Code != http.StatusOK {
+		t.Fatalf("user list after status = %d, body = %s", userListAfterRR.Code, userListAfterRR.Body.String())
+	}
+	var userListAfter ScreenListResponse
+	if err := json.Unmarshal(userListAfterRR.Body.Bytes(), &userListAfter); err != nil {
+		t.Fatalf("decode user list after: %v", err)
+	}
+	if len(userListAfter.Screens) != 1 || userListAfter.Screens[0].ID != "screen-assign" {
+		t.Fatalf("user screens after assign = %+v, want assigned screen", userListAfter.Screens)
+	}
+}
+
 func TestRegisteredUserCanBindPublishAndDeviceCanReadManifest(t *testing.T) {
 	srv, cleanup := newScreenAPITestServer(t)
 	defer cleanup()
@@ -434,6 +517,47 @@ func TestScreenWebSocketReceivesRealtimeScreenshotAndCommand(t *testing.T) {
 	}
 }
 
+func TestScreenWebSocketAcceptsDeviceTokenQueryFallback(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, token := createScreenAPIUser(t, srv, "alice")
+	seedScreenPairing(t, srv, "pair-1", "123456", "pair-secret", "screen-1")
+
+	bindBody, _ := json.Marshal(ScreenBindRequest{PairingCode: "123456"})
+	bindReq := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
+	bindReq.Header.Set("Content-Type", "application/json")
+	bindReq.Header.Set("Authorization", "Bearer "+token)
+	bindRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(bindRR, bindReq)
+	if bindRR.Code != http.StatusOK {
+		t.Fatalf("bind status = %d, body = %s", bindRR.Code, bindRR.Body.String())
+	}
+	if err := srv.deployer.CompleteScreenPairing(ctx, "pair-1", auth.HashToken("pair-secret"), auth.HashToken("device-token")); err != nil {
+		t.Fatalf("complete pairing: %v", err)
+	}
+
+	ts := httptest.NewServer(srv.withMiddleware(srv.mux))
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/device/ws?deviceToken=device-token"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket with query token: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	var hello ScreenWSMessage
+	if err := conn.ReadJSON(&hello); err != nil {
+		t.Fatalf("read websocket hello: %v", err)
+	}
+	if hello.Type != "manifest" || hello.Manifest == nil || hello.Manifest.ScreenID != "screen-1" {
+		t.Fatalf("hello websocket message = %+v, want manifest for screen-1", hello)
+	}
+}
+
 func TestAdminCanPublishAnyOwnedSiteToAnyScreen(t *testing.T) {
 	srv, cleanup := newScreenAPITestServer(t)
 	defer cleanup()
@@ -585,6 +709,10 @@ func (s *screenAPIDeployerStub) CreateScreenPairing(ctx context.Context, pairing
 
 func (s *screenAPIDeployerStub) BindScreenPairing(ctx context.Context, code, ownerUserID, name string) (store.Screen, error) {
 	return s.st.BindScreenPairing(ctx, code, ownerUserID, name)
+}
+
+func (s *screenAPIDeployerStub) AssignScreenOwner(ctx context.Context, screenID, ownerUserID, name string) (store.Screen, error) {
+	return s.st.AssignScreenOwner(ctx, screenID, ownerUserID, name)
 }
 
 func (s *screenAPIDeployerStub) CompleteScreenPairing(ctx context.Context, pairingID, pairingSecretHash, deviceTokenHash string) error {

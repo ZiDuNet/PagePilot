@@ -88,6 +88,54 @@ func TestBindScreenPairingRejectsExpiredCode(t *testing.T) {
 	}
 }
 
+func TestAssignScreenOwnerAllowsDeviceToCompletePairing(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := store.CreateScreenPairing(ctx, ScreenPairing{
+		ID:                "pair-assign",
+		Code:              "112233",
+		PairingSecretHash: "pair-secret-hash",
+		ScreenID:          "screen-assign",
+		DeviceName:        "screen device",
+		AppVersion:        "0.1.0",
+		Runtime:           "X5 WebView",
+		DeviceInfo:        `{"model":"demo"}`,
+		ExpiresAt:         now.Add(5 * time.Minute),
+		CreatedAt:         now,
+	}); err != nil {
+		t.Fatalf("create pairing: %v", err)
+	}
+
+	before, err := store.GetScreen(ctx, "screen-assign")
+	if err != nil {
+		t.Fatalf("get pending screen: %v", err)
+	}
+	if before.OwnerUserID != "" || before.Status != "pairing" || before.AppVersion != "0.1.0" {
+		t.Fatalf("pending screen = %+v", before)
+	}
+
+	assigned, err := store.AssignScreenOwner(ctx, "screen-assign", "user-1", "lobby screen")
+	if err != nil {
+		t.Fatalf("assign screen owner: %v", err)
+	}
+	if assigned.OwnerUserID != "user-1" || assigned.Name != "lobby screen" || assigned.Status != "bound" {
+		t.Fatalf("assigned screen = %+v", assigned)
+	}
+
+	if err := store.CompleteScreenPairing(ctx, "pair-assign", "pair-secret-hash", "device-token-hash"); err != nil {
+		t.Fatalf("complete assigned pairing: %v", err)
+	}
+	byToken, err := store.GetScreenByDeviceTokenHash(ctx, "device-token-hash")
+	if err != nil {
+		t.Fatalf("get assigned screen by token: %v", err)
+	}
+	if byToken.ID != "screen-assign" || byToken.OwnerUserID != "user-1" || byToken.Status != "online" {
+		t.Fatalf("screen by token = %+v", byToken)
+	}
+}
+
 func TestPublishScreenRejectsWrongOwner(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()

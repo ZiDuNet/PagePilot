@@ -86,6 +86,7 @@ class MainActivity : Activity() {
   private var sleeping = false
   private var socketStatus = "未连接"
   private var socketLastEvent = "-"
+  private var lastWebSocketUrl = "-"
   private var lastWebViewRuntime = "未检测"
   private var lastX5Loaded = false
   private var lastX5Version = 0
@@ -170,16 +171,10 @@ class MainActivity : Activity() {
     stopPlayback()
     val input = EditText(this).apply {
       hint = "https://pagepilot.example.com"
-      setSingleLine(false)
-      maxLines = 2
-      setHorizontallyScrolling(false)
+      setSingleLine(true)
       textSize = 14f
       setText(wrapServerUrlForInput(config.load().serverUrl))
       setSelection(0)
-      post {
-        setSelection(0)
-        scrollTo(0, 0)
-      }
     }
     val save = Button(this).apply { text = "保存服务器地址" }
     save.setOnClickListener {
@@ -306,10 +301,12 @@ class MainActivity : Activity() {
         }
       }
       startHeartbeat(api, deviceToken)
+      var useQueryTokenFallback = false
       while (isActive) {
         try {
           socketStatus = "连接中"
-          openScreenSocket(api, deviceToken, serverUrl, webView)
+          val shouldUseFallback = openScreenSocket(api, deviceToken, serverUrl, webView, useQueryTokenFallback)
+          useQueryTokenFallback = useQueryTokenFallback || shouldUseFallback
         } catch (err: Exception) {
           if (currentEntryUrl.isBlank() && !sleeping) {
             webView.loadDataWithBaseURL(serverUrl, errorHtml(err.message ?: "连接失败"), "text/html", "UTF-8", null)
@@ -336,10 +333,13 @@ class MainActivity : Activity() {
     deviceToken: String,
     serverUrl: String,
     webView: WebView,
-  ) {
-    val closed = CompletableDeferred<Unit>()
+    useQueryTokenFallback: Boolean,
+  ): Boolean {
+    val closed = CompletableDeferred<Boolean>()
+    val wsUrl = api.webSocketUrl(if (useQueryTokenFallback) deviceToken else "")
+    lastWebSocketUrl = wsUrl.replace(deviceToken, "***")
     val request = Request.Builder()
-      .url(api.webSocketUrl())
+      .url(wsUrl)
       .header("Authorization", "Device $deviceToken")
       .build()
     val socket = wsClient.newWebSocket(request, object : WebSocketListener() {
@@ -361,18 +361,23 @@ class MainActivity : Activity() {
 
       override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
         socketStatus = "连接断开"
-        socketLastEvent = t.message ?: "WebSocket 断开"
-        if (!closed.isCompleted) closed.complete(Unit)
+        val status = response?.code
+        socketLastEvent = if (status != null) {
+          "${t.message ?: "WebSocket 断开"} (HTTP $status)"
+        } else {
+          t.message ?: "WebSocket 断开"
+        }
+        if (!closed.isCompleted) closed.complete(status == 401 || status == 403)
       }
 
       override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
         socketStatus = "已断开"
         socketLastEvent = reason.ifBlank { "WebSocket 已关闭" }
-        if (!closed.isCompleted) closed.complete(Unit)
+        if (!closed.isCompleted) closed.complete(false)
       }
     })
     screenSocket = socket
-    closed.await()
+    return closed.await()
   }
 
   private suspend fun handleWSMessage(
@@ -488,6 +493,7 @@ class MainActivity : Activity() {
     screenSocket?.cancel()
     screenSocket = null
     socketStatus = "未连接"
+    lastWebSocketUrl = "-"
     networkDot = null
     socketDot = null
     networkStatusLabel = "未连接"
@@ -601,16 +607,10 @@ class MainActivity : Activity() {
     val local = config.load()
     val serverInput = EditText(this).apply {
       hint = "服务器地址"
-      setSingleLine(false)
-      maxLines = 2
-      setHorizontallyScrolling(false)
+      setSingleLine(true)
       textSize = 14f
       setText(wrapServerUrlForInput(local.serverUrl))
       setSelection(0)
-      post {
-        setSelection(0)
-        scrollTo(0, 0)
-      }
     }
     val saveServer = Button(this).apply { text = "保存服务器并重新配对" }
     saveServer.setOnClickListener {
@@ -645,6 +645,7 @@ class MainActivity : Activity() {
           serverInput,
           settingsSection("连接状态", listOf(
             "服务器" to local.serverUrl.ifBlank { "-" },
+            "WS 地址" to lastWebSocketUrl,
             "网络" to networkStatusLabel,
             "WebSocket" to socketStatusLabel,
             "最近事件" to socketLastEvent,
@@ -1087,7 +1088,7 @@ class MainActivity : Activity() {
   }
 
   private fun wrapServerUrlForInput(value: String): String {
-    return value.replace("://", "://\n")
+    return value  // 不插入换行，避免含端口的长 URL 在双行显示时丢失
   }
 
   private fun idleHtml(): String {

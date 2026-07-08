@@ -256,6 +256,8 @@ type ScreenPairing struct {
 	PairingSecretHash string
 	ScreenID          string
 	DeviceName        string
+	AppVersion        string
+	Runtime           string
 	DeviceInfo        string
 	ExpiresAt         time.Time
 	ConsumedAt        *time.Time
@@ -390,6 +392,7 @@ type Store interface {
 
 	CreateScreenPairing(ctx context.Context, pairing ScreenPairing) error
 	BindScreenPairing(ctx context.Context, code, ownerUserID, name string) (Screen, error)
+	AssignScreenOwner(ctx context.Context, screenID, ownerUserID, name string) (Screen, error)
 	CompleteScreenPairing(ctx context.Context, pairingID, pairingSecretHash, deviceTokenHash string) error
 	GetScreen(ctx context.Context, id string) (Screen, error)
 	GetScreenByDeviceTokenHash(ctx context.Context, hash string) (Screen, error)

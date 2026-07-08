@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.URLEncoder
 import java.net.URL
 
 data class PairingSession(
@@ -121,7 +122,7 @@ class PagePilotApi(private val serverUrl: String) {
     request("POST", "/api/device/command/ack", body, deviceToken)
   }
 
-  fun webSocketUrl(): String {
+  fun webSocketUrl(deviceToken: String = ""): String {
     val base = serverUrl.trimEnd('/')
     val scheme = when {
       base.startsWith("https://", ignoreCase = true) -> "wss://"
@@ -129,7 +130,9 @@ class PagePilotApi(private val serverUrl: String) {
       else -> "ws://"
     }
     val rest = base.substringAfter("://", base)
-    return "$scheme$rest/api/device/ws"
+    val url = "$scheme$rest/api/device/ws"
+    if (deviceToken.isBlank()) return url
+    return "$url?deviceToken=${URLEncoder.encode(deviceToken, "UTF-8")}"
   }
 
   private fun request(method: String, path: String, body: JSONObject?, deviceToken: String = ""): JSONObject {

@@ -102,6 +102,7 @@ type DeployerPort interface {
 
 	CreateScreenPairing(ctx context.Context, pairing store.ScreenPairing) error
 	BindScreenPairing(ctx context.Context, code, ownerUserID, name string) (store.Screen, error)
+	AssignScreenOwner(ctx context.Context, screenID, ownerUserID, name string) (store.Screen, error)
 	CompleteScreenPairing(ctx context.Context, pairingID, pairingSecretHash, deviceTokenHash string) error
 	GetScreen(ctx context.Context, id string) (store.Screen, error)
 	GetScreenByDeviceTokenHash(ctx context.Context, hash string) (store.Screen, error)
@@ -466,6 +467,7 @@ func (s *Server) routes() {
 	// 屏幕投放：用户侧仅注册用户；设备侧仅 Device Token。
 	s.mux.HandleFunc("GET /api/screens", s.handleListScreens)
 	s.mux.HandleFunc("POST /api/screens/bind", s.handleBindScreen)
+	s.mux.HandleFunc("POST /api/admin/screens/{screenId}/assign", s.handleAdminAssignScreen)
 	s.mux.HandleFunc("POST /api/screens/{screenId}/publish", s.handlePublishScreen)
 	s.mux.HandleFunc("POST /api/screens/{screenId}/screenshot", s.handleRequestScreenScreenshot)
 	s.mux.HandleFunc("GET /api/screens/{screenId}/screenshot", s.handleGetScreenScreenshot)

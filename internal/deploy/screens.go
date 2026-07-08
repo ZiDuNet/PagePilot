@@ -15,6 +15,10 @@ func (d *Deployer) BindScreenPairing(ctx context.Context, code, ownerUserID, nam
 	return d.store.BindScreenPairing(ctx, code, ownerUserID, name)
 }
 
+func (d *Deployer) AssignScreenOwner(ctx context.Context, screenID, ownerUserID, name string) (store.Screen, error) {
+	return d.store.AssignScreenOwner(ctx, screenID, ownerUserID, name)
+}
+
 func (d *Deployer) CompleteScreenPairing(ctx context.Context, pairingID, pairingSecretHash, deviceTokenHash string) error {
 	return d.store.CompleteScreenPairing(ctx, pairingID, pairingSecretHash, deviceTokenHash)
 }

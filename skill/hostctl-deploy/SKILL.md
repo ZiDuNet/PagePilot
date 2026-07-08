@@ -302,6 +302,7 @@ pagep admin pin-site project-home --unpin
 ```bash
 pagep screen list --server https://pagepilot.example.com
 pagep screen bind 123456 --name "大厅屏幕"
+pagep screen assign screen_xxx --owner-user-id user_xxx --name "大厅屏幕"
 pagep screen publish --screen screen_xxx --app project-home --expected-orientation landscape
 pagep screen publish --screen screen_xxx --source ./site \
   --title "大厅展示页" \
@@ -322,6 +323,7 @@ pagep screen unbind screen_xxx
 
 - 一个注册用户可以绑定多个屏幕。
 - 投屏前先用 `screen list` 查看屏幕，多个屏幕时让用户选择。
+- 管理员可以用 `screen assign` 将已连接但未配对的设备分配给注册用户；普通用户应使用屏幕端显示的配对码执行 `screen bind`。
 - 投屏前确认页面预期方向：`portrait`、`landscape` 或 `any`。
 - 使用屏幕返回的 `deviceInfo.orientation`、分辨率判断是否匹配。
 - 如果页面方向和屏幕方向不一致，提醒用户可能裁切、缩放或留白；只有用户确认后才使用 `--force-orientation`。
