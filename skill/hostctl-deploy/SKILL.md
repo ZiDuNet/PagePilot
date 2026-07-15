@@ -1,8 +1,9 @@
 ---
 name: pagep
-version: 0.3.1
-updated: 2026-07-15
 description: 当 Agent 需要生成 HTML、Markdown、ZIP 或多文件静态站点，发布或更新 PagePilot 应用，复用创作市场作品，管理访问密码、版本、Token、屏幕投放和截图时使用。
+metadata:
+  version: "0.3.1"
+  updated: "2026-07-15"
 ---
 
 # PagePilot pagep Skill

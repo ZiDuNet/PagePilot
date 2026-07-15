@@ -22,7 +22,9 @@ class SkillDocumentationTests(unittest.TestCase):
     def test_skill_document_declares_package_version(self):
         text = SKILL_DOC.read_text(encoding="utf-8")
 
-        self.assertIn("version: 0.3.1", text)
+        self.assertIn("metadata:", text)
+        self.assertIn('version: "0.3.1"', text)
+        self.assertIn('updated: "2026-07-15"', text)
         self.assertIn("pagep version", text)
 
     def test_skill_documents_multipart_overwrite_contract(self):
