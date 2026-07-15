@@ -21,7 +21,8 @@ import urllib.request
 import uuid
 import zipfile
 
-UA = "pagep-skill/1.2"
+SKILL_VERSION = "0.3.1"
+UA = f"pagep-skill/{SKILL_VERSION}"
 
 
 def env_first(*names: str) -> str:
@@ -588,6 +589,16 @@ def cmd_doctor(args) -> int:
         report["success"] = False
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["success"] else 1
+
+
+def cmd_version(args) -> int:
+    return print_result(200, {
+        "success": True,
+        "name": "pagep",
+        "version": SKILL_VERSION,
+        "userAgent": UA,
+        "configFile": str(CONFIG_FILE),
+    })
 
 
 def cmd_session(args) -> int:
@@ -1234,6 +1245,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server", help="PagePilot server URL (default: saved config, $PAGEPILOT_SERVER, or http://localhost:8787)")
     parser.add_argument("--token", help="bearer token (default: saved config or $PAGEPILOT_TOKEN)")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("version", help="Print pagep Skill version")
+    p.set_defaults(func=cmd_version)
 
     p = sub.add_parser("doctor", help="Check health, config, OpenAPI, and admin auth readiness")
     p.add_argument("--require-admin", action="store_true", help="Fail unless an admin session validates")

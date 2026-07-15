@@ -217,6 +217,7 @@ bin/pagep admin pin-site my-landing --unpin
 内置 Skill 的对外名称为 `pagep`。它的 Python 包装器仅依赖标准库，可以脱离 Go CLI 单独运行；安装到 Agent 后可把 `scripts/pagep.py` 包装成 `pagep` 命令。后台和用户端主下载地址为 `/skill/pagep.zip`；服务端优先返回后台上传的 ZIP，没有上传包时返回内置默认包。
 
 ```bash
+python scripts/pagep.py version
 python scripts/pagep.py doctor --server http://127.0.0.1:8787
 python scripts/pagep.py config set server http://127.0.0.1:8787
 python scripts/pagep.py deploy ./site --code demo --title "演示站点" --description "Shareable demo site."

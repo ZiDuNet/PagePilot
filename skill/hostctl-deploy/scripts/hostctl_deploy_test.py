@@ -19,6 +19,12 @@ SPEC.loader.exec_module(hostctl_deploy)
 
 
 class SkillDocumentationTests(unittest.TestCase):
+    def test_skill_document_declares_package_version(self):
+        text = SKILL_DOC.read_text(encoding="utf-8")
+
+        self.assertIn("version: 0.3.1", text)
+        self.assertIn("pagep version", text)
+
     def test_skill_documents_multipart_overwrite_contract(self):
         text = SKILL_DOC.read_text(encoding="utf-8")
 
@@ -180,6 +186,23 @@ class RequestHeaderTests(unittest.TestCase):
 
 
 class LocalConfigAndTokenTests(unittest.TestCase):
+    def test_version_command_reports_skill_version(self):
+        parser = hostctl_deploy.build_parser()
+        args = parser.parse_args(["version"])
+        captured = {}
+
+        def fake_print_result(status, data):
+            captured["status"] = status
+            captured["data"] = data
+            return 0
+
+        with mock.patch.object(hostctl_deploy, "print_result", fake_print_result):
+            self.assertEqual(args.func(args), 0)
+
+        self.assertEqual(captured["status"], 200)
+        self.assertEqual(captured["data"]["version"], hostctl_deploy.SKILL_VERSION)
+        self.assertEqual(captured["data"]["userAgent"], f"pagep-skill/{hostctl_deploy.SKILL_VERSION}")
+
     def test_server_url_uses_saved_server_when_flag_and_env_are_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_file = pathlib.Path(tmp) / "config.json"
