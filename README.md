@@ -202,8 +202,8 @@ bin/pagep append my-landing ./site-v2 --description "Second version with updated
 bin/pagep versions my-landing
 bin/pagep current my-landing 1
 bin/pagep lock my-landing 2
-bin/pagep token create ci-bot
-bin/pagep token create temp-runner --ttl 24h
+bin/pagep token create ci-bot --save
+bin/pagep token create temp-runner --ttl 24h --save
 bin/pagep token create admin --admin
 bin/pagep claim-session <anonymous-session-id>
 bin/pagep admin pin-site my-landing
@@ -218,16 +218,17 @@ bin/pagep admin pin-site my-landing --unpin
 
 ```bash
 python scripts/pagep.py doctor --server http://127.0.0.1:8787
+python scripts/pagep.py config set server http://127.0.0.1:8787
 python scripts/pagep.py deploy ./site --code demo --title "演示站点" --description "Shareable demo site."
 python scripts/pagep.py deploy ./site --code demo --update --title "演示站点升级版" --description "Revised demo site."
-python scripts/pagep.py token create --label ci-bot
-python scripts/pagep.py token create --label temp-runner --ttl-seconds 86400
+python scripts/pagep.py token create ci-bot --save
+python scripts/pagep.py token create temp-runner --ttl-seconds 86400 --save
 python scripts/pagep.py claim-session
 python scripts/pagep.py admin sites
 python scripts/pagep.py admin pin-site my-landing
 ```
 
-`--server` 或 `PAGEPILOT_SERVER` 表示本次 Agent 调用 PagePilot API 的入口地址，不是全局主站配置。路径模式发布成功后，接口返回的应用链接会使用这个入口；如果要把公网链接交给用户，就用公网地址作为 `--server`。泛域名模式的应用链接由后台“运行设置 -> 应用链接规则”决定，和 `--server` 只用于调用控制面入口的职责分开。旧环境变量仍会被兼容读取，但新文档统一使用 `PAGEPILOT_*`。
+`--server`、`PAGEPILOT_SERVER` 或 `pagep config set server <url>` 表示本次 Agent 调用 PagePilot API 的入口地址，不是全局主站配置。Python Skill 版 `pagep` 的读取优先级是：命令行 `--server`、环境变量、`~/.pagep/config.json`、本地默认 `http://localhost:8787`；Token 读取优先级是：命令行 `--token`、环境变量、已保存配置。`pagep token create <label> --save` 会把服务端仅返回一次的明文 Token 保存到本地配置，后续命令不需要重复传 Token。路径模式发布成功后，接口返回的应用链接会使用这个入口；如果要把公网链接交给用户，就用公网地址作为 `--server` 或保存为默认 server。泛域名模式的应用链接由后台“运行设置 -> 应用链接规则”决定，和 `--server` 只用于调用控制面入口的职责分开。旧环境变量仍会被兼容读取，但新文档统一使用 `PAGEPILOT_*`。
 
 发布或追加版本成功后，`pagep` Skill 会先输出中文摘要，包含服务端返回的 `访问 URL`、`详情 URL` 和 `版本 URL`，随后继续输出 JSON 供自动化解析。Agent 应直接转交这些服务端返回链接，不要按本机 host、端口或域名规则自行拼接。
 

@@ -31,7 +31,7 @@ pagep doctor --server https://pagepilot.example.com
 python scripts/pagep.py doctor --server https://pagepilot.example.com
 ```
 
-目标服务器必须显式指定：使用 `--server` 或 `PAGEPILOT_SERVER`。用户用哪个 PagePilot 入口访问，就用哪个入口调用 API；路径模式下返回的应用链接会跟随这个入口。泛域名模式下，应用链接由后台的应用域名规则决定。
+目标服务器优先使用 `--server`、`PAGEPILOT_SERVER` 或 `pagep config set server <url>` 保存的入口。用户用哪个 PagePilot 入口访问，就用哪个入口调用 API；路径模式下返回的应用链接会跟随这个入口。泛域名模式下，应用链接由后台的应用域名规则决定。
 
 ## 入口优先级
 
@@ -55,6 +55,13 @@ pagep claim-session
 ```
 
 - Token 归属于注册用户。`token create` 默认创建长期 Token；临时 Token 使用 `--expires-at` 或 `--ttl-seconds`。
+- Agent 需要长期复用身份时，先保存服务器，再用 `--save` 保存新 Token；后续命令会从 `~/.pagep/config.json` 自动读取：
+
+```bash
+pagep config set server https://pagepilot.example.com
+pagep token create ci-bot --save
+pagep config show
+```
 - 屏幕绑定、投放、截图、刷新、休眠、唤醒和关机指令只允许注册用户 Token 使用。
 
 ## 发布前必须确认
@@ -285,9 +292,11 @@ pagep access project-home --clear
 Token：
 
 ```bash
-pagep token create --label ci-bot
-pagep token create --label temp-runner --ttl-seconds 86400
+pagep config set server https://pagepilot.example.com
+pagep token create ci-bot --save
+pagep token create temp-runner --ttl-seconds 86400 --save
 pagep token list
+pagep token save <existing-token>
 ```
 
 管理员置顶：

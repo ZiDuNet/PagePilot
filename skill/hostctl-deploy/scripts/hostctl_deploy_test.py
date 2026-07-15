@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import tempfile
 import types
@@ -176,6 +177,125 @@ class RequestHeaderTests(unittest.TestCase):
         self.assertIn(b'name="filename"', captured["body"])
         self.assertIn(b'filename="site.zip"', captured["body"])
         self.assertIn(b"<title>demo</title>", captured["body"])
+
+
+class LocalConfigAndTokenTests(unittest.TestCase):
+    def test_server_url_uses_saved_server_when_flag_and_env_are_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = pathlib.Path(tmp) / "config.json"
+            config_file.write_text(
+                json.dumps({"server": "https://pagepilot.example.com", "token": "saved-token"}),
+                encoding="utf-8",
+            )
+            args = types.SimpleNamespace(server="", token="")
+
+            with mock.patch.object(hostctl_deploy, "CONFIG_FILE", config_file):
+                with mock.patch.dict(os.environ, {"PAGEPILOT_SERVER": "", "HOSTCTL_SERVER": ""}):
+                    self.assertEqual(
+                        hostctl_deploy.server_url(args),
+                        "https://pagepilot.example.com",
+                    )
+
+    def test_auth_token_uses_saved_token_for_saved_default_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = pathlib.Path(tmp) / "config.json"
+            config_file.write_text(
+                json.dumps({"server": "https://pagepilot.example.com", "token": "saved-token"}),
+                encoding="utf-8",
+            )
+            args = types.SimpleNamespace(server="", token="")
+
+            with mock.patch.object(hostctl_deploy, "CONFIG_FILE", config_file):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "PAGEPILOT_SERVER": "",
+                        "HOSTCTL_SERVER": "",
+                        "PAGEPILOT_TOKEN": "",
+                        "HOSTCTL_TOKEN": "",
+                    },
+                ):
+                    self.assertEqual(hostctl_deploy.auth_token(args), "saved-token")
+
+    def test_parser_accepts_go_cli_style_local_config_set(self):
+        parser = hostctl_deploy.build_parser()
+
+        args = parser.parse_args(
+            ["config", "set", "server", "https://pagepilot.example.com"]
+        )
+
+        self.assertEqual(args.config_cmd, "set")
+        self.assertEqual(args.key, "server")
+        self.assertEqual(args.value, "https://pagepilot.example.com")
+
+    def test_token_create_accepts_positional_label_and_omits_expiry_by_default(self):
+        parser = hostctl_deploy.build_parser()
+        args = parser.parse_args(
+            [
+                "--server",
+                "https://pagepilot.example.com",
+                "--token",
+                "owner-token",
+                "token",
+                "create",
+                "ci-bot",
+            ]
+        )
+        captured = {}
+
+        def fake_request_json(base, token, path, method="GET", payload=None, session_id="", agent=None):
+            captured["base"] = base
+            captured["token"] = token
+            captured["path"] = path
+            captured["method"] = method
+            captured["payload"] = payload
+            return 200, {"success": True, "id": "tok-1", "token": "created-token"}
+
+        with mock.patch.object(hostctl_deploy, "request_json", fake_request_json):
+            with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                code = args.func(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["base"], "https://pagepilot.example.com")
+        self.assertEqual(captured["token"], "owner-token")
+        self.assertEqual(captured["path"], "/api/token")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["payload"], {"label": "ci-bot", "isAdmin": False})
+
+    def test_token_create_save_persists_returned_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = pathlib.Path(tmp) / "config.json"
+            args = types.SimpleNamespace(
+                server="https://pagepilot.example.com",
+                token="owner-token",
+                label="ci-bot",
+                label_arg="",
+                admin=False,
+                expires_at="",
+                ttl_seconds=None,
+                save=True,
+            )
+
+            def fake_request_json(base, token, path, method="GET", payload=None, session_id="", agent=None):
+                return 200, {
+                    "success": True,
+                    "id": "tok-1",
+                    "token": "created-token",
+                    "ownerUserId": "user-1",
+                    "label": "ci-bot",
+                }
+
+            with mock.patch.object(hostctl_deploy, "CONFIG_FILE", config_file):
+                with mock.patch.object(hostctl_deploy, "request_json", fake_request_json):
+                    with mock.patch.object(hostctl_deploy, "print_result", return_value=0):
+                        self.assertEqual(hostctl_deploy.cmd_token_create(args), 0)
+
+                saved = json.loads(config_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["server"], "https://pagepilot.example.com")
+        self.assertEqual(saved["token"], "created-token")
+        self.assertEqual(saved["tokenId"], "tok-1")
+        self.assertEqual(saved["username"], "user-1")
 
 
 class DeployOptionTests(unittest.TestCase):

@@ -1000,6 +1000,7 @@ func cmdToken() *cobra.Command {
 	var isAdmin bool
 	var ttl string
 	var expiresAt string
+	var saveCreated bool
 	createC := &cobra.Command{
 		Use:   "create [label]",
 		Short: "Create a new token (plaintext is shown only once)",
@@ -1020,6 +1021,14 @@ func cmdToken() *cobra.Command {
 				printErr(err)
 				return errSilent
 			}
+			if saveCreated {
+				cfg := loadConfig()
+				cfg["server"] = strings.TrimRight(flagServer, "/")
+				cfg["token"] = resp.Token
+				if err := saveConfig(cfg); err != nil {
+					return err
+				}
+			}
 			if flagJSON {
 				_ = json.NewEncoder(os.Stdout).Encode(resp)
 				return nil
@@ -1037,12 +1046,36 @@ func cmdToken() *cobra.Command {
 			if resp.IsAdmin {
 				fmt.Printf("  Admin:  yes\n")
 			}
+			if saveCreated {
+				fmt.Printf("  Saved:  %s\n", configPath())
+			}
 			return nil
 		},
 	}
 	createC.Flags().BoolVar(&isAdmin, "admin", false, "create an admin token")
 	createC.Flags().StringVar(&ttl, "ttl", "", "temporary token lifetime, for example 24h or 30m")
 	createC.Flags().StringVar(&expiresAt, "expires-at", "", "absolute expiry time in RFC3339 format")
+	createC.Flags().BoolVar(&saveCreated, "save", false, "save returned plaintext token into ~/.pagep/config.json")
+
+	saveC := &cobra.Command{
+		Use:   "save <token>",
+		Short: "Save an existing plaintext token into ~/.pagep/config.json",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			buildClient()
+			cfg := loadConfig()
+			cfg["server"] = strings.TrimRight(flagServer, "/")
+			cfg["token"] = strings.TrimSpace(args[0])
+			if cfg["token"] == "" {
+				return fmt.Errorf("token value is required")
+			}
+			if err := saveConfig(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Saved token to %s\n", configPath())
+			return nil
+		},
+	}
 
 	// token list
 	listC := &cobra.Command{
@@ -1105,7 +1138,7 @@ func cmdToken() *cobra.Command {
 		},
 	}
 
-	root.AddCommand(createC, listC, revokeC)
+	root.AddCommand(createC, saveC, listC, revokeC)
 	return root
 }
 

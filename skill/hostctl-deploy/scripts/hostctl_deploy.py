@@ -43,7 +43,7 @@ def state_file(new_env: str, old_env: str, filename: str) -> pathlib.Path:
     return new_path
 
 
-DEFAULT_SERVER = env_first("PAGEPILOT_SERVER", "HOSTCTL_SERVER") or "http://localhost:8787"
+FALLBACK_SERVER = "http://localhost:8787"
 SESSION_FILE = state_file("PAGEPILOT_SESSION_FILE", "HOSTCTL_SESSION_FILE", "session.json")
 CONFIG_FILE = state_file("PAGEPILOT_CONFIG_FILE", "HOSTCTL_CONFIG_FILE", "config.json")
 PROJECTS_FILE = state_file("PAGEPILOT_PROJECTS_FILE", "HOSTCTL_PROJECTS_FILE", "projects.json")
@@ -58,8 +58,56 @@ MAX_SITE_TOTAL_BYTES = 10 * 1024 * 1024
 MAX_FILES_PER_SITE = 100
 
 
+def normalize_server(value: str) -> str:
+    return (value or "").strip().rstrip("/")
+
+
+def load_local_config() -> dict:
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_local_config(payload: dict) -> None:
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(
+        str(CONFIG_FILE),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    if hasattr(os, "chmod"):
+        try:
+            os.chmod(CONFIG_FILE, 0o600)
+        except OSError:
+            pass
+
+
+def default_server_url() -> str:
+    configured = normalize_server(env_first("PAGEPILOT_SERVER", "HOSTCTL_SERVER"))
+    if configured:
+        return configured
+    saved = normalize_server(str(load_local_config().get("server") or ""))
+    if saved:
+        return saved
+    return FALLBACK_SERVER
+
+
 def server_url(args) -> str:
-    return (args.server or DEFAULT_SERVER).rstrip("/")
+    explicit = normalize_server(str(getattr(args, "server", "") or ""))
+    if explicit:
+        return explicit
+    return default_server_url()
 
 
 def default_agent_label() -> str:
@@ -94,22 +142,20 @@ def load_agent_identity(label_hint: str = "") -> dict:
 
 
 def auth_token(args) -> str:
-    if args.token:
+    if getattr(args, "token", ""):
         return args.token
     token = env_first("PAGEPILOT_TOKEN", "HOSTCTL_TOKEN")
     if token:
         return token
-    try:
-        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        if data.get("server") == server_url(args):
-            return str(data.get("token") or "")
-    except Exception:
-        pass
+    data = load_local_config()
+    saved_token = str(data.get("token") or "")
+    saved_server = normalize_server(str(data.get("server") or ""))
+    if saved_token and (not saved_server or saved_server == server_url(args)):
+        return saved_token
     return ""
 
 
 def save_bound_token(base: str, token: str, username: str, token_id: str, agent: dict | None = None) -> None:
-    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "server": base,
         "token": token,
@@ -118,29 +164,8 @@ def save_bound_token(base: str, token: str, username: str, token_id: str, agent:
     }
     if agent:
         payload.update(agent)
-    # P1：使用 os.open 配合 O_CREAT|O_WRONLY|O_TRUNC + 0o600 模式，
-    # 避免临时文件在 umask 022 系统上创建为 0o644 泄露 Bearer Token
-    fd = os.open(
-        str(CONFIG_FILE),
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        0o600,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-    except Exception:
-        # 写入失败时关闭 fd
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        raise
-    # 后向兼容：若已存在的文件权限过宽，强制收紧
-    if hasattr(os, "chmod"):
-        try:
-            os.chmod(CONFIG_FILE, 0o600)
-        except OSError:
-            pass
+    # P1：统一通过 0o600 写入，避免 Bearer Token 被宽权限文件泄露。
+    save_local_config(payload)
 
 
 def project_key(source_arg: str) -> str:
@@ -786,12 +811,41 @@ def cmd_access(args) -> int:
 
 
 def cmd_token_create(args) -> int:
-    payload = {"label": args.label or "", "isAdmin": args.admin}
-    if args.expires_at:
-        payload["expiresAt"] = args.expires_at
-    if args.ttl_seconds is not None:
-        payload["ttlSeconds"] = args.ttl_seconds
-    status, data = request_json(server_url(args), auth_token(args), "/api/token", "POST", payload)
+    label = (getattr(args, "label", "") or "").strip()
+    label_arg = (getattr(args, "label_arg", "") or "").strip()
+    if label and label_arg and label != label_arg:
+        die("--label and positional label cannot be different.")
+    if not label:
+        label = label_arg
+    expires_at = (getattr(args, "expires_at", "") or "").strip()
+    ttl_seconds = getattr(args, "ttl_seconds", None)
+    if expires_at and ttl_seconds is not None:
+        die("Use either --expires-at or --ttl-seconds, not both.")
+    payload = {"label": label, "isAdmin": bool(args.admin)}
+    if expires_at:
+        payload["expiresAt"] = expires_at
+    if ttl_seconds is not None:
+        if ttl_seconds <= 0:
+            die("--ttl-seconds must be positive. Omit it for a permanent token.")
+        payload["ttlSeconds"] = ttl_seconds
+    base = server_url(args)
+    status, data = request_json(base, auth_token(args), "/api/token", "POST", payload)
+    if (
+        getattr(args, "save", False)
+        and 200 <= status < 300
+        and data.get("success", True) is not False
+    ):
+        created_token = str(data.get("token") or "")
+        if not created_token:
+            die("Token was created but the response did not include plaintext token.")
+        saved = dict(data)
+        save_bound_token(
+            base,
+            created_token,
+            str(saved.get("username") or saved.get("ownerUsername") or saved.get("ownerUserId") or ""),
+            str(saved.get("tokenId") or saved.get("id") or ""),
+        )
+        data = {**data, "savedTo": str(CONFIG_FILE)}
     return print_result(status, data)
 
 
@@ -804,6 +858,20 @@ def cmd_token_revoke(args) -> int:
     tid = urllib.parse.quote(args.id, safe="")
     status, data = request_json(server_url(args), auth_token(args), f"/api/tokens/{tid}", "DELETE")
     return print_result(status, data)
+
+
+def cmd_token_save(args) -> int:
+    token = (args.value or "").strip()
+    if not token:
+        die("token value is required.")
+    base = server_url(args)
+    save_bound_token(base, token, "", "")
+    return print_result(200, {
+        "success": True,
+        "server": base,
+        "tokenSaved": True,
+        "savedTo": str(CONFIG_FILE),
+    })
 
 
 def cmd_admin_sites(args) -> int:
@@ -888,8 +956,63 @@ def cmd_admin_security_mode(args) -> int:
 
 
 def cmd_config_get(args) -> int:
+    key = (getattr(args, "key", "") or "").strip()
+    if key:
+        data = load_local_config()
+        value = str(data.get(key) or "")
+        if key == "token" and len(value) > 8:
+            value = value[:4] + "..." + value[-4:]
+        return print_result(200, {
+            "success": True,
+            "key": key,
+            "value": value,
+            "configured": key in data,
+            "configFile": str(CONFIG_FILE),
+        })
     status, data = request_json(server_url(args), auth_token(args), "/api/config")
     return print_result(status, data)
+
+
+def cmd_config_set_local(args) -> int:
+    key = (args.key or "").strip()
+    value = (args.value or "").strip()
+    if key not in {"server", "token"}:
+        die("config set only supports server or token.")
+    if not value:
+        die("config value is required.")
+    data = load_local_config()
+    if key == "server":
+        old_server = normalize_server(str(data.get("server") or ""))
+        new_server = normalize_server(value)
+        data["server"] = new_server
+        if old_server and old_server != new_server:
+            for stale_key in ("token", "tokenId", "username"):
+                data.pop(stale_key, None)
+    else:
+        data["server"] = server_url(args)
+        data["token"] = value
+        data.pop("tokenId", None)
+        data.pop("username", None)
+    save_local_config(data)
+    return print_result(200, {
+        "success": True,
+        "key": key,
+        "server": data.get("server", ""),
+        "tokenSaved": bool(data.get("token")),
+        "configFile": str(CONFIG_FILE),
+    })
+
+
+def cmd_config_show_local(args) -> int:
+    data = dict(load_local_config())
+    if data.get("token"):
+        token = str(data["token"])
+        data["token"] = token[:4] + "..." + token[-4:] if len(token) > 8 else "***"
+    return print_result(200, {
+        "success": True,
+        "configFile": str(CONFIG_FILE),
+        "config": data,
+    })
 
 
 def cmd_config_set_app_url(args) -> int:
@@ -1108,8 +1231,8 @@ def cmd_screen_screenshot(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deploy and manage PagePilot static apps")
-    parser.add_argument("--server", help="PagePilot server URL (default: $PAGEPILOT_SERVER or http://localhost:8787)")
-    parser.add_argument("--token", help="bearer token (default: $PAGEPILOT_TOKEN)")
+    parser.add_argument("--server", help="PagePilot server URL (default: saved config, $PAGEPILOT_SERVER, or http://localhost:8787)")
+    parser.add_argument("--token", help="bearer token (default: saved config or $PAGEPILOT_TOKEN)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("doctor", help="Check health, config, OpenAPI, and admin auth readiness")
@@ -1221,11 +1344,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_token = sub.add_parser("token", help="Manage bearer tokens")
     token_sub = p_token.add_subparsers(dest="token_cmd", required=True)
     pt = token_sub.add_parser("create", help="Create a token")
+    pt.add_argument("label_arg", nargs="?", default="", help="Token label; same as --label")
     pt.add_argument("--label", default="")
     pt.add_argument("--admin", action="store_true")
     pt.add_argument("--expires-at", default="", help="RFC3339 expiry timestamp. Omit for permanent.")
     pt.add_argument("--ttl-seconds", type=int, help="Temporary token lifetime in seconds. Omit for permanent.")
+    pt.add_argument("--save", action="store_true", help="Save the returned plaintext token into ~/.pagep/config.json")
     pt.set_defaults(func=cmd_token_create)
+    pt = token_sub.add_parser("save", help="Save an existing plaintext token into local config")
+    pt.add_argument("value")
+    pt.set_defaults(func=cmd_token_save)
     pt = token_sub.add_parser("list", help="List tokens")
     pt.set_defaults(func=cmd_token_list)
     pt = token_sub.add_parser("revoke", help="Revoke a token")
@@ -1274,7 +1402,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_config = sub.add_parser("config", help="Read or update runtime config")
     config_sub = p_config.add_subparsers(dest="config_cmd", required=True)
     pc = config_sub.add_parser("get", help="Read runtime config")
+    pc.add_argument("key", nargs="?", default="", help="Optional local config key: server or token")
     pc.set_defaults(func=cmd_config_get)
+    pc = config_sub.add_parser("set", help="Save local config key: server or token")
+    pc.add_argument("key", choices=["server", "token"])
+    pc.add_argument("value")
+    pc.set_defaults(func=cmd_config_set_local)
+    pc = config_sub.add_parser("show", help="Show local config with masked token")
+    pc.set_defaults(func=cmd_config_show_local)
     pc = config_sub.add_parser("set-app-url", help="Update hosted app URL mode and wildcard domain settings")
     pc.add_argument("--mode", choices=["path", "domain", "dual"], required=True, help="path keeps /agent/{code}; domain uses {code}.suffix; dual enables both")
     pc.add_argument("--domain-suffix", default="", help="Wildcard app host suffix, e.g. apps.pagepilot.example.com")
@@ -1340,8 +1475,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    if not args.server:
-        args.server = DEFAULT_SERVER
     raise SystemExit(args.func(args))
 
 

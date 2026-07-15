@@ -52,6 +52,47 @@ func TestCreateTokenRejectsNonAdminOwnerOverride(t *testing.T) {
 	}
 }
 
+func TestCreateTokenDefaultsToPermanent(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	user, err := authSvc.CreateUser(ctx, "alice", "password123", false, 20)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	parentToken, err := authSvc.Generate(ctx, "alice-token", false, user.ID, nil)
+	if err != nil {
+		t.Fatalf("generate parent token: %v", err)
+	}
+
+	body, _ := json.Marshal(TokenCreateRequest{Label: "permanent-token"})
+	req := httptest.NewRequest(http.MethodPost, "/api/token", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+parentToken.Plaintext)
+	rr := httptest.NewRecorder()
+
+	srv.handleCreateToken(rr, req.WithContext(withRequestID(req.Context(), "test-req")))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+	}
+	var resp TokenCreateResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ExpiresAt != nil {
+		t.Fatalf("response expiresAt = %v, want permanent nil", resp.ExpiresAt)
+	}
+	stored, err := authSvc.GetToken(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("get stored token: %v", err)
+	}
+	if stored.ExpiresAt != nil {
+		t.Fatalf("stored expiresAt = %v, want permanent nil", stored.ExpiresAt)
+	}
+}
+
 func TestListMarketplaceMarksOwnedWithoutLeakingOwnerTokenID(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
