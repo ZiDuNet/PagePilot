@@ -262,7 +262,7 @@ func TestHostedCSPIncludesReportEndpoint(t *testing.T) {
 	}
 
 	markdownRR := httptest.NewRecorder()
-	srv.setHostedMarkdownSecurityHeaders(markdownRR, "nonce-test")
+	srv.setHostedMarkdownSecurityHeaders(markdownRR, "nonce-test", false)
 	if csp := markdownRR.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "report-uri /api/security/csp-report") {
 		t.Fatalf("hosted Markdown CSP = %q; want report-uri endpoint", csp)
 	}

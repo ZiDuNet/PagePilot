@@ -1295,6 +1295,19 @@ func (d *Deployer) SetEmbedPolicy(ctx context.Context, policy, allowOrigins stri
 	return nil
 }
 
+func (d *Deployer) SetContentInjection(ctx context.Context, cfg config.ContentInjectionConfig) error {
+	cfg = config.NormalizeContentInjection(cfg)
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal content injection: %w", err)
+	}
+	if err := d.store.SetSetting(ctx, "content_injection", string(data)); err != nil {
+		return fmt.Errorf("persist content injection: %w", err)
+	}
+	d.cfg.ContentInjection = cfg
+	return nil
+}
+
 func (d *Deployer) GetMarketCategories(ctx context.Context) ([]api.MarketCategory, error) {
 	raw, err := d.store.GetSetting(ctx, "market_categories")
 	if err != nil {
@@ -1386,6 +1399,12 @@ func (d *Deployer) LoadPersistedSettings(ctx context.Context) config.Config {
 	}
 	if v, err := d.store.GetSetting(ctx, "embed_allow_origins"); err == nil {
 		d.cfg.EmbedAllowOrigins = config.NormalizeOriginList(v)
+	}
+	if v, err := d.store.GetSetting(ctx, "content_injection"); err == nil && strings.TrimSpace(v) != "" {
+		var cfg config.ContentInjectionConfig
+		if jsonErr := json.Unmarshal([]byte(v), &cfg); jsonErr == nil {
+			d.cfg.ContentInjection = config.NormalizeContentInjection(cfg)
+		}
 	}
 	return d.cfg
 }

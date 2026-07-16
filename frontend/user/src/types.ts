@@ -2,6 +2,7 @@ export interface RuntimeConfig {
   currentBaseURL?: string;
   embedPolicy?: "any" | "self" | "allowlist" | "deny";
   embedAllowOrigins?: string;
+  contentInjection?: ContentInjectionConfig;
   appURL?: {
     appURLMode?: "path" | "domain" | "dual";
     appDomainSuffix?: string;
@@ -35,6 +36,18 @@ export interface RuntimeConfig {
     ossPublicBaseURL?: string;
     ossConfigured?: boolean;
   };
+}
+
+export interface InjectionTargetConfig {
+  enabled: boolean;
+  headCode?: string;
+  bodyStartCode?: string;
+  bodyEndCode?: string;
+}
+
+export interface ContentInjectionConfig {
+  main: InjectionTargetConfig;
+  app: InjectionTargetConfig;
 }
 
 export interface SessionInfo {

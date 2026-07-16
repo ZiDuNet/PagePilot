@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourorg/hostctl/internal/config"
 	"github.com/yourorg/hostctl/internal/store"
 )
 
@@ -90,6 +91,73 @@ func TestAppServeAllowsSandboxedSameAppFetch(t *testing.T) {
 	}
 	if got := rr.Header().Get("Vary"); !strings.Contains(got, "Origin") {
 		t.Fatalf("Vary = %q, want Origin", got)
+	}
+}
+
+func TestUserAppUIInjectsMainSnippets(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.cfg.ContentInjection.Main = config.InjectionTargetConfig{
+		Enabled:       true,
+		HeadCode:      `<meta name="pp-main-injected" content="1">`,
+		BodyStartCode: `<div id="pp-main-start"></div>`,
+		BodyEndCode:   `<script>window.__ppMainInjected = true;</script>`,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/market", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	for _, want := range []string{
+		`<meta name="pp-main-injected" content="1">`,
+		`<div id="pp-main-start"></div>`,
+		`<script>window.__ppMainInjected = true;</script>`,
+	} {
+		if !strings.Contains(rr.Body.String(), want) {
+			t.Fatalf("main UI body missing injected snippet %q", want)
+		}
+	}
+}
+
+func TestAppServeHTMLInjectsAppSnippets(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.cfg.ContentInjection.App = config.InjectionTargetConfig{
+		Enabled:       true,
+		HeadCode:      `<meta name="pp-app-injected" content="1">`,
+		BodyStartCode: `<aside id="pp-app-start"></aside>`,
+		BodyEndCode:   `<script>window.__ppAppInjected = true;</script>`,
+	}
+	srv.deployer = &appServeDeployerStub{
+		site:     store.Site{Code: "demo"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "demo"),
+	}
+	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "index.html"), []byte("<!doctype html><html><head><title>Demo</title></head><body><main>demo</main></body></html>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/demo/", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	for _, want := range []string{
+		`<meta name="pp-app-injected" content="1">`,
+		`<aside id="pp-app-start"></aside>`,
+		`<script>window.__ppAppInjected = true;</script>`,
+	} {
+		if !strings.Contains(rr.Body.String(), want) {
+			t.Fatalf("hosted HTML body missing injected snippet %q", want)
+		}
 	}
 }
 
@@ -337,6 +405,52 @@ func TestAppServeMarkdownUsesHTMLContentTypeAndStrictRuntimeCSP(t *testing.T) {
 	}
 	if !strings.Contains(cachedRR.Body.String(), `<script defer nonce="`) {
 		t.Fatalf("conditional markdown response missing fresh nonce body: %s", cachedRR.Body.String())
+	}
+}
+
+func TestAppServeMarkdownInjectsAppSnippetsWithNonce(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.cfg.ContentInjection.App = config.InjectionTargetConfig{
+		Enabled:     true,
+		HeadCode:    `<script src="https://analytics.example.com/sdk.js"></script><style>.pp-injected{display:block}</style>`,
+		BodyEndCode: `<script>window.__ppMarkdownInjected = true;</script>`,
+	}
+	srv.deployer = &appServeDeployerStub{
+		site:     store.Site{Code: "docs"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "docs"),
+	}
+	currentDir := filepath.Join(srv.cfg.HostedDir, "docs", "current")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "README.md"), []byte("# Docs"), 0o644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/docs/README.md", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		`<script nonce="`,
+		`src="https://analytics.example.com/sdk.js"`,
+		`<style nonce="`,
+		`window.__ppMarkdownInjected = true;`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("markdown body missing injected nonce snippet %q:\n%s", want, body)
+		}
+	}
+	csp := rr.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "script-src 'nonce-") ||
+		!strings.Contains(csp, "https: http:") ||
+		!strings.Contains(csp, "connect-src 'self' https: http: wss: ws:") {
+		t.Fatalf("Markdown CSP with app injection = %q, want nonce and external reporting support", csp)
 	}
 }
 

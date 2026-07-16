@@ -59,6 +59,19 @@ type ScreenPickTab = "mine" | "market";
 type SiteViewMode = "list" | "render";
 type ReusePolicyValue = "auto" | "allow" | "deny";
 type SecurityModeValue = "auto" | "strict" | "compatible" | "trusted";
+type ConfigSectionTab = "links" | "limits" | "security" | "injection";
+
+interface InjectionTargetConfig {
+  enabled: boolean;
+  headCode?: string;
+  bodyStartCode?: string;
+  bodyEndCode?: string;
+}
+
+interface ContentInjectionConfig {
+  main: InjectionTargetConfig;
+  app: InjectionTargetConfig;
+}
 
 const PREVIEW_IFRAME_SANDBOX =
   "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-top-navigation-by-user-activation";
@@ -82,6 +95,7 @@ interface RuntimeConfig {
   corsAllowOrigins?: string;
   embedPolicy?: "any" | "self" | "allowlist" | "deny";
   embedAllowOrigins?: string;
+  contentInjection?: ContentInjectionConfig;
   cooldownSeconds?: number;
   version?: string;
   appURL?: {
@@ -3296,8 +3310,99 @@ function formatAuditDetail(detail: unknown) {
   }
 }
 
+const emptyInjectionTarget = (): InjectionTargetConfig => ({
+  enabled: false,
+  headCode: "",
+  bodyStartCode: "",
+  bodyEndCode: ""
+});
+
+function normalizeContentInjectionDraft(input?: ContentInjectionConfig): ContentInjectionConfig {
+  return {
+    main: { ...emptyInjectionTarget(), ...(input?.main || {}) },
+    app: { ...emptyInjectionTarget(), ...(input?.app || {}) }
+  };
+}
+
+function snippetBytes(target?: InjectionTargetConfig) {
+  const text = `${target?.headCode || ""}${target?.bodyStartCode || ""}${target?.bodyEndCode || ""}`;
+  return new Blob([text]).size;
+}
+
+function injectionTargetHasDraftContent(target?: InjectionTargetConfig) {
+  if (!target?.enabled) return false;
+  return Boolean(`${target.headCode || ""}${target.bodyStartCode || ""}${target.bodyEndCode || ""}`.trim());
+}
+
+function InjectionEditor({ title, description, target, onChange }: { title: string; description: string; target: InjectionTargetConfig; onChange: (patch: Partial<InjectionTargetConfig>) => void }) {
+  const bytes = snippetBytes(target);
+  return (
+    <div className="injection-card">
+      <div className="injection-card-head">
+        <div>
+          <strong>{title}</strong>
+          <p>{description}</p>
+        </div>
+        <label className="toggle-line">
+          <input type="checkbox" checked={target.enabled} onChange={(event) => onChange({ enabled: event.target.checked })} />
+          <span>{target.enabled ? "已启用" : "未启用"}</span>
+        </label>
+      </div>
+      <div className="injection-meta">
+        <span>片段总量：{formatSize(bytes)}</span>
+        <span>单个位置最多 128 KB，总量最多 512 KB</span>
+      </div>
+      <div className="snippet-grid">
+        <label className="field rich-field">
+          <span>Head 片段</span>
+          <textarea
+            className="code-snippet"
+            value={target.headCode || ""}
+            onChange={(event) => onChange({ headCode: event.target.value })}
+            placeholder={'<script src="https://example.com/sdk.js"></script>'}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+          />
+          <em>插入到 <code>&lt;/head&gt;</code> 前，适合统计脚本、全局样式、meta 或第三方 SDK。</em>
+        </label>
+        <label className="field rich-field">
+          <span>Body 开头片段</span>
+          <textarea
+            className="code-snippet"
+            value={target.bodyStartCode || ""}
+            onChange={(event) => onChange({ bodyStartCode: event.target.value })}
+            placeholder={'<div class="site-banner">...</div>'}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+          />
+          <em>插入到 <code>&lt;body&gt;</code> 后，适合顶部横幅、全站提示或隐藏容器。</em>
+        </label>
+        <label className="field rich-field">
+          <span>Body 结尾片段</span>
+          <textarea
+            className="code-snippet"
+            value={target.bodyEndCode || ""}
+            onChange={(event) => onChange({ bodyEndCode: event.target.value })}
+            placeholder={"<script>window.demo = true;</script>"}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+          />
+          <em>插入到 <code>&lt;/body&gt;</code> 前，适合延迟脚本、浮层入口或统计初始化代码。</em>
+        </label>
+      </div>
+    </div>
+  );
+}
+
 function ConfigPanel({ config, onConfig, showToast, setError }: { config: RuntimeConfig | null; onConfig: (cfg: RuntimeConfig) => void; showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const fold = useFoldState();
+  const [section, setSection] = useState<ConfigSectionTab>("links");
   const [draft, setDraft] = useState({
     appURLMode: "path",
     appDomainSuffix: "",
@@ -3310,7 +3415,8 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
     maxFiles: 100,
     cors: "",
     embedPolicy: "any" as "any" | "self" | "allowlist" | "deny",
-    embedAllowOrigins: ""
+    embedAllowOrigins: "",
+    contentInjection: normalizeContentInjectionDraft()
   });
 
   useEffect(() => {
@@ -3327,9 +3433,23 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
       maxFiles: config.limits?.maxFilesPerSite || 100,
       cors: config.corsAllowOrigins || "",
       embedPolicy: config.embedPolicy || "any",
-      embedAllowOrigins: config.embedAllowOrigins || ""
+      embedAllowOrigins: config.embedAllowOrigins || "",
+      contentInjection: normalizeContentInjectionDraft(config.contentInjection)
     });
   }, [config]);
+
+  function updateInjectionTarget(target: "main" | "app", patch: Partial<InjectionTargetConfig>) {
+    setDraft((prev) => ({
+      ...prev,
+      contentInjection: {
+        ...prev.contentInjection,
+        [target]: {
+          ...prev.contentInjection[target],
+          ...patch
+        }
+      }
+    }));
+  }
 
   async function save() {
     try {
@@ -3348,7 +3468,8 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
           maxFilesPerSite: Number(draft.maxFiles),
           corsAllowOrigins: draft.cors,
           embedPolicy: draft.embedPolicy,
-          embedAllowOrigins: draft.embedAllowOrigins
+          embedAllowOrigins: draft.embedAllowOrigins,
+          contentInjection: draft.contentInjection
         })
       });
       onConfig(data);
@@ -3369,6 +3490,14 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
   const modeText = draft.appURLMode === "domain" ? "只生成泛域名链接" : draft.appURLMode === "dual" ? "同时保留路径和泛域名链接" : "默认生成 /agent/{code} 路径链接";
   const mainSiteText = "主站链接跟随当前访问域名，无需配置";
   const embedModeText = draft.embedPolicy === "deny" ? "禁止任何网站 iframe 嵌入应用" : draft.embedPolicy === "self" ? "只允许本站嵌入应用" : draft.embedPolicy === "allowlist" ? "本站和白名单来源可嵌入应用" : "允许任意网站 iframe 嵌入应用";
+  const configSections: Array<{ id: ConfigSectionTab; label: string; note: string }> = [
+    { id: "links", label: "访问链接", note: "主站入口和应用链接规则" },
+    { id: "limits", label: "发布限额", note: "匿名额度、冷却和上传限制" },
+    { id: "security", label: "跨域嵌入", note: "API CORS 与 iframe 策略" },
+    { id: "injection", label: "代码注入", note: "主站与应用代码片段" }
+  ];
+  const mainInjectionEnabled = injectionTargetHasDraftContent(draft.contentInjection.main);
+  const appInjectionEnabled = injectionTargetHasDraftContent(draft.contentInjection.app);
 
   return (
     <section className="config-page-v2">
@@ -3381,8 +3510,24 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
         <button className="button primary" type="button" onClick={() => void save()}><Save size={16} />保存运行设置</button>
       </div>
 
+      <div className="config-section-tabs" role="tablist" aria-label="运行设置分组">
+        {configSections.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={section === item.id ? "active" : ""}
+            onClick={() => setSection(item.id)}
+          >
+            <strong>{item.label}</strong>
+            <span>{item.note}</span>
+          </button>
+        ))}
+      </div>
+
       <div className="config-grid">
         <div className="config-main">
+          {section === "links" && (
+            <>
           <FoldSection id="mainSite" label="主站访问入口 — 自动跟随当前浏览器域名" fold={fold}>
             <div className="readonly-callout">
               <div><span>当前主站</span><code>{baseURLPreview}</code></div>
@@ -3423,7 +3568,10 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
               </label>
             </div>
           </FoldSection>
+            </>
+          )}
 
+          {section === "limits" && (
           <FoldSection id="limits" label="发布限额 — 控制匿名发布、上传大小和滥用防护" fold={fold}>
             <div className="form-grid three">
               <label className="field rich-field">
@@ -3455,7 +3603,9 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
               </label>
             </div>
           </FoldSection>
+          )}
 
+          {section === "security" && (
           <FoldSection id="cors" label="跨域与嵌入 — CORS 管 API，iframe 管应用嵌入" fold={fold}>
             <div className="embed-policy-inline">
               <label className="field rich-field">
@@ -3490,6 +3640,28 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
               <em>只在外部网站需要用 fetch/XHR 调 PagePilot API 时填写；iframe 嵌入应用 URL 请使用上面的嵌入策略。</em>
             </label>
           </FoldSection>
+          )}
+
+          {section === "injection" && (
+            <div className="injection-settings">
+              <div className="readonly-callout warning">
+                <div><span>代码片段注入</span><code>仅管理员可配置</code></div>
+                <em>这里适合放统计、客服、广告横幅或全站样式补丁。代码会按位置原样插入页面，保存前请确认来源可信；后台管理页不会被注入。</em>
+              </div>
+              <InjectionEditor
+                title="主站注入"
+                description="注入到 PagePilot 用户侧主站，包括首页、创作市场、手动部署、Skill & MCP、屏幕介绍等页面；不会注入 /admin 后台，也不会注入用户发布的应用。"
+                target={draft.contentInjection.main}
+                onChange={(patch) => updateInjectionTarget("main", patch)}
+              />
+              <InjectionEditor
+                title="应用注入（含 Markdown）"
+                description="注入到用户发布的应用访问页，包括 /agent/{code}、泛域名应用和 Markdown 渲染页。Markdown 会为注入的 script/style 自动补 nonce；普通 HTML 仍受该站点安全模式影响。"
+                target={draft.contentInjection.app}
+                onChange={(patch) => updateInjectionTarget("app", patch)}
+              />
+            </div>
+          )}
         </div>
 
         <div className="config-preview">
@@ -3511,6 +3683,14 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
             <div className="preview-row">
               <small>iframe 嵌入</small>
               <code>{embedModeText}</code>
+            </div>
+            <div className="preview-row">
+              <small>主站注入</small>
+              <code>{mainInjectionEnabled ? `启用 / ${formatSize(snippetBytes(draft.contentInjection.main))}` : "未启用"}</code>
+            </div>
+            <div className="preview-row">
+              <small>应用注入</small>
+              <code>{appInjectionEnabled ? `启用 / ${formatSize(snippetBytes(draft.contentInjection.app))}` : "未启用"}</code>
             </div>
           </div>
           <div className="preview-card muted">

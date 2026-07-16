@@ -3,26 +3,29 @@ package api
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/yourorg/hostctl/internal/config"
 )
 
 // ===== 设置（GET/PUT /api/config） =====
 
 // ConfigResponse 是 GET /api/config 响应。包含可读的运行时配置。
 type ConfigResponse struct {
-	Success             bool            `json:"success"`
-	CurrentBaseURL      string          `json:"currentBaseURL"`
-	AppURL              AppURLConfig    `json:"appURL"`
-	Mode                string          `json:"mode"` // "dev" | "prod"
-	CORSAllowOrigins    string          `json:"corsAllowOrigins"`
-	EmbedPolicy         string          `json:"embedPolicy"`
-	EmbedAllowOrigins   string          `json:"embedAllowOrigins,omitempty"`
-	CooldownSeconds     int             `json:"cooldownSeconds"`
-	Limits              Limits          `json:"limits"`
-	AnonymousPolicy     AnonymousPolicy `json:"anonymousPolicy"`
-	RegistrationAllowed bool            `json:"registrationAllowed"`
-	Email               EmailConfig     `json:"email"`
-	Storage             StorageConfig   `json:"storage"`
-	Version             string          `json:"version"`
+	Success             bool                          `json:"success"`
+	CurrentBaseURL      string                        `json:"currentBaseURL"`
+	AppURL              AppURLConfig                  `json:"appURL"`
+	Mode                string                        `json:"mode"` // "dev" | "prod"
+	CORSAllowOrigins    string                        `json:"corsAllowOrigins"`
+	EmbedPolicy         string                        `json:"embedPolicy"`
+	EmbedAllowOrigins   string                        `json:"embedAllowOrigins,omitempty"`
+	ContentInjection    config.ContentInjectionConfig `json:"contentInjection"`
+	CooldownSeconds     int                           `json:"cooldownSeconds"`
+	Limits              Limits                        `json:"limits"`
+	AnonymousPolicy     AnonymousPolicy               `json:"anonymousPolicy"`
+	RegistrationAllowed bool                          `json:"registrationAllowed"`
+	Email               EmailConfig                   `json:"email"`
+	Storage             StorageConfig                 `json:"storage"`
+	Version             string                        `json:"version"`
 }
 
 type AnonymousPolicy struct {
@@ -57,34 +60,36 @@ type Limits struct {
 
 // ConfigUpdateRequest 是 PUT /api/config 请求体。任一非空字段会被更新。
 type ConfigUpdateRequest struct {
-	AppURLMode           *string `json:"appURLMode,omitempty"`
-	AppDomainSuffix      *string `json:"appDomainSuffix,omitempty"`
-	AppURLScheme         *string `json:"appURLScheme,omitempty"`
-	AppURLPort           *string `json:"appURLPort,omitempty"`
-	AnonymousDeployLimit *int    `json:"anonymousDeployLimit,omitempty"`
-	CooldownSeconds      *int    `json:"cooldownSeconds,omitempty"`
-	MaxSingleFileBytes   *int64  `json:"maxSingleFileBytes,omitempty"`
-	MaxSiteTotalBytes    *int64  `json:"maxSiteTotalBytes,omitempty"`
-	MaxFilesPerSite      *int    `json:"maxFilesPerSite,omitempty"`
-	CORSAllowOrigins     *string `json:"corsAllowOrigins,omitempty"`
-	EmbedPolicy          *string `json:"embedPolicy,omitempty"`
-	EmbedAllowOrigins    *string `json:"embedAllowOrigins,omitempty"`
+	AppURLMode           *string                        `json:"appURLMode,omitempty"`
+	AppDomainSuffix      *string                        `json:"appDomainSuffix,omitempty"`
+	AppURLScheme         *string                        `json:"appURLScheme,omitempty"`
+	AppURLPort           *string                        `json:"appURLPort,omitempty"`
+	AnonymousDeployLimit *int                           `json:"anonymousDeployLimit,omitempty"`
+	CooldownSeconds      *int                           `json:"cooldownSeconds,omitempty"`
+	MaxSingleFileBytes   *int64                         `json:"maxSingleFileBytes,omitempty"`
+	MaxSiteTotalBytes    *int64                         `json:"maxSiteTotalBytes,omitempty"`
+	MaxFilesPerSite      *int                           `json:"maxFilesPerSite,omitempty"`
+	CORSAllowOrigins     *string                        `json:"corsAllowOrigins,omitempty"`
+	EmbedPolicy          *string                        `json:"embedPolicy,omitempty"`
+	EmbedAllowOrigins    *string                        `json:"embedAllowOrigins,omitempty"`
+	ContentInjection     *config.ContentInjectionConfig `json:"contentInjection,omitempty"`
 }
 
 // ConfigUpdateResponse 是 PUT /api/config 响应。
 type ConfigUpdateResponse struct {
-	Success             bool            `json:"success"`
-	CurrentBaseURL      string          `json:"currentBaseURL"`
-	AppURL              AppURLConfig    `json:"appURL"`
-	CORSAllowOrigins    string          `json:"corsAllowOrigins"`
-	EmbedPolicy         string          `json:"embedPolicy"`
-	EmbedAllowOrigins   string          `json:"embedAllowOrigins,omitempty"`
-	CooldownSeconds     int             `json:"cooldownSeconds"`
-	Limits              Limits          `json:"limits"`
-	AnonymousPolicy     AnonymousPolicy `json:"anonymousPolicy"`
-	RegistrationAllowed bool            `json:"registrationAllowed"`
-	Email               EmailConfig     `json:"email"`
-	Storage             StorageConfig   `json:"storage"`
+	Success             bool                          `json:"success"`
+	CurrentBaseURL      string                        `json:"currentBaseURL"`
+	AppURL              AppURLConfig                  `json:"appURL"`
+	CORSAllowOrigins    string                        `json:"corsAllowOrigins"`
+	EmbedPolicy         string                        `json:"embedPolicy"`
+	EmbedAllowOrigins   string                        `json:"embedAllowOrigins,omitempty"`
+	ContentInjection    config.ContentInjectionConfig `json:"contentInjection"`
+	CooldownSeconds     int                           `json:"cooldownSeconds"`
+	Limits              Limits                        `json:"limits"`
+	AnonymousPolicy     AnonymousPolicy               `json:"anonymousPolicy"`
+	RegistrationAllowed bool                          `json:"registrationAllowed"`
+	Email               EmailConfig                   `json:"email"`
+	Storage             StorageConfig                 `json:"storage"`
 }
 
 // ===== 站点列表（GET /api/admin/sites） =====

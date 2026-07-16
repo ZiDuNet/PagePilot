@@ -19,6 +19,7 @@ type Config struct {
 	CORSAllowOrigins  string
 	EmbedPolicy       string
 	EmbedAllowOrigins string
+	ContentInjection  ContentInjectionConfig
 
 	MaxSingleFileBytes int64
 	MaxSiteTotalBytes  int64
@@ -47,6 +48,18 @@ type Config struct {
 	OSSAccessKeySecret string
 	OSSPrefix          string
 	OSSPublicBaseURL   string
+}
+
+type InjectionTargetConfig struct {
+	Enabled       bool   `json:"enabled"`
+	HeadCode      string `json:"headCode,omitempty"`
+	BodyStartCode string `json:"bodyStartCode,omitempty"`
+	BodyEndCode   string `json:"bodyEndCode,omitempty"`
+}
+
+type ContentInjectionConfig struct {
+	Main InjectionTargetConfig `json:"main"`
+	App  InjectionTargetConfig `json:"app"`
 }
 
 // Default returns runtime defaults, overridable by environment variables.
@@ -304,6 +317,7 @@ func Default() Config {
 	c.CORSAllowOrigins = NormalizeCORSAllowOrigins(c.CORSAllowOrigins)
 	c.EmbedPolicy = NormalizeEmbedPolicy(c.EmbedPolicy)
 	c.EmbedAllowOrigins = NormalizeOriginList(c.EmbedAllowOrigins)
+	c.ContentInjection = NormalizeContentInjection(c.ContentInjection)
 	c.StorageBackend = normalizeStorageBackend(c.StorageBackend)
 	c.SMTPSecure = strings.ToLower(strings.TrimSpace(c.SMTPSecure))
 
@@ -401,6 +415,23 @@ func normalizeStorageBackend(v string) string {
 	default:
 		return "local"
 	}
+}
+
+func NormalizeContentInjection(in ContentInjectionConfig) ContentInjectionConfig {
+	in.Main = NormalizeInjectionTarget(in.Main)
+	in.App = NormalizeInjectionTarget(in.App)
+	return in
+}
+
+func NormalizeInjectionTarget(in InjectionTargetConfig) InjectionTargetConfig {
+	in.HeadCode = NormalizeContentSnippet(in.HeadCode)
+	in.BodyStartCode = NormalizeContentSnippet(in.BodyStartCode)
+	in.BodyEndCode = NormalizeContentSnippet(in.BodyEndCode)
+	return in
+}
+
+func NormalizeContentSnippet(v string) string {
+	return strings.ReplaceAll(v, "\x00", "")
 }
 
 // NormalizeEmbedPolicy 规范化应用 iframe 嵌入策略。

@@ -76,6 +76,7 @@ type DeployerPort interface {
 	SetUploadLimits(ctx context.Context, singleFileBytes, siteTotalBytes int64, filesPerSite int) error
 	SetCORSAllowOrigins(ctx context.Context, origins string) error
 	SetEmbedPolicy(ctx context.Context, policy, allowOrigins string) error
+	SetContentInjection(ctx context.Context, cfg config.ContentInjectionConfig) error
 	GetMarketCategories(ctx context.Context) ([]MarketCategory, error)
 	SetMarketCategories(ctx context.Context, categories []MarketCategory) error
 	CreateAnonymousSession(ctx context.Context, id string) (store.AnonymousSession, error)
@@ -534,7 +535,9 @@ func (s *Server) routes() {
 	// admin 后台单页
 	s.mux.HandleFunc("GET /admin", s.handleAdminUI)
 	s.mux.HandleFunc("GET /admin/", s.handleAdminUI)
+	s.mux.Handle("GET /admin/favicon.ico", http.StripPrefix("/admin/", adminAssetFileServer(web.AdminAppFS())))
 	s.mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/", adminAssetFileServer(web.AdminAppFS())))
+	s.mux.Handle("GET /app/favicon.ico", http.StripPrefix("/app/", http.FileServer(http.FS(web.UserSubFS()))))
 	s.mux.Handle("GET /app/assets/", http.StripPrefix("/app/", http.FileServer(http.FS(web.UserSubFS()))))
 	s.mux.HandleFunc("GET /index.html", s.handleUserAppUI)
 	s.mux.HandleFunc("GET /deploy", s.handleUserAppUI)
@@ -563,7 +566,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /agent/{code}/versions/{version}/{path...}", s.handleAppServe)
 
 	// 用户端 SPA：根路径托管 user/ 目录（首页 / 部署 / API 文档 / 静态资源）
-	s.mux.Handle("GET /", http.FileServer(http.FS(web.UserSubFS())))
+	s.mux.Handle("GET /", s.userAppFileServer())
 }
 
 // ListenAndServe 启动 HTTP 服务。
@@ -3819,12 +3822,24 @@ func (s *Server) handleAdminUI(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUserAppUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	bytes, err := fs.ReadFile(web.UserSubFS(), "index.html")
+	body, err := fs.ReadFile(web.UserSubFS(), "index.html")
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	_, _ = w.Write(bytes)
+	html := injectHTMLSnippets(string(body), s.mainHTMLInjectionSnippets(""))
+	_, _ = io.WriteString(w, html)
+}
+
+func (s *Server) userAppFileServer() http.Handler {
+	fileServer := http.FileServer(http.FS(web.UserSubFS()))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			s.handleUserAppUI(w, r)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleAPIDocsRedirect(w http.ResponseWriter, r *http.Request) {
@@ -4601,6 +4616,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		CORSAllowOrigins:  s.cfg.CORSAllowOrigins,
 		EmbedPolicy:       config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy),
 		EmbedAllowOrigins: s.cfg.EmbedAllowOrigins,
+		ContentInjection:  s.contentInjectionForConfigResponse(r),
 		CooldownSeconds:   s.cfg.CooldownSeconds,
 		Limits: Limits{
 			MaxSingleFileBytes: s.cfg.MaxSingleFileBytes,
@@ -4760,14 +4776,19 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	actorType, actorID, actorRole := auditActorFromToken(tok)
 	configUpdateAuditDetail := func() map[string]any {
-		return map[string]any{
+		detail := map[string]any{
 			"appURL":               req.AppURLMode != nil || req.AppDomainSuffix != nil || req.AppURLScheme != nil || req.AppURLPort != nil,
 			"anonymousDeployLimit": req.AnonymousDeployLimit != nil,
 			"cooldownSeconds":      req.CooldownSeconds != nil,
 			"uploadLimits":         req.MaxSingleFileBytes != nil || req.MaxSiteTotalBytes != nil || req.MaxFilesPerSite != nil,
 			"corsAllowOrigins":     req.CORSAllowOrigins != nil,
 			"embedPolicy":          req.EmbedPolicy != nil || req.EmbedAllowOrigins != nil,
+			"contentInjection":     req.ContentInjection != nil,
 		}
+		if req.ContentInjection != nil {
+			detail["contentInjectionSummary"] = contentInjectionAuditSummary(config.NormalizeContentInjection(*req.ContentInjection))
+		}
+		return detail
 	}
 	writeConfigError := func(apiErr *APIError) {
 		detail := mergeAPIErrorAuditDetail(configUpdateAuditDetail(), apiErr)
@@ -4921,6 +4942,19 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		s.cfg.EmbedPolicy = policy
 		s.cfg.EmbedAllowOrigins = origins
 	}
+	if req.ContentInjection != nil {
+		next := config.NormalizeContentInjection(*req.ContentInjection)
+		if apiErr := validateContentInjectionConfig(next); apiErr != nil {
+			writeConfigError(apiErr)
+			return
+		}
+		if err := s.deployer.SetContentInjection(r.Context(), next); err != nil {
+			writeConfigError(NewError(CodeInternal, "set_config",
+				fmt.Sprintf("failed to persist content injection: %v", err)))
+			return
+		}
+		s.cfg.ContentInjection = next
+	}
 	s.recordAuditLog(r, actorType, actorID, actorRole, "config.update", "", "config", "runtime", configUpdateAuditDetail())
 	currentBase := s.requestBaseURL(r)
 	writeJSON(w, http.StatusOK, ConfigUpdateResponse{
@@ -4930,6 +4964,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		CORSAllowOrigins:  s.cfg.CORSAllowOrigins,
 		EmbedPolicy:       config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy),
 		EmbedAllowOrigins: s.cfg.EmbedAllowOrigins,
+		ContentInjection:  config.NormalizeContentInjection(s.cfg.ContentInjection),
 		CooldownSeconds:   s.cfg.CooldownSeconds,
 		Limits: Limits{
 			MaxSingleFileBytes: s.cfg.MaxSingleFileBytes,
@@ -4943,6 +4978,64 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		Email:               s.emailConfig(),
 		Storage:             s.storageConfig(),
 	})
+}
+
+const (
+	maxContentInjectionSnippetBytes = 128 << 10
+	maxContentInjectionTotalBytes   = 512 << 10
+)
+
+func validateContentInjectionConfig(cfg config.ContentInjectionConfig) *APIError {
+	total := 0
+	for _, item := range []struct {
+		name string
+		code string
+	}{
+		{"main.headCode", cfg.Main.HeadCode},
+		{"main.bodyStartCode", cfg.Main.BodyStartCode},
+		{"main.bodyEndCode", cfg.Main.BodyEndCode},
+		{"app.headCode", cfg.App.HeadCode},
+		{"app.bodyStartCode", cfg.App.BodyStartCode},
+		{"app.bodyEndCode", cfg.App.BodyEndCode},
+	} {
+		size := len([]byte(item.code))
+		if size > maxContentInjectionSnippetBytes {
+			return NewError(CodeInvalidInput, "validate",
+				item.name+" must be at most 128 KB")
+		}
+		total += size
+	}
+	if total > maxContentInjectionTotalBytes {
+		return NewError(CodeInvalidInput, "validate",
+			"contentInjection total size must be at most 512 KB")
+	}
+	return nil
+}
+
+func contentInjectionAuditSummary(cfg config.ContentInjectionConfig) map[string]any {
+	targetSummary := func(target config.InjectionTargetConfig) map[string]any {
+		return map[string]any{
+			"enabled":        target.Enabled,
+			"headBytes":      len([]byte(target.HeadCode)),
+			"bodyStartBytes": len([]byte(target.BodyStartCode)),
+			"bodyEndBytes":   len([]byte(target.BodyEndCode)),
+		}
+	}
+	return map[string]any{
+		"main": targetSummary(cfg.Main),
+		"app":  targetSummary(cfg.App),
+	}
+}
+
+func (s *Server) contentInjectionForConfigResponse(r *http.Request) config.ContentInjectionConfig {
+	cfg := config.NormalizeContentInjection(s.cfg.ContentInjection)
+	if _, authErr := s.authenticateAdmin(r); authErr == nil {
+		return cfg
+	}
+	return config.ContentInjectionConfig{
+		Main: config.InjectionTargetConfig{Enabled: injectionTargetHasContent(cfg.Main)},
+		App:  config.InjectionTargetConfig{Enabled: injectionTargetHasContent(cfg.App)},
+	}
 }
 
 func (s *Server) emailConfig() EmailConfig {
@@ -6044,11 +6137,12 @@ func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code st
 	if strings.HasSuffix(lowerSub, ".md") || strings.HasSuffix(lowerSub, ".markdown") {
 		nonce := markdownCSPNonce()
 		theme := render.NormalizeMarkdownTheme(r.URL.Query().Get("theme"))
-		s.setHostedMarkdownSecurityHeaders(w, nonce)
+		s.setHostedMarkdownSecurityHeaders(w, nonce, injectionTargetHasContent(s.cfg.ContentInjection.App))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		rendered := s.renderHostedMarkdown(r.Context(), code, versionPtr, sub, body, theme)
 		rendered = render.ApplyMarkdownNonce(rendered, nonce)
+		rendered = injectHTMLSnippets(rendered, s.appHTMLInjectionSnippets(nonce))
 		_, _ = io.WriteString(w, rendered)
 		return
 	}
@@ -6058,7 +6152,9 @@ func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code st
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	http.ServeContent(w, r, filepath.Base(sub), modTime, strings.NewReader(injectHostedHTMLCompat(body, routePrefix)))
+	html := injectHostedHTMLCompat(body, routePrefix)
+	html = injectHTMLSnippets(html, s.appHTMLInjectionSnippets(""))
+	http.ServeContent(w, r, filepath.Base(sub), modTime, strings.NewReader(html))
 }
 
 func hostedSubPathSafe(path string) bool {
@@ -6155,13 +6251,24 @@ func hostedContentCSP(securityMode string) string {
 	}
 }
 
-func (s *Server) setHostedMarkdownSecurityHeaders(w http.ResponseWriter, nonce string) {
+func (s *Server) setHostedMarkdownSecurityHeaders(w http.ResponseWriter, nonce string, allowInjectedSnippets bool) {
+	scriptSrc := "script-src 'nonce-" + nonce + "'"
+	styleSrc := "style-src 'self' 'nonce-" + nonce + "'"
+	styleElemSrc := "style-src-elem 'self' 'unsafe-inline'"
+	connectSrc := "connect-src 'self'"
+	if allowInjectedSnippets {
+		scriptSrc = "script-src 'nonce-" + nonce + "' https: http:"
+		styleSrc = "style-src 'self' 'nonce-" + nonce + "' https: http:"
+		styleElemSrc = "style-src-elem 'self' https: http: 'unsafe-inline'"
+		connectSrc = "connect-src 'self' https: http: wss: ws:"
+	}
 	csp := "default-src 'self'; " +
-		"script-src 'nonce-" + nonce + "'; " +
-		"style-src 'self' 'nonce-" + nonce + "'; " +
-		"style-src-elem 'self' 'unsafe-inline'; " +
+		scriptSrc + "; " +
+		styleSrc + "; " +
+		styleElemSrc + "; " +
 		"style-src-attr 'unsafe-inline'; " +
-		"img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; font-src 'self' data:; connect-src 'self'; " +
+		"img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; font-src 'self' data:; " +
+		connectSrc + "; " +
 		"object-src 'none'; base-uri 'none'; form-action 'none'"
 	if frameAncestors := s.frameAncestorsDirective(); frameAncestors != "" {
 		csp += "; " + frameAncestors
@@ -6293,6 +6400,142 @@ func fileModTime(path string) time.Time {
 		return time.Time{}
 	}
 	return st.ModTime()
+}
+
+type htmlInjectionSnippets struct {
+	Head      string
+	BodyStart string
+	BodyEnd   string
+}
+
+func (s *Server) mainHTMLInjectionSnippets(nonce string) htmlInjectionSnippets {
+	return htmlInjectionSnippetsFromTarget(s.cfg.ContentInjection.Main, nonce)
+}
+
+func (s *Server) appHTMLInjectionSnippets(nonce string) htmlInjectionSnippets {
+	return htmlInjectionSnippetsFromTarget(s.cfg.ContentInjection.App, nonce)
+}
+
+func htmlInjectionSnippetsFromTarget(target config.InjectionTargetConfig, nonce string) htmlInjectionSnippets {
+	if !injectionTargetHasContent(target) {
+		return htmlInjectionSnippets{}
+	}
+	return htmlInjectionSnippets{
+		Head:      addNonceToSnippet(target.HeadCode, nonce),
+		BodyStart: addNonceToSnippet(target.BodyStartCode, nonce),
+		BodyEnd:   addNonceToSnippet(target.BodyEndCode, nonce),
+	}
+}
+
+func injectionTargetHasContent(target config.InjectionTargetConfig) bool {
+	if !target.Enabled {
+		return false
+	}
+	return strings.TrimSpace(target.HeadCode) != "" ||
+		strings.TrimSpace(target.BodyStartCode) != "" ||
+		strings.TrimSpace(target.BodyEndCode) != ""
+}
+
+func injectHTMLSnippets(htmlText string, snippets htmlInjectionSnippets) string {
+	if strings.TrimSpace(snippets.Head) == "" &&
+		strings.TrimSpace(snippets.BodyStart) == "" &&
+		strings.TrimSpace(snippets.BodyEnd) == "" {
+		return htmlText
+	}
+	if strings.TrimSpace(snippets.Head) != "" {
+		htmlText = injectBeforeClosingTag(htmlText, "</head>", snippets.Head, true)
+	}
+	if strings.TrimSpace(snippets.BodyStart) != "" {
+		htmlText = injectAfterOpeningBody(htmlText, snippets.BodyStart)
+	}
+	if strings.TrimSpace(snippets.BodyEnd) != "" {
+		htmlText = injectBeforeClosingTag(htmlText, "</body>", snippets.BodyEnd, false)
+	}
+	return htmlText
+}
+
+func injectBeforeClosingTag(htmlText, closingTag, snippet string, prependWhenMissing bool) string {
+	insert := "\n" + snippet + "\n"
+	idx := strings.LastIndex(strings.ToLower(htmlText), strings.ToLower(closingTag))
+	if idx >= 0 {
+		return htmlText[:idx] + insert + htmlText[idx:]
+	}
+	if prependWhenMissing {
+		return insert + htmlText
+	}
+	return htmlText + insert
+}
+
+func injectAfterOpeningBody(htmlText, snippet string) string {
+	insert := "\n" + snippet + "\n"
+	lower := strings.ToLower(htmlText)
+	idx := strings.Index(lower, "<body")
+	if idx < 0 {
+		return insert + htmlText
+	}
+	end := strings.Index(htmlText[idx:], ">")
+	if end < 0 {
+		return insert + htmlText
+	}
+	insertAt := idx + end + 1
+	return htmlText[:insertAt] + insert + htmlText[insertAt:]
+}
+
+func addNonceToSnippet(snippet, nonce string) string {
+	if strings.TrimSpace(nonce) == "" || strings.TrimSpace(snippet) == "" {
+		return snippet
+	}
+	snippet = addNonceToOpeningTags(snippet, "script", nonce)
+	snippet = addNonceToOpeningTags(snippet, "style", nonce)
+	return snippet
+}
+
+func addNonceToOpeningTags(snippet, tagName, nonce string) string {
+	needle := "<" + strings.ToLower(tagName)
+	lower := strings.ToLower(snippet)
+	var out strings.Builder
+	pos := 0
+	for {
+		rel := strings.Index(lower[pos:], needle)
+		if rel < 0 {
+			out.WriteString(snippet[pos:])
+			break
+		}
+		start := pos + rel
+		afterName := start + len(needle)
+		if afterName < len(lower) {
+			next := lower[afterName]
+			if next != '>' && next != ' ' && next != '\t' && next != '\n' && next != '\r' && next != '/' {
+				out.WriteString(snippet[pos:afterName])
+				pos = afterName
+				continue
+			}
+		}
+		endRel := strings.Index(snippet[start:], ">")
+		if endRel < 0 {
+			out.WriteString(snippet[pos:])
+			break
+		}
+		end := start + endRel
+		out.WriteString(snippet[pos:start])
+		tag := snippet[start : end+1]
+		if strings.Contains(strings.ToLower(tag), "nonce") {
+			out.WriteString(tag)
+			pos = end + 1
+			continue
+		}
+		insertAt := end
+		if end > start && snippet[end-1] == '/' {
+			insertAt = end - 1
+		}
+		out.WriteString(snippet[start:insertAt])
+		out.WriteString(` nonce="`)
+		out.WriteString(html.EscapeString(nonce))
+		out.WriteString(`"`)
+		out.WriteString(snippet[insertAt : end+1])
+		pos = end + 1
+	}
+	return out.String()
 }
 
 func injectHostedHTMLCompat(body []byte, routePrefix string) string {
