@@ -1273,7 +1273,7 @@ function AccountPanel({ session, showToast }: { session: SessionInfo; showToast:
     setError("");
     try {
       await api("/api/account/password", {
-        method: "PATCH",
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ oldPassword, newPassword })
       });
@@ -1688,8 +1688,8 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
   }
 
   async function setPassword(site: SiteItem, password: string) {
-    await api(`/api/deploys/${encodeURIComponent(site.code)}/access`, {
-      method: "PATCH",
+    await api(`/api/deploys/${encodeURIComponent(site.code)}/access/set`, {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password })
     });
@@ -1710,7 +1710,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
   async function toggleVisibility(site: SiteItem) {
     const visibility = site.visibility === "unlisted" ? "public" : "unlisted";
     await api(`/api/deploys/${encodeURIComponent(site.code)}/visibility`, {
-      method: "PATCH",
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ visibility })
     });
@@ -1721,7 +1721,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
 
   async function togglePin(site: SiteItem) {
     await api(`/api/admin/sites/${encodeURIComponent(site.code)}/pin`, {
-      method: "PATCH",
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pinned: !site.isPinned })
     });
@@ -1731,7 +1731,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
 
   async function updateReusePolicy(site: SiteItem, reusePolicy: ReusePolicyValue, sourceDownloadPolicy: ReusePolicyValue) {
     const data = await api<{ site: SiteItem }>(`/api/admin/sites/${encodeURIComponent(site.code)}/reuse-policy`, {
-      method: "PATCH",
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reusePolicy, sourceDownloadPolicy })
     });
@@ -1743,7 +1743,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
 
   async function updateSecurityMode(site: SiteItem, securityMode: SecurityModeValue) {
     const data = await api<{ site: SiteItem }>(`/api/admin/sites/${encodeURIComponent(site.code)}/security-mode`, {
-      method: "PATCH",
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ securityMode })
     });
@@ -1755,7 +1755,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
 
   async function updateCategory(site: SiteItem, nextCategory: string) {
     await api(`/api/admin/sites/${encodeURIComponent(site.code)}/category`, {
-      method: "PATCH",
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ category: nextCategory || null })
     });
@@ -1766,7 +1766,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
   async function saveTags() {
     if (!tagEditor) return;
     await api(`/api/admin/sites/${encodeURIComponent(tagEditor.site.code)}/tags`, {
-      method: "PATCH",
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tags: parseAdminTagInput(tagEditor.value) })
     });
@@ -1803,7 +1803,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
     if (!versionCode) return;
     if (action === "current") {
       await api(`/api/deploys/${encodeURIComponent(versionCode)}/current`, {
-        method: "PATCH",
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ versionNumber: version })
       });
@@ -2903,7 +2903,7 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
 
   async function update(user: UserItem) {
     await api(`/api/admin/users/${encodeURIComponent(user.id)}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: user.username, email: user.email || "", emailVerified: Boolean(user.email && user.emailVerified), deployLimit: user.deployLimit, isAdmin: user.isAdmin, isActive: user.isActive })
     });
     showToast("用户已保存");
@@ -3850,7 +3850,7 @@ function ApiDocsPanel({ config }: { config: RuntimeConfig | null }) {
     ["GET", "/api/deploys", "查询创作市场和当前用户内容"],
     ["GET", "/api/deploy/content", "读取或下载源码"],
     ["GET", "/api/deploys/{code}/versions", "查看版本历史"],
-    ["PATCH", "/api/deploys/{code}/current", "切换当前版本"],
+    ["POST", "/api/deploys/{code}/current", "切换当前版本"],
     ["POST", "/api/token", "创建 API Token"],
     ["GET", "/api/screens", "查询当前用户屏幕"],
     ["POST", "/api/screens/{id}/publish", "投放应用到屏幕"]

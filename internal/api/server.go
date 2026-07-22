@@ -463,7 +463,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/deploys/{code}/qr", s.handleQRCode)
 	s.mux.HandleFunc("POST /api/deploys/{code}/access", s.handleSiteAccessLogin)
 	s.mux.HandleFunc("PATCH /api/deploys/{code}/access", s.handleSetSiteAccessPassword)
+	s.mux.HandleFunc("POST /api/deploys/{code}/access/set", s.handleSetSiteAccessPassword)
 	s.mux.HandleFunc("PATCH /api/deploys/{code}/visibility", s.handleSetSiteVisibility)
+	s.mux.HandleFunc("POST /api/deploys/{code}/visibility", s.handleSetSiteVisibility)
 
 	// 屏幕投放：用户侧仅注册用户；设备侧仅 Device Token。
 	s.mux.HandleFunc("GET /api/screens", s.handleListScreens)
@@ -486,12 +488,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/deploys/{code}/versions", s.handleListVersions)
 	s.mux.HandleFunc("POST /api/deploys/{code}/versions/{version}/lock", s.handleLock)
 	s.mux.HandleFunc("PATCH /api/deploys/{code}/current", s.handleSetCurrent)
+	s.mux.HandleFunc("POST /api/deploys/{code}/current", s.handleSetCurrent)
 	s.mux.HandleFunc("PATCH /api/deploys/{code}/versions/{version}", s.handlePatchVersion)
+	s.mux.HandleFunc("POST /api/deploys/{code}/versions/{version}", s.handlePatchVersion)
 	s.mux.HandleFunc("DELETE /api/deploys/{code}/versions/{version}", s.handleDeleteVersion)
 
 	// primary-strategy（OpenAPI）
 	s.mux.HandleFunc("GET /api/deploys/{code}/primary-strategy", s.handleGetPrimaryStrategy)
 	s.mux.HandleFunc("PATCH /api/deploys/{code}/primary-strategy", s.handleSetPrimaryStrategy)
+	s.mux.HandleFunc("POST /api/deploys/{code}/primary-strategy", s.handleSetPrimaryStrategy)
 
 	// 内容读取（含 download=1 zip 模式）+ 兼容 PATCH 追加版本
 	s.mux.HandleFunc("GET /api/deploy/content", s.handleGetContent)
@@ -511,6 +516,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/auth/email-code", s.handleEmailVerificationCode)
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("PATCH /api/account/password", s.handleAccountPassword)
+	s.mux.HandleFunc("POST /api/account/password", s.handleAccountPassword)
 	s.mux.HandleFunc("GET /api/admin/audit-logs", s.handleAdminAuditLogs)
 	s.mux.HandleFunc("GET /api/admin/anonymous-sessions", s.handleAdminAnonymousSessions)
 	s.mux.HandleFunc("GET /api/admin/skill", s.handleAdminGetSkill)
@@ -519,16 +525,22 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/admin/users", s.handleAdminListUsers)
 	s.mux.HandleFunc("POST /api/admin/users", s.handleAdminCreateUser)
 	s.mux.HandleFunc("PATCH /api/admin/users/{id}", s.handleAdminUpdateUser)
+	s.mux.HandleFunc("POST /api/admin/users/{id}", s.handleAdminUpdateUser)
 	s.mux.HandleFunc("DELETE /api/admin/users/{id}", s.handleAdminDeleteUser)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("PUT /api/config", s.handlePutConfig)
 	s.mux.HandleFunc("GET /api/admin/sites", s.handleAdminListSites)
 	s.mux.HandleFunc("GET /api/admin/sites/{code}", s.handleAdminGetSiteDetail)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/pin", s.handleAdminSetSitePin)
+	s.mux.HandleFunc("POST /api/admin/sites/{code}/pin", s.handleAdminSetSitePin)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/reuse-policy", s.handleAdminSetSiteReusePolicy)
+	s.mux.HandleFunc("POST /api/admin/sites/{code}/reuse-policy", s.handleAdminSetSiteReusePolicy)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/security-mode", s.handleAdminSetSiteSecurityMode)
+	s.mux.HandleFunc("POST /api/admin/sites/{code}/security-mode", s.handleAdminSetSiteSecurityMode)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/category", s.handleAdminSetSiteCategory)
+	s.mux.HandleFunc("POST /api/admin/sites/{code}/category", s.handleAdminSetSiteCategory)
 	s.mux.HandleFunc("PATCH /api/admin/sites/{code}/tags", s.handleAdminSetSiteTags)
+	s.mux.HandleFunc("POST /api/admin/sites/{code}/tags", s.handleAdminSetSiteTags)
 	s.mux.HandleFunc("DELETE /api/admin/sites/{code}", s.handleAdminDeleteSite)
 	s.mux.HandleFunc("POST /api/admin/sites/{code}/access/reveal", s.handleAdminRevealSiteAccessPassword)
 

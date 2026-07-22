@@ -1739,7 +1739,7 @@ function MarketDetailViewFull({
     setBusyVersion(version);
     try {
       await api(`/api/deploys/${encodeURIComponent(item.code)}/current`, {
-        method: "PATCH",
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ versionNumber: version })
       });

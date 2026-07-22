@@ -406,6 +406,33 @@ func TestSiteVisibilityFailureRecordsAuditLog(t *testing.T) {
 	}
 }
 
+func TestSiteVisibilityPostAliasRecordsAuditLog(t *testing.T) {
+	srv, token, cleanup := newDevAuthTestServer(t)
+	defer cleanup()
+	stub := &auditSiteVisibilityFailureStub{err: store.ErrNotFound}
+	srv.deployer = stub
+
+	req := httptest.NewRequest(http.MethodPost, "/api/deploys/demo/visibility", strings.NewReader(`{
+		"visibility":"public"
+	}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusNotFound)
+	}
+	if len(stub.auditLogs) != 1 {
+		t.Fatalf("audit logs = %#v; want one failed site.visibility log", stub.auditLogs)
+	}
+	log := stub.auditLogs[0]
+	if log.Action != "site.visibility" || log.Result != "failed" || log.SiteCode != "demo" {
+		t.Fatalf("audit log = %+v; want failed visibility log for demo", log)
+	}
+}
+
 func TestVersionAndSiteDeleteFailuresRecordAuditLog(t *testing.T) {
 	cases := []struct {
 		name           string
