@@ -37,6 +37,8 @@ import (
 	"github.com/yourorg/hostctl/internal/client"
 )
 
+const defaultServer = "https://pagepilot.dell.4dbim.cc:1143/"
+
 // JSON-RPC 类型
 type rpcReq struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -88,7 +90,7 @@ func main() {
 		server = firstEnv("PAGEPILOT_SERVER", "HOSTCTL_SERVER")
 	}
 	if server == "" {
-		server = "http://localhost:8787"
+		server = defaultServer
 	}
 	token := strings.TrimSpace(*tokenFlag)
 	if token == "" {

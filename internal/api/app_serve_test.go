@@ -161,6 +161,45 @@ func TestAppServeHTMLInjectsAppSnippets(t *testing.T) {
 	}
 }
 
+func TestAppServeHTMLPreviewSkipsAppSnippets(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.cfg.ContentInjection.App = config.InjectionTargetConfig{
+		Enabled:       true,
+		HeadCode:      `<script src="https://analytics.example.com/sdk.js"></script>`,
+		BodyStartCode: `<aside id="pp-app-start"></aside>`,
+		BodyEndCode:   `<script>window.__ppAppInjected = true;</script>`,
+	}
+	srv.deployer = &appServeDeployerStub{
+		site:     store.Site{Code: "demo"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "demo"),
+	}
+	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "index.html"), []byte("<!doctype html><html><head><title>Demo</title></head><body><main>demo</main></body></html>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/demo/?preview=1", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	for _, unwanted := range []string{
+		`https://analytics.example.com/sdk.js`,
+		`pp-app-start`,
+		`window.__ppAppInjected`,
+	} {
+		if strings.Contains(rr.Body.String(), unwanted) {
+			t.Fatalf("preview response unexpectedly contains injected snippet %q", unwanted)
+		}
+	}
+}
+
 func TestAppServeEmbedPolicyAddsFrameAncestors(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
@@ -452,6 +491,65 @@ func TestAppServeMarkdownInjectsAppSnippetsWithNonce(t *testing.T) {
 		!strings.Contains(csp, "connect-src 'self' https: http: wss: ws:") {
 		t.Fatalf("Markdown CSP with app injection = %q, want nonce and external reporting support", csp)
 	}
+}
+
+func TestAppServeMarkdownPreviewSkipsAppSnippets(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.cfg.ContentInjection.App = config.InjectionTargetConfig{
+		Enabled:     true,
+		HeadCode:    `<script src="https://analytics.example.com/sdk.js"></script><style>.pp-injected{display:block}</style>`,
+		BodyEndCode: `<script>window.__ppMarkdownInjected = true;</script>`,
+	}
+	srv.deployer = &appServeDeployerStub{
+		site:     store.Site{Code: "docs"},
+		siteRoot: filepath.Join(srv.cfg.HostedDir, "docs"),
+	}
+	currentDir := filepath.Join(srv.cfg.HostedDir, "docs", "current")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "README.md"), []byte("# Docs"), 0o644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/docs/README.md?preview=1", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, unwanted := range []string{
+		`https://analytics.example.com/sdk.js`,
+		`pp-injected`,
+		`window.__ppMarkdownInjected`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("preview markdown unexpectedly contains injected snippet %q:\n%s", unwanted, body)
+		}
+	}
+	csp := rr.Header().Get("Content-Security-Policy")
+	scriptSrc := cspDirective(csp, "script-src")
+	connectSrc := cspDirective(csp, "connect-src")
+	if strings.Contains(scriptSrc, "https:") || strings.Contains(scriptSrc, "http:") {
+		t.Fatalf("preview markdown CSP unexpectedly allows external injection targets: %q", csp)
+	}
+	if strings.Contains(connectSrc, "https:") || strings.Contains(connectSrc, "http:") ||
+		strings.Contains(connectSrc, "wss:") || strings.Contains(connectSrc, "ws:") {
+		t.Fatalf("preview markdown CSP unexpectedly allows external injection connections: %q", csp)
+	}
+}
+
+func cspDirective(csp, name string) string {
+	for _, part := range strings.Split(csp, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, name+" ") || part == name {
+			return part
+		}
+	}
+	return ""
 }
 
 func TestMarkdownAssetsAreServedFromSameOrigin(t *testing.T) {

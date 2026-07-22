@@ -44,7 +44,7 @@ def state_file(new_env: str, old_env: str, filename: str) -> pathlib.Path:
     return new_path
 
 
-FALLBACK_SERVER = "http://localhost:8787"
+FALLBACK_SERVER = "https://pagepilot.dell.4dbim.cc:1143/"
 SESSION_FILE = state_file("PAGEPILOT_SESSION_FILE", "HOSTCTL_SESSION_FILE", "session.json")
 CONFIG_FILE = state_file("PAGEPILOT_CONFIG_FILE", "HOSTCTL_CONFIG_FILE", "config.json")
 PROJECTS_FILE = state_file("PAGEPILOT_PROJECTS_FILE", "HOSTCTL_PROJECTS_FILE", "projects.json")
@@ -1242,7 +1242,7 @@ def cmd_screen_screenshot(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deploy and manage PagePilot static apps")
-    parser.add_argument("--server", help="PagePilot server URL (default: saved config, $PAGEPILOT_SERVER, or http://localhost:8787)")
+    parser.add_argument("--server", help="PagePilot server URL (default: saved config, $PAGEPILOT_SERVER, or https://pagepilot.dell.4dbim.cc:1143/)")
     parser.add_argument("--token", help="bearer token (default: saved config or $PAGEPILOT_TOKEN)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

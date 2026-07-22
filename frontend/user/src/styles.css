@@ -7981,6 +7981,12 @@ body::before,
   outline: none;
 }
 
+.market-icon-action:disabled {
+  cursor: progress;
+  opacity: 0.76;
+  transform: none;
+}
+
 .market-icon-action.active {
   border-color: #f59e0b;
   color: #f59e0b;

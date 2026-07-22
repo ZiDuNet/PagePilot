@@ -1073,7 +1073,7 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<SortMode>("hot");
+  const [sort, setSort] = useState<SortMode>("newest");
   const [category, setCategory] = useState<MarketCategory>("all");
   const [kind, setKind] = useState<MarketKind>("all");
   const [marketCategories, setMarketCategories] = useState<MarketCategoryInfo[]>([]);
@@ -1103,8 +1103,8 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
     { key: "favorites", label: "我的收藏", note: "账号或浏览器收藏", icon: <Bookmark /> }
   ];
   const sortTabs: Array<{ key: SortMode; label: string }> = [
-    { key: "hot", label: "热门优先" },
     { key: "newest", label: "最新发布" },
+    { key: "hot", label: "热门优先" },
     { key: "featured", label: "精选优先" }
   ];
   const selectedCategoryLabel = categories.find((item) => item.key === category)?.label || "全部分类";
@@ -1343,8 +1343,8 @@ function MarketPage({ config, session }: { config: RuntimeConfig | null; session
                     setSort(event.target.value as SortMode);
                   }}
                 >
-                  <option value="hot">热门优先</option>
                   <option value="newest">最新发布</option>
+                  <option value="hot">热门优先</option>
                   <option value="featured">精选优先</option>
                   <option value="likes_desc">点赞最多</option>
                   <option value="views_desc">访问最多</option>
@@ -1508,12 +1508,36 @@ function MarketplaceCard({
     };
   }, [appURL, isLocked, previewIndex]);
 
+  const [likeCount, setLikeCount] = useState(item.likeCount || 0);
+  const [likedOnce, setLikedOnce] = useState(false);
+  const [liking, setLiking] = useState(false);
+
+  useEffect(() => {
+    setLikeCount(item.likeCount || 0);
+  }, [item.likeCount]);
+
   const like = async () => {
+    if (likedOnce) {
+      showToast("已经点赞过了");
+      return;
+    }
+    const previousCount = likeCount;
+    setLiking(true);
+    setLikedOnce(true);
+    setLikeCount(previousCount + 1);
     try {
-      await api(`/api/deploys/${encodeURIComponent(item.code)}/like`, { method: "POST" });
+      const data = await api<{ likeCount?: number }>(`/api/deploys/${encodeURIComponent(item.code)}/like`, { method: "POST" });
+      if (typeof data.likeCount === "number") {
+        setLikeCount(data.likeCount);
+      }
+      showToast("已点赞");
       onChanged();
     } catch {
-      // 点赞失败不打断浏览。
+      setLikedOnce(false);
+      setLikeCount(previousCount);
+      showToast("点赞失败，请稍后再试");
+    } finally {
+      setLiking(false);
     }
   };
 
@@ -1587,8 +1611,15 @@ function MarketplaceCard({
           </div>
         )}
         <div className="market-card-top-actions" aria-label="作品快捷操作">
-          <button className="market-icon-action" type="button" title="点赞" aria-label="点赞" onClick={like}>
-            <Heart size={16} />
+          <button
+            className={`market-icon-action ${likedOnce ? "active" : ""}`}
+            type="button"
+            title={likedOnce ? "已点赞" : "点赞"}
+            aria-label={likedOnce ? "已点赞" : "点赞"}
+            disabled={liking}
+            onClick={like}
+          >
+            <Heart size={16} fill={likedOnce ? "currentColor" : "none"} />
           </button>
           <button
             className={`market-icon-action ${item.favorited ? "active" : ""}`}
@@ -1619,6 +1650,7 @@ function MarketplaceCard({
       </div>
       <div className="card-body">
         <div className="market-card-tags compact">
+          {heat && <span className={`ct-heat ${heat.level}`}>{heat.label}</span>}
           <span className="scene">{marketCategoryLabel(item.category)}</span>
           {item.isPinned && <span className="featured">精选</span>}
           <span className="type">{marketFileType(item)}</span>
@@ -1627,7 +1659,6 @@ function MarketplaceCard({
           <div className="title-wrap">
             <h3>{title}</h3>
           </div>
-          {heat && <span className={`ct-heat ${heat.level}`}>{heat.label}</span>}
         </div>
         <p>{item.description || "这个作品还没有描述。"}</p>
         <div className="market-card-tags user-tags">
@@ -1639,7 +1670,7 @@ function MarketplaceCard({
         </div>
         <div className="market-card-stats" aria-label="作品数据">
           <span title="访问量"><Eye size={13} /><strong>{compactNumber(item.viewCount || 0)}</strong></span>
-          <span title="点赞数"><Heart size={13} /><strong>{compactNumber(item.likeCount || 0)}</strong></span>
+          <span title="点赞数"><Heart size={13} /><strong>{compactNumber(likeCount)}</strong></span>
           <span title="收藏数"><Bookmark size={13} /><strong>{compactNumber(item.favoriteCount || 0)}</strong></span>
           <span title="复用次数"><Workflow size={13} /><strong>{compactNumber(item.reuseCount || 0)}</strong></span>
           <span title="版本数"><Layers size={13} /><strong>v{item.versionCount || 1}</strong></span>

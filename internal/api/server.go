@@ -6146,15 +6146,18 @@ func (s *Server) effectiveSecurityModeForServe(ctx context.Context, code string,
 func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code string, versionPtr *int64, sub string, body []byte, modTime time.Time, routePrefix string, securityMode string) {
 	setHostedContentCORSHeaders(w, r)
 	lowerSub := strings.ToLower(sub)
+	injectAppSnippets := !hostedPreviewRequest(r)
 	if strings.HasSuffix(lowerSub, ".md") || strings.HasSuffix(lowerSub, ".markdown") {
 		nonce := markdownCSPNonce()
 		theme := render.NormalizeMarkdownTheme(r.URL.Query().Get("theme"))
-		s.setHostedMarkdownSecurityHeaders(w, nonce, injectionTargetHasContent(s.cfg.ContentInjection.App))
+		s.setHostedMarkdownSecurityHeaders(w, nonce, injectAppSnippets && injectionTargetHasContent(s.cfg.ContentInjection.App))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		rendered := s.renderHostedMarkdown(r.Context(), code, versionPtr, sub, body, theme)
 		rendered = render.ApplyMarkdownNonce(rendered, nonce)
-		rendered = injectHTMLSnippets(rendered, s.appHTMLInjectionSnippets(nonce))
+		if injectAppSnippets {
+			rendered = injectHTMLSnippets(rendered, s.appHTMLInjectionSnippets(nonce))
+		}
 		_, _ = io.WriteString(w, rendered)
 		return
 	}
@@ -6165,8 +6168,15 @@ func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code st
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	html := injectHostedHTMLCompat(body, routePrefix)
-	html = injectHTMLSnippets(html, s.appHTMLInjectionSnippets(""))
+	if injectAppSnippets {
+		html = injectHTMLSnippets(html, s.appHTMLInjectionSnippets(""))
+	}
 	http.ServeContent(w, r, filepath.Base(sub), modTime, strings.NewReader(html))
+}
+
+func hostedPreviewRequest(r *http.Request) bool {
+	v := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("preview")))
+	return v == "1" || v == "true" || v == "yes"
 }
 
 func hostedSubPathSafe(path string) bool {

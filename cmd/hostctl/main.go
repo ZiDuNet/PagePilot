@@ -33,6 +33,8 @@ var (
 	flagNoColor bool
 )
 
+const defaultServer = "https://pagepilot.dell.4dbim.cc:1143/"
+
 // 配置文件路径
 func configPath() string {
 	home, err := os.UserHomeDir()
@@ -99,7 +101,7 @@ func buildClient() *client.Client {
 		flagServer = firstEnv("PAGEPILOT_SERVER", "HOSTCTL_SERVER")
 	}
 	if flagServer == "" {
-		flagServer = "http://localhost:8787"
+		flagServer = defaultServer
 	}
 	if flagToken == "" {
 		flagToken = cfg["token"]

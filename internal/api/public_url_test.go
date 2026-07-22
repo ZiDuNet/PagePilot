@@ -164,7 +164,7 @@ func TestSkillDownloadReturnsManagedZipWithoutRuntimeInjection(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
 	want := makeTestSkillZip(t, map[string]string{
-		"pagep/scripts/pagep.py": `DEFAULT_SERVER = os.environ.get("PAGEPILOT_SERVER", "http://localhost:8787")`,
+		"pagep/scripts/pagep.py": `DEFAULT_SERVER = os.environ.get("PAGEPILOT_SERVER", "https://pagepilot.dell.4dbim.cc:1143/")`,
 	})
 	writeManagedSkillZip(t, srv, want)
 
