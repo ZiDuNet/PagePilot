@@ -126,7 +126,7 @@ func (o *ossStorage) canonicalizedResource(key string, query url.Values) string 
 	}
 	keys := make([]string, 0, len(query))
 	for name := range query {
-		if name != "" {
+		if isOSSSignedSubresource(name) {
 			keys = append(keys, name)
 		}
 	}
@@ -144,6 +144,19 @@ func (o *ossStorage) canonicalizedResource(key string, query url.Values) string 
 		return resource
 	}
 	return resource + "?" + strings.Join(parts, "&")
+}
+
+func isOSSSignedSubresource(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "acl", "uploads", "location", "cors", "logging", "website", "referer",
+		"lifecycle", "delete", "append", "tagging", "taggings", "objectmeta",
+		"uploadid", "partnumber", "security-token", "position", "img", "style",
+		"stylename", "replication", "encryption", "versions", "versioning",
+		"versionid", "requestpayment", "x-oss-process":
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *ossStorage) put(ctx context.Context, key string, body []byte, contentType string) error {
