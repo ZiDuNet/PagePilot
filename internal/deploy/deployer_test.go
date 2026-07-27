@@ -53,6 +53,14 @@ func TestAnonymousDeployForcesUnlistedEvenWhenPublicRequested(t *testing.T) {
 	if site.Visibility != "unlisted" {
 		t.Fatalf("Visibility = %q; want unlisted", site.Visibility)
 	}
+	version, err := st.GetVersion(context.Background(), resp.Code, 1)
+	if err != nil {
+		t.Fatalf("get version: %v", err)
+	}
+	if version.StorageBackend != "local" || version.StoragePrefix != filepath.ToSlash(filepath.Join(resp.Code, "versions", "1")) {
+		t.Fatalf("version storage = %s %q; want local code/versions/1",
+			version.StorageBackend, version.StoragePrefix)
+	}
 
 	_, total, err := st.ListMarketplaceDeploys(context.Background(), "", "", "likes_desc", "", "", "", "", 1, 10)
 	if err != nil {

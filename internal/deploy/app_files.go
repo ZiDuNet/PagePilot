@@ -33,34 +33,63 @@ func (d *Deployer) ReadAppFile(ctx context.Context, code string, versionPtr *int
 	} else {
 		return nil, time.Time{}, api.NewError(api.CodeNotFound, "no_current", fmt.Sprintf("code %q has no active version", code))
 	}
-	if _, err := d.store.GetVersion(ctx, code, version); err != nil {
+	v, err := d.store.GetVersion(ctx, code, version)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, time.Time{}, api.NewError(api.CodeNotFound, "load_version", fmt.Sprintf("version %d of %q not found", version, code))
 		}
 		return nil, time.Time{}, api.NewError(api.CodeInternal, "load_version", err.Error())
 	}
-	if d.useOSS() {
-		oss := newOSSStorage(d.cfg)
-		data, modTime, err := oss.get(ctx, oss.versionObjectKey(code, version, path))
-		if err != nil {
-			if errors.Is(err, errFileNotFound) {
-				return nil, time.Time{}, api.NewError(api.CodeNotFound, "read_file", "file not found")
-			}
-			return nil, time.Time{}, api.NewError(api.CodeInternal, "read_file", err.Error())
+	data, modTime, err := d.readVersionFile(ctx, v, path)
+	if err != nil {
+		if errors.Is(err, errFileNotFound) {
+			return nil, time.Time{}, api.NewError(api.CodeNotFound, "read_file", "file not found")
 		}
-		return data, modTime, nil
+		return nil, time.Time{}, api.NewError(api.CodeInternal, "read_file", err.Error())
 	}
-	versionDir := d.versionDir(code, version)
+	return data, modTime, nil
+}
+
+// readVersionFile 统一读取版本文件。OSS 模式只在对象不存在时回退本地旧目录，
+// 这样从本地存储平滑切到 OSS 时，历史发布不会立刻 404。
+func (d *Deployer) readVersionFile(ctx context.Context, v store.Version, path string) ([]byte, time.Time, error) {
+	storage := d.versionStorage(v)
+	if storage.Backend == "oss" {
+		oss := newOSSStorage(d.cfg)
+		data, modTime, err := oss.get(ctx, storage.ossObjectKey(path))
+		if err == nil {
+			return data, modTime, nil
+		}
+		if !errors.Is(err, errFileNotFound) {
+			return nil, time.Time{}, err
+		}
+		return d.readDefaultLocalVersionFile(v, path)
+	}
+	return d.readLocalVersionFile(v, path)
+}
+
+func (d *Deployer) readDefaultLocalVersionFile(v store.Version, path string) ([]byte, time.Time, error) {
+	localVersion := v
+	localVersion.StorageBackend = "local"
+	localVersion.StoragePrefix = ""
+	return d.readLocalVersionFile(localVersion, path)
+}
+
+func (d *Deployer) readLocalVersionFile(v store.Version, path string) ([]byte, time.Time, error) {
+	versionDir, err := d.localVersionDir(d.versionStorage(v), v.SiteCode, v.VersionNumber)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
 	full := filepath.Join(versionDir, path)
 	if err := ensureWithin(versionDir, full); err != nil {
-		return nil, time.Time{}, api.NewError(api.CodeNotFound, "file_path", "file not found")
+		return nil, time.Time{}, err
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, time.Time{}, api.NewError(api.CodeNotFound, "read_file", "file not found")
+			return nil, time.Time{}, errFileNotFound
 		}
-		return nil, time.Time{}, api.NewError(api.CodeInternal, "read_file", err.Error())
+		return nil, time.Time{}, err
 	}
 	modTime := time.Time{}
 	if st, statErr := os.Stat(full); statErr == nil {

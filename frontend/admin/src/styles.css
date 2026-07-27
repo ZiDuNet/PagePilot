@@ -372,6 +372,31 @@ th, td {
 }
 th { color: var(--muted); font-size: 12px; font-weight: 900; background: #f8fafc; }
 td small { color: var(--muted); }
+.site-name-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 150px;
+  max-width: 260px;
+}
+.site-name-cell strong,
+.site-name-cell small,
+.owner-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.site-name-cell strong {
+  color: var(--muted-strong);
+  font-weight: 900;
+}
+.site-name-cell small {
+  display: block;
+  font-size: 11px;
+}
+.owner-cell {
+  display: inline-block;
+  max-width: 180px;
+}
 .toolbar {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) repeat(auto-fit, minmax(128px, max-content));

@@ -73,6 +73,10 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate versions template: %w", err)
 	}
+	if err := migrateVersionsAddStorageColumns(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate versions storage: %w", err)
+	}
 	if err := migrateAdminUsersAddPolicyColumns(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate admin users policy: %w", err)
@@ -291,6 +295,27 @@ func migrateVersionsAddTemplateColumns(db *sql.DB) error {
 		if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
 			return fmt.Errorf("alter versions add %s: %w", c.name, err)
 		}
+	}
+	return nil
+}
+
+func migrateVersionsAddStorageColumns(db *sql.DB) error {
+	cols := []struct {
+		name string
+		ddl  string
+	}{
+		{"storage_backend", "TEXT NOT NULL DEFAULT 'local'"},
+		{"storage_prefix", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, c := range cols {
+		_, err := db.Exec(fmt.Sprintf(`ALTER TABLE versions ADD COLUMN %s %s`, c.name, c.ddl))
+		if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
+			return fmt.Errorf("alter versions add %s: %w", c.name, err)
+		}
+	}
+	_, err := db.Exec(`UPDATE versions SET storage_backend = 'local' WHERE storage_backend IS NULL OR TRIM(storage_backend) = ''`)
+	if err != nil && !contains(err.Error(), "no such table") {
+		return fmt.Errorf("backfill versions storage backend: %w", err)
 	}
 	return nil
 }
@@ -594,10 +619,12 @@ func (s *SQLiteStore) CreateVersion(ctx context.Context, v Version) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO versions
 		  (id, site_code, version_number, title, description, main_entry,
-		   total_size, file_count, content_sha256, template_source_code, template_source_version, is_locked, status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   total_size, file_count, content_sha256, template_source_code, template_source_version,
+		   storage_backend, storage_prefix, is_locked, status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, v.ID, v.SiteCode, v.VersionNumber, nullString(v.Title), v.Description, v.MainEntry,
-		v.TotalSize, v.FileCount, v.ContentSha256, strings.TrimSpace(v.TemplateSourceCode), templateSourceVersion, v.IsLocked, v.Status, v.CreatedAt.UTC())
+		v.TotalSize, v.FileCount, v.ContentSha256, strings.TrimSpace(v.TemplateSourceCode), templateSourceVersion,
+		normalizeVersionStorageBackend(v.StorageBackend), strings.TrimSpace(v.StoragePrefix), v.IsLocked, v.Status, v.CreatedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("insert version: %w", err)
 	}
@@ -622,7 +649,8 @@ func (s *SQLiteStore) MaxVersionNumber(ctx context.Context, code string) (int64,
 func (s *SQLiteStore) ListVersions(ctx context.Context, code string) ([]Version, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, site_code, version_number, title, description, main_entry,
-		       total_size, file_count, content_sha256, COALESCE(template_source_code, ''), template_source_version, is_locked, status, created_at
+		       total_size, file_count, content_sha256, COALESCE(template_source_code, ''), template_source_version,
+		       COALESCE(storage_backend, 'local'), COALESCE(storage_prefix, ''), is_locked, status, created_at
 		FROM versions WHERE site_code = ?
 		ORDER BY version_number ASC
 	`, code)
@@ -776,7 +804,8 @@ func (s *SQLiteStore) CreateFiles(ctx context.Context, files []FileMeta) error {
 func (s *SQLiteStore) GetVersion(ctx context.Context, code string, version int64) (Version, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, site_code, version_number, title, description, main_entry,
-		       total_size, file_count, content_sha256, COALESCE(template_source_code, ''), template_source_version, is_locked, status, created_at
+		       total_size, file_count, content_sha256, COALESCE(template_source_code, ''), template_source_version,
+		       COALESCE(storage_backend, 'local'), COALESCE(storage_prefix, ''), is_locked, status, created_at
 		FROM versions WHERE site_code = ? AND version_number = ?
 	`, code, version)
 	var v Version
@@ -793,7 +822,8 @@ func (s *SQLiteStore) GetVersion(ctx context.Context, code string, version int64
 func (s *SQLiteStore) GetVersionByUUID(ctx context.Context, id string) (Version, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, site_code, version_number, title, description, main_entry,
-		       total_size, file_count, content_sha256, COALESCE(template_source_code, ''), template_source_version, is_locked, status, created_at
+		       total_size, file_count, content_sha256, COALESCE(template_source_code, ''), template_source_version,
+		       COALESCE(storage_backend, 'local'), COALESCE(storage_prefix, ''), is_locked, status, created_at
 		FROM versions WHERE id = ?
 	`, id)
 	var v Version
@@ -844,10 +874,12 @@ func (s *SQLiteStore) UpdateVersionContent(ctx context.Context, code string, ver
 	res, err := tx.ExecContext(ctx, `
 		UPDATE versions
 		SET title = ?, description = ?, main_entry = ?,
-		    total_size = ?, file_count = ?, content_sha256 = ?
+		    total_size = ?, file_count = ?, content_sha256 = ?,
+		    storage_backend = ?, storage_prefix = ?
 		WHERE site_code = ? AND version_number = ?
 	`, nullString(meta.Title), meta.Description, meta.MainEntry,
 		meta.TotalSize, meta.FileCount, meta.ContentSha256,
+		normalizeVersionStorageBackend(meta.StorageBackend), strings.TrimSpace(meta.StoragePrefix),
 		code, version)
 	if err != nil {
 		return fmt.Errorf("update version row: %w", err)
@@ -1008,7 +1040,8 @@ func scanVersion(sc scanner, v *Version) error {
 	var templateSourceVersion sql.NullInt64
 	err := sc.Scan(
 		&v.ID, &v.SiteCode, &v.VersionNumber, &title, &v.Description, &v.MainEntry,
-		&v.TotalSize, &v.FileCount, &v.ContentSha256, &v.TemplateSourceCode, &templateSourceVersion, &v.IsLocked, &v.Status, &v.CreatedAt,
+		&v.TotalSize, &v.FileCount, &v.ContentSha256, &v.TemplateSourceCode, &templateSourceVersion,
+		&v.StorageBackend, &v.StoragePrefix, &v.IsLocked, &v.Status, &v.CreatedAt,
 	)
 	if err != nil {
 		return err
@@ -1022,8 +1055,19 @@ func scanVersion(sc scanner, v *Version) error {
 		version := templateSourceVersion.Int64
 		v.TemplateSourceVersion = &version
 	}
+	v.StorageBackend = normalizeVersionStorageBackend(v.StorageBackend)
+	v.StoragePrefix = strings.TrimSpace(v.StoragePrefix)
 	v.CreatedAt = v.CreatedAt.Local()
 	return nil
+}
+
+func normalizeVersionStorageBackend(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "oss":
+		return "oss"
+	default:
+		return "local"
+	}
 }
 
 // 辅助：将空字符串转 NULL

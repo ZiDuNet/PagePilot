@@ -765,6 +765,23 @@ function siteURL(code: string) {
   return `/agent/${encodeURIComponent(code)}/`;
 }
 
+function siteDisplayName(site: SiteItem) {
+  return (site.title || "").trim() || (site.filename || "").trim() || site.code;
+}
+
+function siteOwnerLabel(site: SiteItem) {
+  const owner = (site.ownerTokenId || "").trim();
+  if (owner.startsWith("anon:")) return "匿名";
+  return site.ownerUsername || owner || "-";
+}
+
+function siteOwnerTitle(site: SiteItem) {
+  const owner = (site.ownerTokenId || "").trim();
+  if (owner.startsWith("anon:")) return owner;
+  if (site.ownerUsername && owner) return `${site.ownerUsername} (${owner})`;
+  return site.ownerUsername || owner || "";
+}
+
 function securityModeLabel(mode?: string) {
   if (mode === "strict") return "严格";
   if (mode === "trusted") return "受信任";
@@ -1655,6 +1672,8 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
     const tagText = (site.tags || []).join(" ").toLowerCase();
     const hit = !text
       || site.code.toLowerCase().includes(text)
+      || (site.title || "").toLowerCase().includes(text)
+      || (site.description || "").toLowerCase().includes(text)
       || (site.ownerUsername || "").toLowerCase().includes(text)
       || (site.ownerTokenId || "").toLowerCase().includes(text)
       || (site.filename || "").toLowerCase().includes(text)
@@ -1832,7 +1851,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
           <span>/ {sites.length} 个应用</span>
           {hasActiveFilters && <em>已启用筛选</em>}
         </div>
-        <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 code、owner、标签" /></label>
+        <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、code、owner、标签" /></label>
         <div className="filter-row">
           <select value={status} onChange={(event) => setStatus(event.target.value)} title="状态"><option value="">全部状态</option><option value="active">运行中</option><option value="inactive">已下架</option></select>
           <select value={visibility} onChange={(event) => setVisibility(event.target.value)} title="可见性"><option value="">全部可见性</option><option value="public">公开</option><option value="unlisted">未公开</option></select>
@@ -1857,12 +1876,18 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
       {viewMode === "list" ? (
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Code</th><th>归属</th><th>分类 / 标签</th><th>状态</th><th>版本</th><th>数据</th><th>大小</th><th>修改</th><th>操作</th></tr></thead>
+          <thead><tr><th>Code</th><th>名称</th><th>归属</th><th>分类 / 标签</th><th>状态</th><th>版本</th><th>数据</th><th>大小</th><th>修改</th><th>操作</th></tr></thead>
           <tbody>
             {filtered.map((site) => (
               <tr key={site.code}>
                 <td><code>{site.code}</code></td>
-                <td>{site.ownerUsername || site.ownerTokenId || "-"}</td>
+                <td>
+                  <div className="site-name-cell" title={site.description || siteDisplayName(site)}>
+                    <strong>{siteDisplayName(site)}</strong>
+                    {site.filename && site.filename !== siteDisplayName(site) && <small>{site.filename}</small>}
+                  </div>
+                </td>
+                <td><span className="owner-cell" title={siteOwnerTitle(site)}>{siteOwnerLabel(site)}</span></td>
                 <td>
                   {isAdmin ? (
                     <select className="compact-select" value={site.category || ""} onChange={(event) => void updateCategory(site, event.target.value)}>
@@ -1896,7 +1921,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                 </td>
               </tr>
             ))}
-            {!filtered.length && <tr><td colSpan={9}>暂无应用。</td></tr>}
+            {!filtered.length && <tr><td colSpan={10}>暂无应用。</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1906,7 +1931,11 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
             <article className="site-render-card" key={site.code}>
               <div className="site-thumb"><iframe title={`${site.code} 预览`} src={`${siteURL(site.code)}?preview=1`} sandbox={PREVIEW_IFRAME_SANDBOX} /></div>
               <div className="site-render-body">
-                <div><strong>{site.code}</strong><span>{site.ownerUsername || site.ownerTokenId || "-"}</span></div>
+                <div>
+                  <strong>{siteDisplayName(site)}</strong>
+                  <span title={siteOwnerTitle(site)}>{siteOwnerLabel(site)}</span>
+                </div>
+                <p><code>{site.code}</code>{site.filename ? ` · ${site.filename}` : ""}</p>
                 <p>{categories.find((item) => item.slug === site.category)?.label || site.category || "未分类"} · {site.viewCount || 0} 访 · {site.likeCount || 0} 赞 · {site.favoriteCount || 0} 藏</p>
                 <div className="tag-row editable">
                   {(site.tags || []).slice(0, 5).map((tag) => <span key={tag}>#{tag}</span>)}

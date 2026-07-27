@@ -818,6 +818,10 @@ func TestSQLiteMigrationPreservesProductionLikeLegacyData(t *testing.T) {
 		version.Title != "旧站点" || version.Description != "旧版本描述" {
 		t.Fatalf("migrated version = %+v; want old metadata preserved and template defaults", version)
 	}
+	if version.StorageBackend != "local" || version.StoragePrefix != "" {
+		t.Fatalf("migrated version storage = %s %q; want local with empty legacy prefix",
+			version.StorageBackend, version.StoragePrefix)
+	}
 	files, err := store.ListFiles(ctx, "legacy-demo", 1)
 	if err != nil {
 		t.Fatalf("list migrated files: %v", err)

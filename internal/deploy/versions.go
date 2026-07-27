@@ -40,6 +40,8 @@ func (d *Deployer) ListVersions(ctx context.Context, code string) (*api.ListVers
 			FileCount:             v.FileCount,
 			TemplateSourceCode:    v.TemplateSourceCode,
 			TemplateSourceVersion: int64Value(v.TemplateSourceVersion),
+			StorageBackend:        v.StorageBackend,
+			StoragePrefix:         v.StoragePrefix,
 			IsLocked:              v.IsLocked,
 			IsCurrent:             isCurrent,
 			Status:                v.Status,
@@ -102,7 +104,7 @@ func (d *Deployer) SwitchCurrent(ctx context.Context, code string, version int64
 	if err := d.store.SetCurrentVersion(ctx, code, &version); err != nil {
 		return nil, api.NewError(api.CodeInternal, "set_current", err.Error())
 	}
-	if err := d.swapCurrentSymlink(code, version); err != nil {
+	if err := d.swapCurrentPointerForStorage(code, version, d.versionStorage(v)); err != nil {
 		// 回滚 DB 状态
 		_ = d.store.SetCurrentVersion(ctx, code, site.CurrentVersion)
 		return nil, api.NewError(api.CodeInternal, "swap_symlink",
@@ -183,16 +185,27 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 	}
 
 	// 删除旧文件 + 写新文件
-	if d.useOSS() {
-		if err := d.deleteVersionFiles(ctx, code, version); err != nil {
+	storage := d.versionStorage(v)
+	if storage.Backend == "oss" {
+		if err := d.deleteVersionFilesForStorage(ctx, code, version, storage); err != nil {
 			return nil, api.NewError(api.CodeInternal, "delete_old_files", err.Error())
 		}
-		if err := d.writeFiles(ctx, code, version, rfiles); err != nil {
+		if err := d.writeFilesToStorage(ctx, code, version, storage, rfiles); err != nil {
 			return nil, api.NewError(api.CodeInternal, "write_files", err.Error())
 		}
 	} else {
-		oldDir := d.versionDir(code, version)
-		tmpDir := d.versionDir(code, -1*version)
+		oldDir, err := d.localVersionDir(storage, code, version)
+		if err != nil {
+			return nil, api.NewError(api.CodeInternal, "storage_path", err.Error())
+		}
+		tmpStorage := versionStorage{
+			Backend: "local",
+			Prefix:  filepath.ToSlash(filepath.Join(code, "versions", fmt.Sprintf("tmp-%d-%s", version, randomSuffix()))),
+		}
+		tmpDir, err := d.localVersionDir(tmpStorage, code, version)
+		if err != nil {
+			return nil, api.NewError(api.CodeInternal, "tmp_storage_path", err.Error())
+		}
 		_ = os.RemoveAll(tmpDir)
 		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 			return nil, api.NewError(api.CodeInternal, "mkdir_tmp", err.Error())
@@ -221,12 +234,14 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 	}
 
 	if err := d.store.UpdateVersionContent(ctx, code, version, store.Version{
-		Title:         sanitizeSiteTitle(req.Title),
-		Description:   desc,
-		MainEntry:     mainEntry,
-		TotalSize:     totalSize,
-		FileCount:     len(rfiles),
-		ContentSha256: aggregateSha,
+		Title:          sanitizeSiteTitle(req.Title),
+		Description:    desc,
+		MainEntry:      mainEntry,
+		TotalSize:      totalSize,
+		FileCount:      len(rfiles),
+		ContentSha256:  aggregateSha,
+		StorageBackend: storage.Backend,
+		StoragePrefix:  storage.Prefix,
 	}, toFileMetas(code, version, rfiles)); err != nil {
 		return nil, api.NewError(api.CodeInternal, "update_version", err.Error())
 	}
@@ -237,7 +252,7 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 	// 如果是当前版本，重新切 symlink（指向同一个目录路径，但内容变了）
 	site, err := d.store.GetSite(ctx, code)
 	if err == nil && site.CurrentVersion != nil && *site.CurrentVersion == version {
-		_ = d.swapCurrentSymlink(code, version)
+		_ = d.swapCurrentPointerForStorage(code, version, storage)
 	}
 
 	// 拼响应
@@ -306,7 +321,7 @@ func (d *Deployer) DeleteVersion(ctx context.Context, code string, version int64
 
 	// 删磁盘文件（用 .del 后缀再异步清理，避免 race；这里同步删简化）
 	go func() {
-		_ = d.deleteVersionFiles(context.Background(), code, version)
+		_ = d.deleteVersionFilesForStorage(context.Background(), code, version, d.versionStorage(v))
 	}()
 
 	// 如果删的是当前版本，找一个 active 版本顶上
@@ -327,7 +342,9 @@ func (d *Deployer) DeleteVersion(ctx context.Context, code string, version int64
 		}
 		_ = d.store.SetCurrentVersion(ctx, code, nextVersion)
 		if nextVersion != nil {
-			_ = d.swapCurrentSymlink(code, *nextVersion)
+			if next, err := d.store.GetVersion(ctx, code, *nextVersion); err == nil {
+				_ = d.swapCurrentPointerForStorage(code, *nextVersion, d.versionStorage(next))
+			}
 		} else {
 			// 没有可服务的版本，删 symlink
 			_ = os.Remove(filepath.Join(d.siteDir(code), "current"))
@@ -375,16 +392,18 @@ func (d *Deployer) GetContent(ctx context.Context, code string, versionPtr *int6
 	}
 
 	out := api.GetContentResponse{
-		Success:     true,
-		Code:        code,
-		Version:     version,
-		Title:       v.Title,
-		Description: v.Description,
-		MainEntry:   v.MainEntry,
-		TotalSize:   v.TotalSize,
-		IsLocked:    v.IsLocked,
-		Files:       make([]api.ContentFile, 0, len(files)),
-		CreatedAt:   v.CreatedAt,
+		Success:        true,
+		Code:           code,
+		Version:        version,
+		Title:          v.Title,
+		Description:    v.Description,
+		MainEntry:      v.MainEntry,
+		TotalSize:      v.TotalSize,
+		IsLocked:       v.IsLocked,
+		Files:          make([]api.ContentFile, 0, len(files)),
+		CreatedAt:      v.CreatedAt,
+		StorageBackend: v.StorageBackend,
+		StoragePrefix:  v.StoragePrefix,
 	}
 	for _, f := range files {
 		cf := api.ContentFile{
@@ -394,12 +413,11 @@ func (d *Deployer) GetContent(ctx context.Context, code string, versionPtr *int6
 			IsBinary: f.IsBinary,
 		}
 		if !f.IsBinary && f.Size <= 2<<20 {
-			full := filepath.Join(d.versionDir(code, version), f.Path)
-			if err := ensureWithin(d.versionDir(code, version), full); err != nil {
-				return nil, api.NewError(api.CodeInternal, "read_file", err.Error())
-			}
-			b, err := os.ReadFile(full)
+			b, _, err := d.readVersionFile(ctx, v, f.Path)
 			if err != nil {
+				if errors.Is(err, errFileNotFound) {
+					return nil, api.NewError(api.CodeNotFound, "read_file", "file not found")
+				}
 				return nil, api.NewError(api.CodeInternal, "read_file", err.Error())
 			}
 			if utf8.Valid(b) {

@@ -98,7 +98,7 @@ HOSTCTL_STORAGE_BACKEND: "local" # local 或 oss
 ```
 
 - `HOSTCTL_ALLOW_REGISTRATION=false` 会关闭公开注册；登录页只保留登录入口，管理员仍可在后台维护用户。
-- `HOSTCTL_STORAGE_BACKEND=oss` 时，发布写入、预览读取、源码下载、覆盖版本、删除版本和删除站点都会走阿里云 OSS；SQLite 仍然保存在 `/var/lib/hostctl`。
+- `HOSTCTL_STORAGE_BACKEND=oss` 时，新发布版本会写入阿里云 OSS；每个版本都会在 SQLite 记录自己的 `storage_backend` 和 `storage_prefix`，旧库升级时历史版本默认标记为 `local`。预览读取、源码下载、覆盖版本、删除版本和删除站点都会按版本自己的存储归属执行，避免切换存储后旧作品直接 404。OSS 对象不存在时仍会回退本地 `/var/www/hosted` 历史目录作为兜底；历史文件不会自动迁移到 OSS，确认稳定后可再单独迁移或清理本地旧文件。
 - 开启邮箱验证后，注册页会先通过图片验证码请求邮箱验证码，再用 6 位邮箱验证码完成注册；后台运行设置会展示 SMTP 是否配置完整。
 ## 反向代理
 

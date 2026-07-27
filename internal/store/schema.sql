@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS versions (
     content_sha256    TEXT NOT NULL,            -- 全部文件的聚合 hash（按 path 排序拼接 hash）
     template_source_code    TEXT NOT NULL DEFAULT '',
     template_source_version INTEGER,
+    storage_backend   TEXT NOT NULL DEFAULT 'local',
+    storage_prefix    TEXT NOT NULL DEFAULT '',
     is_locked         BOOLEAN NOT NULL DEFAULT 0,
     status            TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'inactive'
     created_at        DATETIME NOT NULL,

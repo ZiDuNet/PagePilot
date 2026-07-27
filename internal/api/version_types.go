@@ -16,6 +16,8 @@ type VersionItem struct {
 	CreatedAt             time.Time `json:"createdAt"`
 	TemplateSourceCode    string    `json:"templateSourceCode,omitempty"`
 	TemplateSourceVersion int64     `json:"templateSourceVersion,omitempty"`
+	StorageBackend        string    `json:"storageBackend,omitempty"`
+	StoragePrefix         string    `json:"storagePrefix,omitempty"`
 }
 
 // ListVersionsResponse 是 GET /api/deploys/{code}/versions 响应。
@@ -54,17 +56,19 @@ type SetCurrentResponse struct {
 
 // GetContentResponse 是 GET /api/deploy/content（JSON 模式）响应。
 type GetContentResponse struct {
-	Success     bool          `json:"success"`
-	Code        string        `json:"code"`
-	Version     int64         `json:"version"`
-	Title       string        `json:"title,omitempty"`
-	Description string        `json:"description"`
-	MainEntry   string        `json:"mainEntry"`
-	TotalSize   int64         `json:"totalSize"`
-	IsLocked    bool          `json:"isLocked"`
-	Files       []ContentFile `json:"files"`
-	Content     string        `json:"content,omitempty"`
-	CreatedAt   time.Time     `json:"createdAt"`
+	Success        bool          `json:"success"`
+	Code           string        `json:"code"`
+	Version        int64         `json:"version"`
+	Title          string        `json:"title,omitempty"`
+	Description    string        `json:"description"`
+	MainEntry      string        `json:"mainEntry"`
+	TotalSize      int64         `json:"totalSize"`
+	IsLocked       bool          `json:"isLocked"`
+	Files          []ContentFile `json:"files"`
+	Content        string        `json:"content,omitempty"`
+	CreatedAt      time.Time     `json:"createdAt"`
+	StorageBackend string        `json:"storageBackend,omitempty"`
+	StoragePrefix  string        `json:"storagePrefix,omitempty"`
 }
 
 // ContentFile 是 GET /api/deploy/content 返回的文件清单。

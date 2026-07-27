@@ -91,6 +91,8 @@ type Version struct {
 	ContentSha256         string
 	TemplateSourceCode    string
 	TemplateSourceVersion *int64
+	StorageBackend        string
+	StoragePrefix         string
 	IsLocked              bool
 	Status                string
 	CreatedAt             time.Time

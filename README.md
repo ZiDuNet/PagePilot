@@ -306,7 +306,7 @@ SQLite 中保存令牌、站点、版本、文件、点赞与可变设置。静�
 
 - `HOSTCTL_ALLOW_REGISTRATION=true|false`：是否允许公开注册。关闭后登录页隐藏注册入口，`POST /api/auth/register` 会返回 403；管理员仍可在后台维护用户。
 - `HOSTCTL_EMAIL_VERIFICATION_ENABLED=false`：注册邮箱验证开关。开启后注册页会要求邮箱、图片验证码和 6 位邮箱验证码；服务端通过 SMTP 发送验证码，注册成功后记录 `email_verified=true`。如果开启但 SMTP 未配置，注册页会提示联系管理员。
-- `HOSTCTL_STORAGE_BACKEND=local|oss`：文件存储后端。`local` 使用本机 `/var/www/hosted`；`oss` 使用阿里云 OSS，发布写入、预览读取、源码下载、覆盖版本、删除版本和删除站点都会走对象存储。
+- `HOSTCTL_STORAGE_BACKEND=local|oss`：文件存储后端。`local` 使用本机 `/var/www/hosted`；`oss` 使用阿里云 OSS。每个版本都会在数据库记录自己的 `storage_backend` 和 `storage_prefix`，旧库升级时历史版本默认标记为 `local`，新发布版本按当前配置写入对应后端；预览读取、源码下载、覆盖版本、删除版本和删除站点都会按版本自己的存储归属执行，避免从本地存储切换到 OSS 后旧作品直接 404。OSS 对象不存在时仍会回退本地历史目录作为兜底；切换存储不会自动迁移历史文件，确认稳定后可再单独迁移或清理本地旧文件。
 - 阿里云 OSS 相关：`HOSTCTL_OSS_ENDPOINT`、`HOSTCTL_OSS_BUCKET`、`HOSTCTL_OSS_ACCESS_KEY_ID`、`HOSTCTL_OSS_ACCESS_KEY_SECRET`、`HOSTCTL_OSS_PREFIX`、`HOSTCTL_OSS_PUBLIC_BASE_URL`。`HOSTCTL_OSS_PREFIX` 建议按环境区分，例如 `prod/pagepilot`。
 
 ## 限制与安全

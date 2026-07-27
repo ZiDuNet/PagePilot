@@ -166,8 +166,9 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		tags = site.Tags
 	}
 
-	if err := d.writeFiles(ctx, code, versionNumber, rfiles); err != nil {
-		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
+	storage := d.newVersionStorage(code, versionNumber)
+	if err := d.writeFilesToStorage(ctx, code, versionNumber, storage, rfiles); err != nil {
+		_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 		return nil, api.NewError(api.CodeInternal, "write_files",
 			fmt.Sprintf("failed to write files: %v", err))
 	}
@@ -183,7 +184,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	now := time.Now().UTC()
 	versionID, err := newUUID()
 	if err != nil {
-		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
+		_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 		return nil, api.NewError(api.CodeInternal, "uuid",
 			fmt.Sprintf("failed to generate uuid: %v", err))
 	}
@@ -193,7 +194,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		if strings.TrimSpace(req.AccessPassword) != "" {
 			hash, herr := auth.HashPassword(req.AccessPassword)
 			if herr != nil {
-				_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
+				_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 				return nil, api.NewError(api.CodeInternal, "access_password", herr.Error())
 			}
 			accessHash = hash
@@ -211,13 +212,13 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			CreatedAt:              now,
 			Source:                 normalizeSource(req.Source),
 		}); err != nil {
-			_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
+			_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 			return nil, api.NewError(api.CodeInternal, "create_site",
 				fmt.Sprintf("failed to create site: %v", err))
 		}
 	} else if updateVisibility {
 		if err := d.store.SetSiteVisibility(ctx, code, visibility); err != nil {
-			_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
+			_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 			return nil, api.NewError(api.CodeInternal, "site_visibility",
 				fmt.Sprintf("failed to update site visibility: %v", err))
 		}
@@ -235,11 +236,13 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		ContentSha256:         aggregateSha,
 		TemplateSourceCode:    templateSourceCode,
 		TemplateSourceVersion: int64PtrIfPositive(templateSourceVersion),
+		StorageBackend:        storage.Backend,
+		StoragePrefix:         storage.Prefix,
 		IsLocked:              false,
 		Status:                "active",
 		CreatedAt:             now,
 	}); err != nil {
-		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
+		_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 		return nil, api.NewError(api.CodeInternal, "create_version",
 			fmt.Sprintf("failed to create version: %v", err))
 	}
@@ -257,12 +260,12 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		})
 	}
 	if err := d.store.CreateFiles(ctx, fileMetas); err != nil {
-		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
+		_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 		return nil, api.NewError(api.CodeInternal, "create_files",
 			fmt.Sprintf("failed to create files: %v", err))
 	}
 	if err := d.store.UpsertVersionBundle(ctx, resolved.toVersionBundle(code, versionNumber, now)); err != nil {
-		_ = d.deleteVersionFiles(context.Background(), code, versionNumber)
+		_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 		return nil, api.NewError(api.CodeInternal, "version_bundle",
 			fmt.Sprintf("failed to record bundle metadata: %v", err))
 	}
@@ -272,7 +275,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		return nil, api.NewError(api.CodeInternal, "set_current",
 			fmt.Sprintf("failed to set current version: %v", err))
 	}
-	if err := d.swapCurrentSymlink(code, versionNumber); err != nil {
+	if err := d.swapCurrentPointerForStorage(code, versionNumber, storage); err != nil {
 		return nil, api.NewError(api.CodeInternal, "swap_symlink",
 			fmt.Sprintf("failed to swap current symlink: %v", err))
 	}
@@ -891,22 +894,29 @@ func (d *Deployer) decideVersion(ctx context.Context, code string, isCustom bool
 	return false, maxVer + 1, nil
 }
 
-// writeFiles 把文件写到磁盘。所有文件先写到 tmp 目录，再原子 rename。
+// writeFiles 把文件写到当前配置对应的存储。所有文件先写到 tmp 目录，再原子 rename。
 // 写前用 safeJoin 做路径校验，杜绝穿越。
 func (d *Deployer) writeFiles(ctx context.Context, code string, version int64, files []resolvedFile) error {
-	if d.useOSS() {
+	return d.writeFilesToStorage(ctx, code, version, d.newVersionStorage(code, version), files)
+}
+
+func (d *Deployer) writeFilesToStorage(ctx context.Context, code string, version int64, storage versionStorage, files []resolvedFile) error {
+	if storage.Backend == "oss" {
 		oss := newOSSStorage(d.cfg)
 		for _, f := range files {
 			if !zipPathSafe(f.Path) {
 				return fmt.Errorf("unsafe path %s", f.Path)
 			}
-			if err := oss.put(ctx, oss.versionObjectKey(code, version, f.Path), f.Bytes, ""); err != nil {
+			if err := oss.put(ctx, storage.ossObjectKey(f.Path), f.Bytes, ""); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	vDir := d.versionDir(code, version)
+	vDir, err := d.localVersionDir(storage, code, version)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(vDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir version dir: %w", err)
 	}
@@ -949,9 +959,6 @@ func (d *Deployer) writeFiles(ctx context.Context, code string, version int64, f
 //
 // 生产环境部署在 Linux，Windows 路径仅用于本地开发测试。
 func (d *Deployer) swapCurrentSymlink(code string, version int64) error {
-	if d.useOSS() {
-		return nil
-	}
 	siteDir := d.siteDir(code)
 	if err := os.MkdirAll(siteDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir site dir: %w", err)
@@ -988,6 +995,13 @@ func (d *Deployer) swapCurrentSymlink(code string, version int64) error {
 		return fmt.Errorf("rename symlink (fallback): %w", err)
 	}
 	return nil
+}
+
+func (d *Deployer) swapCurrentPointerForStorage(code string, version int64, storage versionStorage) error {
+	if storage.Backend != "local" {
+		return removeCurrentPath(filepath.Join(d.siteDir(code), "current"))
+	}
+	return d.swapCurrentSymlink(code, version)
 }
 
 func removeCurrentPath(path string) error {
