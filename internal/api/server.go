@@ -6152,7 +6152,7 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 		return
 	}
 
-	if versionPtr == nil && sub == mainEntry {
+	if versionPtr == nil && sub == mainEntry && !hostedPreviewRequest(r) {
 		go func(c string) {
 			_ = s.deployer.IncrementViewCount(context.Background(), c)
 		}(code)

@@ -200,6 +200,51 @@ func TestAppServeHTMLPreviewSkipsAppSnippets(t *testing.T) {
 	}
 }
 
+func TestAppServePreviewDoesNotIncrementViewCount(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	stub := &appServeDeployerStub{
+		site:        store.Site{Code: "demo"},
+		siteRoot:    filepath.Join(srv.cfg.HostedDir, "demo"),
+		incrementCh: make(chan string, 2),
+	}
+	srv.deployer = stub
+	currentDir := filepath.Join(srv.cfg.HostedDir, "demo", "current")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(currentDir, "index.html"), []byte("<!doctype html><title>demo</title>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	normalReq := httptest.NewRequest(http.MethodGet, "/agent/demo/", nil)
+	normalRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(normalRR, normalReq)
+	if normalRR.Code != http.StatusOK {
+		t.Fatalf("normal status = %d, body = %s", normalRR.Code, normalRR.Body.String())
+	}
+	select {
+	case code := <-stub.incrementCh:
+		if code != "demo" {
+			t.Fatalf("increment code = %q, want demo", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("normal app entry did not increment view count")
+	}
+
+	previewReq := httptest.NewRequest(http.MethodGet, "/agent/demo/?preview=1", nil)
+	previewRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(previewRR, previewReq)
+	if previewRR.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, body = %s", previewRR.Code, previewRR.Body.String())
+	}
+	select {
+	case code := <-stub.incrementCh:
+		t.Fatalf("preview unexpectedly incremented view count for %q", code)
+	case <-time.After(120 * time.Millisecond):
+	}
+}
+
 func TestAppServeEmbedPolicyAddsFrameAncestors(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
@@ -677,8 +722,9 @@ func TestAppServeMarkdownCurrentVersionCacheUsesResolvedVersion(t *testing.T) {
 
 type appServeDeployerStub struct {
 	DeployerPort
-	site     store.Site
-	siteRoot string
+	site        store.Site
+	siteRoot    string
+	incrementCh chan string
 }
 
 type cachedAppServeDeployerStub struct {
@@ -759,6 +805,9 @@ func (s *appServeDeployerStub) ReadAppFile(_ context.Context, code string, versi
 	return data, modTime, nil
 }
 
-func (s *appServeDeployerStub) IncrementViewCount(context.Context, string) error {
+func (s *appServeDeployerStub) IncrementViewCount(_ context.Context, code string) error {
+	if s.incrementCh != nil {
+		s.incrementCh <- code
+	}
 	return nil
 }
