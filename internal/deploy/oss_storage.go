@@ -65,7 +65,7 @@ func (o *ossStorage) versionObjectKey(code string, version int64, rel string) st
 }
 
 func (o *ossStorage) endpointURL(key string, query url.Values) (string, error) {
-	endpoint := strings.TrimRight(strings.TrimSpace(o.cfg.OSSEndpoint), "/")
+	endpoint := normalizeOSSEndpoint(o.cfg.OSSEndpoint)
 	if endpoint == "" || o.cfg.OSSBucket == "" {
 		return "", fmt.Errorf("oss endpoint and bucket are required")
 	}
@@ -79,6 +79,17 @@ func (o *ossStorage) endpointURL(key string, query url.Values) (string, error) {
 	u.Path = "/" + strings.TrimLeft(key, "/")
 	u.RawQuery = query.Encode()
 	return u.String(), nil
+}
+
+func normalizeOSSEndpoint(endpoint string) string {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	if endpoint == "" {
+		return ""
+	}
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "https://" + endpoint
+	}
+	return endpoint
 }
 
 func (o *ossStorage) signedRequest(ctx context.Context, method, key string, body []byte, contentType string, query url.Values) (*http.Request, error) {

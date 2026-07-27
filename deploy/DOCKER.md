@@ -90,7 +90,7 @@ node scripts/docker-upgrade-qa.mjs
 HOSTCTL_ALLOW_REGISTRATION: "true"
 HOSTCTL_STORAGE_BACKEND: "local" # local 或 oss
 # HOSTCTL_STORAGE_BACKEND: "oss"
-# HOSTCTL_OSS_ENDPOINT: "https://oss-cn-hangzhou.aliyuncs.com"
+# HOSTCTL_OSS_ENDPOINT: "https://oss-cn-hangzhou.aliyuncs.com" # 也可省略协议，系统默认按 HTTPS 处理
 # HOSTCTL_OSS_BUCKET: "pagepilot-assets"
 # HOSTCTL_OSS_ACCESS_KEY_ID: "..."
 # HOSTCTL_OSS_ACCESS_KEY_SECRET: "..."
