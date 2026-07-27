@@ -26,6 +26,7 @@ import (
 	"net/smtp"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -642,7 +643,7 @@ func (s *Server) tryServeDomainApp(w http.ResponseWriter, r *http.Request) bool 
 		return true
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.NotFound(w, r)
+		s.renderNotFoundPage(w, r, "页面不存在", "这个地址没有对应的 PagePilot 页面或应用。")
 		return true
 	}
 	sub := strings.TrimPrefix(r.URL.Path, "/")
@@ -3836,7 +3837,7 @@ func (s *Server) handleUserAppUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	body, err := fs.ReadFile(web.UserSubFS(), "index.html")
 	if err != nil {
-		http.NotFound(w, r)
+		s.renderNotFoundPage(w, r, "页面不存在", "主站入口暂时不可用，请稍后重试。")
 		return
 	}
 	html := injectHTMLSnippets(string(body), s.mainHTMLInjectionSnippets(""))
@@ -3850,8 +3851,69 @@ func (s *Server) userAppFileServer() http.Handler {
 			s.handleUserAppUI(w, r)
 			return
 		}
+		cleanPath := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if cleanPath == "." || cleanPath == "" {
+			s.handleUserAppUI(w, r)
+			return
+		}
+		if _, err := fs.Stat(web.UserSubFS(), cleanPath); err != nil {
+			s.renderNotFoundPage(w, r, "页面不存在", "没有找到这个 PagePilot 页面。")
+			return
+		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) renderNotFoundPage(w http.ResponseWriter, r *http.Request, title, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNotFound)
+	currentPath := html.EscapeString(r.URL.Path)
+	title = html.EscapeString(strings.TrimSpace(title))
+	if title == "" {
+		title = "页面不存在"
+	}
+	message = html.EscapeString(strings.TrimSpace(message))
+	if message == "" {
+		message = "没有找到这个 PagePilot 页面。"
+	}
+	_, _ = fmt.Fprintf(w, `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>404 - PagePilot</title>
+<style>
+:root{color-scheme:light;--ink:#0f172a;--muted:#64748b;--line:#dbeafe;--panel:#ffffff;--brand:#0ea5e9;--deep:#172d67;--violet:#8b5cf6;--bg:#f6f7f9}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 18%% 18%%,rgba(14,165,233,.16),transparent 32%%),radial-gradient(circle at 82%% 12%%,rgba(139,92,246,.13),transparent 30%%),linear-gradient(180deg,#f8fbff 0%%,#f6f7f9 58%%,#eef7fb 100%%);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.shell{width:min(1120px,calc(100%% - 40px));min-height:100vh;margin:0 auto;display:grid;grid-template-rows:auto 1fr auto}
+.nav{height:72px;display:flex;align-items:center;justify-content:space-between;gap:18px}.brand{display:inline-flex;align-items:center;gap:12px;text-decoration:none;color:var(--ink);font-weight:900}.brand img{width:38px;height:38px;border-radius:12px;box-shadow:0 12px 28px rgba(2,132,199,.16)}.nav-actions{display:flex;gap:10px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:42px;padding:0 16px;border-radius:12px;border:1px solid rgba(23,45,103,.14);background:rgba(255,255,255,.72);color:#172d67;text-decoration:none;font-weight:800;box-shadow:0 12px 30px rgba(15,23,42,.06);backdrop-filter:blur(10px)}.btn.primary{border-color:#172d67;background:#172d67;color:#fff}
+.hero{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(280px,.92fr);align-items:center;gap:44px;padding:42px 0 56px}.copy{max-width:620px}.eyebrow{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid rgba(14,165,233,.22);border-radius:999px;background:rgba(255,255,255,.72);color:#0369a1;font-size:13px;font-weight:850}.code{display:block;margin:22px 0 10px;font-size:clamp(86px,13vw,160px);line-height:.82;letter-spacing:0;font-weight:950;color:#101348;text-shadow:0 16px 36px rgba(2,132,199,.12)}h1{margin:0;font-size:clamp(30px,5vw,58px);line-height:1.02;letter-spacing:0;color:#111827}p{margin:18px 0 0;color:var(--muted);font-size:17px;line-height:1.78}.path{display:inline-flex;max-width:100%%;margin-top:18px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.74);border:1px solid rgba(148,163,184,.24);color:#334155;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.panel{position:relative;min-height:430px;border:1px solid rgba(219,234,254,.86);border-radius:28px;background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(239,248,255,.78));box-shadow:0 28px 80px rgba(15,23,42,.12);overflow:hidden}.panel:before{content:"";position:absolute;inset:24px;border-radius:22px;background:repeating-linear-gradient(0deg,rgba(15,23,42,.045) 0 1px,transparent 1px 26px),linear-gradient(90deg,transparent 0 30%%,rgba(14,165,233,.1) 30%% 54%%,transparent 54%%);}.orbit{position:absolute;width:210px;height:210px;border:1px solid rgba(14,165,233,.25);border-radius:50%%;right:42px;top:46px}.orbit:after{content:"";position:absolute;width:16px;height:16px;border-radius:50%%;background:#22d3ee;right:28px;top:22px;box-shadow:0 0 0 10px rgba(34,211,238,.15)}.mini{position:absolute;left:28px;bottom:28px;right:28px;padding:18px;border-radius:18px;background:rgba(15,23,42,.78);color:#fff;box-shadow:0 18px 50px rgba(15,23,42,.22)}.mini strong{display:block;font-size:15px}.mini span{display:block;margin-top:6px;color:#bfdbfe;font-size:13px;line-height:1.6}
+.footer{padding:0 0 28px;color:#64748b;font-size:13px}@media (max-width:820px){.shell{width:min(100%% - 28px,680px)}.nav{height:auto;padding:18px 0;align-items:flex-start}.hero{grid-template-columns:1fr;gap:26px;padding:24px 0 44px}.panel{min-height:270px;border-radius:22px}.code{font-size:92px}.nav-actions{justify-content:flex-end}.btn{min-height:38px;padding:0 12px}.path{white-space:normal;word-break:break-all}.orbit{width:150px;height:150px;right:22px;top:24px}}
+</style>
+</head>
+<body>
+<div class="shell">
+<header class="nav">
+<a class="brand" href="/"><img src="/brand/pagepilot-logo.png" alt=""><span>PagePilot</span></a>
+<div class="nav-actions"><a class="btn" href="/market">创作市场</a><a class="btn primary" href="/">返回首页</a></div>
+</header>
+<main class="hero">
+<section class="copy">
+<span class="eyebrow">PagePilot 访问提示</span>
+<span class="code">404</span>
+<h1>%s</h1>
+<p>%s</p>
+<span class="path">%s</span>
+</section>
+<aside class="panel" aria-hidden="true"><div class="orbit"></div><div class="mini"><strong>页面没有起飞成功</strong><span>链接可能已下架、路径有误，或对应应用还没有发布。可以返回首页或进入创作市场继续查看。</span></div></aside>
+</main>
+<footer class="footer">PagePilot · 部署、分享和投放 HTML / Markdown 应用</footer>
+</div>
+</body>
+</html>`, title, message, currentPath)
 }
 
 func (s *Server) handleAPIDocsRedirect(w http.ResponseWriter, r *http.Request) {
@@ -6023,7 +6085,7 @@ func (s *Server) handleAppServe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, sub, versionValue string, domainMode bool) {
 	if !routeCodeRe.MatchString(code) {
-		http.NotFound(w, r)
+		s.renderNotFoundPage(w, r, "应用不存在", "这个应用地址不符合 PagePilot 的访问规则。")
 		return
 	}
 
@@ -6031,14 +6093,14 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 	if versionValue != "" {
 		versionNumber, err := parseInt64(versionValue)
 		if err != nil || versionNumber <= 0 {
-			http.NotFound(w, r)
+			s.renderNotFoundPage(w, r, "版本不存在", "这个版本号不可用，请检查访问链接。")
 			return
 		}
 		versionPtr = &versionNumber
 	} else if versionQuery := strings.TrimSpace(r.URL.Query().Get("v")); versionQuery != "" {
 		versionNumber, err := parseInt64(versionQuery)
 		if err != nil || versionNumber <= 0 {
-			http.NotFound(w, r)
+			s.renderNotFoundPage(w, r, "版本不存在", "这个版本号不可用，请检查访问链接。")
 			return
 		}
 		target := *r.URL
@@ -6077,7 +6139,7 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 	if sub == "" {
 		content, apiErr := s.deployer.GetContent(r.Context(), code, versionPtr)
 		if apiErr != nil {
-			http.NotFound(w, r)
+			s.renderNotFoundPage(w, r, "应用不存在", "没有找到这个应用，可能已删除、下架或尚未发布。")
 			return
 		}
 		mainEntry = content.MainEntry
@@ -6086,7 +6148,7 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 		sub = mainEntry
 	}
 	if !hostedSubPathSafe(sub) {
-		http.NotFound(w, r)
+		s.renderNotFoundPage(w, r, "文件不存在", "应用内的这个文件路径不可用。")
 		return
 	}
 
@@ -6098,7 +6160,7 @@ func (s *Server) serveAppContent(w http.ResponseWriter, r *http.Request, code, s
 
 	body, modTime, apiErr := s.deployer.ReadAppFile(r.Context(), code, versionPtr, sub)
 	if apiErr != nil {
-		http.NotFound(w, r)
+		s.renderNotFoundPage(w, r, "文件不存在", "应用文件没有找到，可能是版本文件缺失或资源路径写错了。")
 		return
 	}
 

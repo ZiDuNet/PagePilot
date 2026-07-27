@@ -877,6 +877,7 @@ h1, h2, h3, p { margin-top: 0; }
   transition: opacity 0.22s ease, transform 0.22s ease;
 }
 .preview-pane.state-loaded::before,
+.preview-pane.state-slow::before,
 .preview-pane.state-failed::before,
 .preview-pane.is-locked::before {
   opacity: 0;

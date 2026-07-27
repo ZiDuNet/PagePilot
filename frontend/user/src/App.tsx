@@ -54,14 +54,14 @@ type SortMode = "hot" | "newest" | "featured" | "oldest" | "likes_desc" | "views
 type MarketCategory = string;
 type MarketKind = "all" | "html" | "md" | "protected" | "featured" | "mine" | "favorites";
 type AgentDocTab = "skill" | "mcp";
-type PreviewStatus = "idle" | "loading" | "loaded" | "failed";
+type PreviewStatus = "idle" | "loading" | "loaded" | "slow" | "failed";
 type PreviewViewport = "desktop" | "tablet" | "mobile";
 
 const PREVIEW_IFRAME_SANDBOX =
   "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-top-navigation-by-user-activation";
 const MARKET_CARD_IFRAME_SANDBOX = "allow-scripts";
 const MARKET_PREVIEW_CONCURRENCY = 3;
-const MARKET_PREVIEW_TIMEOUT_MS = 3600;
+const MARKET_PREVIEW_TIMEOUT_MS = 10000;
 const UNCATEGORIZED_CATEGORY_FILTER = "__uncategorized";
 type MarketPreviewQueueItem = {
   cancelled: boolean;
@@ -877,9 +877,9 @@ function HomePage({
   ];
   const releaseNotes = [
     {
-      version: "V0.3.0",
+      version: "V0.3.1",
       title: "安全治理、Markdown 高级渲染和 Skill/MCP 对齐",
-      date: "2026-07-08",
+      date: "2026-07-27",
       body: "完善 Markdown 公式、图表和代码高亮，补齐审计日志、文件树、模板复用、安全模式、分页筛选、未分类筛选，以及更纯粹的 pagep Skill / MCP 发布链路。"
     },
     {
@@ -1477,7 +1477,7 @@ function MarketplaceCard({
           previewReleaseRef.current = release;
           setPreviewSrc(withPreviewParam(appURL));
           previewTimeoutRef.current = window.setTimeout(() => {
-            if (!cancelQueued) setPreviewStatus("failed");
+            if (!cancelQueued) setPreviewStatus("slow");
             release();
             previewReleaseRef.current = null;
           }, MARKET_PREVIEW_TIMEOUT_MS);
@@ -1607,7 +1607,7 @@ function MarketplaceCard({
           <div className="preview-fallback">
             <FileCode2 size={22} />
             <strong>{title}</strong>
-            <span>预览资源较慢，打开应用查看完整效果</span>
+            <span>预览未能加载，打开应用查看完整效果</span>
           </div>
         )}
         <div className="market-card-top-actions" aria-label="作品快捷操作">
