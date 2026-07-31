@@ -1,5 +1,6 @@
 # PagePilot
-感谢 [Linux DO社区](shturl.cc/yePnlXW1 推广
+感谢 [Linux DO社区](https://linux.do/) 推广
+
 PagePilot 是面向 AI Agent 的 HTML / Markdown / ZIP / 多文件静态站点发布平台。你把需求告诉 Agent，Agent 生成页面或应用，PagePilot 负责上线、访问密码、版本回滚、锁定下架、创作市场复用、API/CLI/MCP 接入和广告屏投放。
 
 当前版本：`0.3.1`
