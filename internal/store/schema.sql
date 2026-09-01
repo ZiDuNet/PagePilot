@@ -41,6 +41,16 @@ CREATE TABLE IF NOT EXISTS sites (
     source                     TEXT NOT NULL                     -- 'api' | 'cli' | 'mcp'
 );
 
+CREATE INDEX IF NOT EXISTS idx_sites_owner ON sites(owner_token_id);
+
+-- 跨进程的同站点写操作租约。发布、删除和版本变更使用随机 holder
+-- 持有该租约，避免失败补偿误删另一实例刚写入的同 code 应用。
+CREATE TABLE IF NOT EXISTS site_mutation_leases (
+    code        TEXT PRIMARY KEY,
+    holder      TEXT NOT NULL,
+    expires_at  INTEGER NOT NULL
+);
+
 -- 一个 site 的一个版本
 CREATE TABLE IF NOT EXISTS versions (
     id                TEXT PRIMARY KEY,         -- UUID

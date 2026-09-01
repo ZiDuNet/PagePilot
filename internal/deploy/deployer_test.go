@@ -3,10 +3,13 @@ package deploy
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yourorg/hostctl/internal/api"
 	"github.com/yourorg/hostctl/internal/config"
@@ -33,6 +36,13 @@ func TestAnonymousDeployForcesUnlistedEvenWhenPublicRequested(t *testing.T) {
 	cfg.CooldownSeconds = 0
 
 	d := New(cfg, st)
+	if err := st.CreateAnonymousSession(context.Background(), store.AnonymousSession{
+		ID:         "test-session",
+		CreatedAt:  time.Now().UTC(),
+		LastUsedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create anonymous session: %v", err)
+	}
 	resp, apiErr := d.Deploy(context.Background(), api.DeployRequest{
 		Filename:    "index.html",
 		Title:       "Anonymous public request",
@@ -302,12 +312,38 @@ func newDeployTestHarness(t *testing.T) (*Deployer, *store.SQLiteStore) {
 	cfg.MaxSiteTotalBytes = 2 << 20
 	cfg.MaxFilesPerSite = 20
 	cfg.CooldownSeconds = 0
+	seedDeployTestUser(t, st, "owner", false)
+	seedDeployTestUser(t, st, "admin", true)
+	seedDeployTestUser(t, st, "test", false)
 
 	return New(cfg, st), st
 }
 
+func seedDeployTestUser(t *testing.T, st *store.SQLiteStore, id string, isAdmin bool) {
+	t.Helper()
+	if err := st.CreateAdminUser(context.Background(), store.AdminUser{
+		ID:           id,
+		Username:     id,
+		PasswordHash: "hash",
+		IsAdmin:      isAdmin,
+		IsActive:     true,
+		CanLike:      true,
+		DeployLimit:  -1,
+		CreatedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create test user %s: %v", id, err)
+	}
+}
+
 func TestReadAppFileLimitedRejectsOversizedObject(t *testing.T) {
-	d, _ := newDeployTestHarness(t)
+	d, st := newDeployTestHarness(t)
+	if err := st.CreateAnonymousSession(context.Background(), store.AnonymousSession{
+		ID:         "limited-read",
+		CreatedAt:  time.Now().UTC(),
+		LastUsedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create anonymous session: %v", err)
+	}
 	resp, apiErr := d.Deploy(context.Background(), api.DeployRequest{
 		Filename:    "index.html",
 		Description: "limited file read regression",
@@ -326,6 +362,214 @@ func TestReadAppFileLimitedRejectsOversizedObject(t *testing.T) {
 	if len(body) <= 32 {
 		t.Fatalf("unlimited read returned %d bytes; want full file", len(body))
 	}
+}
+
+func TestFailedNewSiteDeploymentCleansQuotaAndMetadata(t *testing.T) {
+	ctx := context.Background()
+	d, st := newDeployTestHarness(t)
+	d = New(d.configSnapshot(), rejectCreateVersionStore{Store: st})
+
+	_, apiErr := d.Deploy(ctx, api.DeployRequest{
+		EnableCustomCode: true,
+		CustomCode:       "cleanup-site",
+		Filename:         "index.html",
+		Title:            "Quota cleanup",
+		Description:      "A failed initial deployment must not retain an application slot.",
+		Content:          "<!doctype html><html><head><title>Cleanup</title></head><body><main>cleanup</main></body></html>",
+	}, "user:owner", "127.0.0.1")
+	if apiErr == nil || apiErr.Stage != "create_version" {
+		t.Fatalf("deploy error = %+v, want create_version failure", apiErr)
+	}
+	if exists, err := st.SiteExists(ctx, "cleanup-site"); err != nil {
+		t.Fatalf("check failed site: %v", err)
+	} else if exists {
+		t.Fatal("failed deployment left a site record")
+	}
+	user, err := st.GetAdminUserByID(ctx, "owner")
+	if err != nil {
+		t.Fatalf("get owner: %v", err)
+	}
+	if user.DeployCount != 0 {
+		t.Fatalf("owner quota after failed deployment = %d, want 0", user.DeployCount)
+	}
+	if _, err := os.Stat(d.siteDir("cleanup-site")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed deployment directory error = %v, want not exist", err)
+	}
+}
+
+func TestDeleteSiteReleasesOwnerQuotaForNextPublish(t *testing.T) {
+	ctx := context.Background()
+	d, st := newDeployTestHarness(t)
+	owner, err := st.GetAdminUserByID(ctx, "owner")
+	if err != nil {
+		t.Fatalf("get owner: %v", err)
+	}
+	owner.DeployLimit = 1
+	if err := st.UpdateAdminUser(ctx, owner); err != nil {
+		t.Fatalf("set owner deploy limit: %v", err)
+	}
+
+	for _, code := range []string{"quota-delete-one", "quota-delete-two"} {
+		if code == "quota-delete-two" {
+			if apiErr := d.DeleteSite(ctx, "quota-delete-one"); apiErr != nil {
+				t.Fatalf("delete first site: %+v", apiErr)
+			}
+		}
+		if _, apiErr := d.Deploy(ctx, api.DeployRequest{
+			EnableCustomCode: true,
+			CustomCode:       code,
+			Filename:         "index.html",
+			Description:      "Deleting an application must free its owner quota slot.",
+			Content:          "<!doctype html><html><body><main>quota release</main></body></html>",
+		}, "user:owner", "127.0.0.1"); apiErr != nil {
+			t.Fatalf("deploy %s: %+v", code, apiErr)
+		}
+	}
+	owner, err = st.GetAdminUserByID(ctx, "owner")
+	if err != nil {
+		t.Fatalf("reload owner: %v", err)
+	}
+	if owner.DeployCount != 1 {
+		t.Fatalf("owner deploy count = %d, want one live application", owner.DeployCount)
+	}
+}
+
+func TestSiteMutationLeaseSerializesCrossProcessFailedPublish(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "hostctl.db")
+	firstStore, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("open first store: %v", err)
+	}
+	defer firstStore.Close()
+	secondStore, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("open second store: %v", err)
+	}
+	defer secondStore.Close()
+
+	ctx := context.Background()
+	seedDeployTestUser(t, firstStore, "owner-a", false)
+	seedDeployTestUser(t, firstStore, "owner-b", false)
+	cfg := config.Default()
+	cfg.HostedDir = filepath.Join(tmp, "hosted")
+	cfg.MaxSingleFileBytes = 1 << 20
+	cfg.MaxSiteTotalBytes = 2 << 20
+	cfg.MaxFilesPerSite = 20
+	cfg.CooldownSeconds = 0
+
+	enteredCreateVersion := make(chan struct{})
+	releaseCreateVersion := make(chan struct{})
+	firstDeployer := New(cfg, &blockingCreateVersionStore{
+		Store:   firstStore,
+		entered: enteredCreateVersion,
+		release: releaseCreateVersion,
+	})
+	secondDeployer := New(cfg, secondStore)
+
+	firstResult := make(chan *api.APIError, 1)
+	go func() {
+		_, apiErr := firstDeployer.Deploy(ctx, api.DeployRequest{
+			EnableCustomCode: true,
+			CustomCode:       "lease-site",
+			Filename:         "index.html",
+			Description:      "This publish fails after reserving the application slot.",
+			Content:          "<!doctype html><html><body><main>first</main></body></html>",
+		}, "user:owner-a", "127.0.0.1")
+		firstResult <- apiErr
+	}()
+
+	select {
+	case <-enteredCreateVersion:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first deploy did not reach CreateVersion")
+	}
+
+	deleteResult := make(chan *api.APIError, 1)
+	go func() {
+		deleteResult <- secondDeployer.DeleteSite(ctx, "lease-site")
+	}()
+	select {
+	case apiErr := <-deleteResult:
+		t.Fatalf("cross-process delete bypassed the site lease: %+v", apiErr)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(releaseCreateVersion)
+	if apiErr := <-firstResult; apiErr == nil || apiErr.Stage != "create_version" {
+		t.Fatalf("first deploy error = %+v, want create_version failure", apiErr)
+	}
+	if apiErr := <-deleteResult; apiErr == nil || apiErr.ErrorCode != api.CodeNotFound {
+		t.Fatalf("delete after failed rollback = %+v, want not found", apiErr)
+	}
+
+	resp, apiErr := secondDeployer.Deploy(ctx, api.DeployRequest{
+		EnableCustomCode: true,
+		CustomCode:       "lease-site",
+		Filename:         "index.html",
+		Description:      "The later publish must survive the failed deployment rollback.",
+		Content:          "<!doctype html><html><body><main>second</main></body></html>",
+	}, "user:owner-b", "127.0.0.1")
+	if apiErr != nil {
+		t.Fatalf("second deploy returned API error: %s", apiErr.Detail)
+	}
+	if resp.VersionNumber != 1 {
+		t.Fatalf("second deploy version = %d, want 1", resp.VersionNumber)
+	}
+	body, _, apiErr := secondDeployer.ReadAppFile(ctx, "lease-site", nil, "index.html")
+	if apiErr != nil || !strings.Contains(string(body), "second") {
+		t.Fatalf("second deploy file = %q, error = %+v", body, apiErr)
+	}
+	for _, check := range []struct {
+		id   string
+		want int
+	}{
+		{id: "owner-a", want: 0},
+		{id: "owner-b", want: 1},
+	} {
+		user, err := firstStore.GetAdminUserByID(ctx, check.id)
+		if err != nil {
+			t.Fatalf("get %s: %v", check.id, err)
+		}
+		if user.DeployCount != check.want {
+			t.Fatalf("%s deploy count = %d, want %d", check.id, user.DeployCount, check.want)
+		}
+	}
+}
+
+type rejectCreateVersionStore struct {
+	store.Store
+}
+
+func (rejectCreateVersionStore) CreateVersion(context.Context, store.Version) error {
+	return errors.New("forced version failure")
+}
+
+type blockingCreateVersionStore struct {
+	store.Store
+	entered chan<- struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingCreateVersionStore) CreateVersion(context.Context, store.Version) error {
+	s.once.Do(func() {
+		close(s.entered)
+		<-s.release
+	})
+	return errors.New("forced blocked version failure")
+}
+
+func (s *blockingCreateVersionStore) TryAcquireSiteMutationLease(ctx context.Context, code, holder string, ttl time.Duration) (bool, error) {
+	return s.Store.(siteMutationLeaseStore).TryAcquireSiteMutationLease(ctx, code, holder, ttl)
+}
+
+func (s *blockingCreateVersionStore) RenewSiteMutationLease(ctx context.Context, code, holder string, ttl time.Duration) (bool, error) {
+	return s.Store.(siteMutationLeaseStore).RenewSiteMutationLease(ctx, code, holder, ttl)
+}
+
+func (s *blockingCreateVersionStore) ReleaseSiteMutationLease(ctx context.Context, code, holder string) error {
+	return s.Store.(siteMutationLeaseStore).ReleaseSiteMutationLease(ctx, code, holder)
 }
 
 func TestAdminDeployAsCanAppendAnotherUsersSite(t *testing.T) {
@@ -468,6 +712,7 @@ func TestDeployRecordsTemplateSourceAndIncrementsReuseCount(t *testing.T) {
 	cfg.CooldownSeconds = 0
 
 	ctx := context.Background()
+	seedDeployTestUser(t, st, "owner", false)
 	d := New(cfg, st)
 	sourceResp, apiErr := d.Deploy(ctx, api.DeployRequest{
 		EnableCustomCode: true,

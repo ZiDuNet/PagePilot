@@ -122,6 +122,18 @@ type DeployerPort interface {
 	UnbindScreen(ctx context.Context, screenID, ownerUserID string) error
 }
 
+// ownerQuotaManagingDeployer opts into the production path where site
+// creation and quota consumption are one Store transaction. The fallback
+// preserves quota protection for lightweight test and extension deployers.
+type ownerQuotaManagingDeployer interface {
+	ManagesOwnerQuota() bool
+}
+
+func deployerManagesOwnerQuota(d DeployerPort) bool {
+	managed, ok := d.(ownerQuotaManagingDeployer)
+	return ok && managed.ManagesOwnerQuota()
+}
+
 type appURLConfigProvider interface {
 	AppURLConfig() AppURLConfig
 }
@@ -195,9 +207,9 @@ type Server struct {
 	anonymousSessionWindowAt time.Time
 	anonymousSessionTotal    int
 	anonymousQuotaMu         sync.Mutex
-	// siteMutationMu serializes site quota preflight with the actual HTTP
-	// create/update/delete mutation so a delete cannot turn an update into an
-	// uncounted site creation between those steps.
+	// siteMutationMu serializes HTTP create/update/delete and anonymous claims
+	// within this process. SQLite owner-quota writes and deployment leases are
+	// the authoritative protection across server processes.
 	siteMutationMu     sync.Mutex
 	anonymousCleanupMu sync.Mutex
 	anonymousCleanupAt time.Time
@@ -1226,6 +1238,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	var userID string
 	var userIsAdmin bool
 	actorIsAdmin := false
+	ownerQuotaManaged := deployerManagesOwnerQuota(s.deployer)
 	quotaReservationUserID := ""
 	quotaReservationActive := false
 	releaseQuotaReservation := func() {
@@ -1288,12 +1301,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Keep quota preflight, authorization, deployment, and post-deploy
-	// accounting together with the delete endpoint. The deployer has its own
-	// mutation lock, but the API-level quota check happens before it.
+	// Keep authorization and mutations together with deletion. Production
+	// deployers enforce owner quota when they insert a site; the fallback keeps
+	// the same guard for lightweight extension/test implementations.
 	s.siteMutationMu.Lock()
 	defer s.siteMutationMu.Unlock()
-	consumesSiteQuota := s.deployRequestConsumesSiteQuota(r.Context(), req)
+	consumesSiteQuota := !ownerQuotaManaged && s.deployRequestConsumesSiteQuota(r.Context(), req)
 	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
 		tok, authErr := s.authenticateToken(r)
 		if authErr != nil {
@@ -1330,7 +1343,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		anonymousSessionID = sess.ID
 		ownerTokenID = "anon:" + sess.ID
 		cfg := s.configSnapshot()
-		if consumesSiteQuota && cfg.AnonymousDeployLimit >= 0 {
+		if ownerQuotaManaged {
+			if strings.TrimSpace(sess.ClaimedByUserID) != "" {
+				writeDeployError(NewError(CodeUnauthorized, "anonymous_session", "anonymous session has been claimed"))
+				return
+			}
+		} else if consumesSiteQuota && cfg.AnonymousDeployLimit >= 0 {
 			// Quota is checked before Deploy and incremented after a successful
 			// create. Serialize this check/increment pair so concurrent requests
 			// sharing one anonymous session cannot all observe the same count.
@@ -1364,7 +1382,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		writeDeployError(apiErr)
 		return
 	}
-	if consumesSiteQuota && userID != "" && !userIsAdmin {
+	if !ownerQuotaManaged && consumesSiteQuota && userID != "" && !userIsAdmin {
 		allowed, quotaErr := s.auth.TryConsumeUserDeployQuota(r.Context(), userID)
 		if quotaErr != nil {
 			writeDeployError(NewError(CodeInternal, "user_quota", quotaErr.Error()))
@@ -1399,27 +1417,29 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		writeDeployError(apiErr)
 		return
 	}
-	userQuotaCounted := false
-	if quotaReservationActive {
-		if resp.Created {
-			// The reservation now represents the successful new site.
-			quotaReservationActive = false
-			userQuotaCounted = true
-		} else {
-			// A concurrent create may have turned this request into a version
-			// update. Such a response must not consume a site slot.
-			releaseQuotaReservation()
+	if !ownerQuotaManaged {
+		userQuotaCounted := false
+		if quotaReservationActive {
+			if resp.Created {
+				// The reservation now represents the successful new site.
+				quotaReservationActive = false
+				userQuotaCounted = true
+			} else {
+				// A concurrent create may have turned this request into a version
+				// update. Such a response must not consume a site slot.
+				releaseQuotaReservation()
+			}
 		}
-	}
-	if resp.Created && anonymousSessionID != "" {
-		_, err := s.deployer.IncrementAnonymousSessionDeployCount(r.Context(), anonymousSessionID)
-		if err != nil {
-			s.logger.Printf("failed to increment anonymous session %s: %v", anonymousSessionID, err)
+		if resp.Created && anonymousSessionID != "" {
+			_, err := s.deployer.IncrementAnonymousSessionDeployCount(r.Context(), anonymousSessionID)
+			if err != nil {
+				s.logger.Printf("failed to increment anonymous session %s: %v", anonymousSessionID, err)
+			}
 		}
-	}
-	if resp.Created && userID != "" && !userQuotaCounted {
-		if _, err := s.auth.IncrementUserDeployCount(r.Context(), userID); err != nil {
-			s.logger.Printf("failed to increment user deploy count %s: %v", userID, err)
+		if resp.Created && userID != "" && !userQuotaCounted {
+			if _, err := s.auth.IncrementUserDeployCount(r.Context(), userID); err != nil {
+				s.logger.Printf("failed to increment user deploy count %s: %v", userID, err)
+			}
 		}
 	}
 	s.rewriteDeployResponseURLs(r, resp)
@@ -1747,7 +1767,9 @@ func (s *Server) handleClaimAnonymousSession(w http.ResponseWriter, r *http.Requ
 		writeClaimError(NewError(CodeInvalidInput, "anonymous_session", "sessionId is required"))
 		return
 	}
+	s.siteMutationMu.Lock()
 	result, err := s.deployer.ClaimAnonymousSession(r.Context(), sessionID, userID)
+	s.siteMutationMu.Unlock()
 	if err != nil {
 		code := CodeInvalidInput
 		if errors.Is(err, store.ErrNotFound) {
@@ -1973,10 +1995,6 @@ func setAdminSessionCookie(w http.ResponseWriter, value string, maxAge int, secu
 
 func (s *Server) toAnonymousSessionResponse(sess store.AnonymousSession) AnonymousSessionResponse {
 	cfg := s.configSnapshot()
-	remaining := cfg.AnonymousDeployLimit - sess.DeployCount
-	if remaining < 0 {
-		remaining = 0
-	}
 	return AnonymousSessionResponse{
 		Success:     true,
 		SessionID:   sess.ID,
@@ -1984,8 +2002,22 @@ func (s *Server) toAnonymousSessionResponse(sess store.AnonymousSession) Anonymo
 		AgentLabel:  sess.AgentLabel,
 		DeployCount: sess.DeployCount,
 		DeployLimit: cfg.AnonymousDeployLimit,
-		Remaining:   remaining,
+		Remaining:   anonymousSessionRemaining(cfg.AnonymousDeployLimit, sess),
 	}
+}
+
+func anonymousSessionRemaining(limit int, sess store.AnonymousSession) int {
+	if strings.TrimSpace(sess.ClaimedByUserID) != "" {
+		return 0
+	}
+	if limit < 0 {
+		return -1
+	}
+	remaining := limit - sess.DeployCount
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 // requestID 上下文工具
@@ -5566,7 +5598,9 @@ func (s *Server) claimCurrentAnonymousSession(r *http.Request, userID string, is
 		"source":    source,
 		"auto":      true,
 	}
+	s.siteMutationMu.Lock()
 	result, err := s.deployer.ClaimAnonymousSession(r.Context(), sessionID, userID)
+	s.siteMutationMu.Unlock()
 	if err != nil {
 		s.logger.Printf("failed to claim anonymous session %s for user %s: %v", sessionID, userID, err)
 		s.recordFailedAuditLog(r, actorType, actorID, actorRole, "anonymous.claim", "", "anonymous_session", sessionID, detail,
@@ -5710,10 +5744,6 @@ func (s *Server) handleAdminAnonymousSessions(w http.ResponseWriter, r *http.Req
 	cfg := s.configSnapshot()
 	items := make([]AnonymousSessionListItem, 0, len(sessions))
 	for _, sess := range sessions {
-		remaining := cfg.AnonymousDeployLimit - sess.DeployCount
-		if remaining < 0 {
-			remaining = 0
-		}
 		items = append(items, AnonymousSessionListItem{
 			ID:              sess.ID,
 			AgentID:         sess.AgentID,
@@ -5721,7 +5751,7 @@ func (s *Server) handleAdminAnonymousSessions(w http.ResponseWriter, r *http.Req
 			DeviceIP:        sess.DeviceIP,
 			UserAgent:       sess.UserAgent,
 			DeployCount:     sess.DeployCount,
-			Remaining:       remaining,
+			Remaining:       anonymousSessionRemaining(cfg.AnonymousDeployLimit, sess),
 			ClaimedByUserID: sess.ClaimedByUserID,
 			ClaimedAt:       sess.ClaimedAt,
 			CreatedAt:       sess.CreatedAt,
@@ -7003,6 +7033,7 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 	// this legacy endpoint without passing the normal quota preflight.
 	s.siteMutationMu.Lock()
 	defer s.siteMutationMu.Unlock()
+	ownerQuotaManaged := deployerManagesOwnerQuota(s.deployer)
 	actor, actorIsAdmin, actorErr := s.authenticateActor(r)
 	if actorErr != nil {
 		writeError(w, apiErrWithReqID(actorErr, reqID))
@@ -7066,7 +7097,7 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
-	if resp.Created && userID != "" {
+	if resp.Created && userID != "" && !ownerQuotaManaged {
 		if _, err := s.auth.IncrementUserDeployCount(r.Context(), userID); err != nil {
 			s.logger.Printf("failed to increment user deploy count %s: %v", userID, err)
 		}

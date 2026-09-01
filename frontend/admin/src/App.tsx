@@ -1882,7 +1882,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
 
   async function deleteSite(site: SiteItem) {
     await api(`/api/admin/sites/${encodeURIComponent(site.code)}`, { method: "DELETE" });
-    showToast("站点已删除");
+    showToast("站点已删除，应用额度已释放");
     await load();
   }
 
@@ -2159,7 +2159,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
           </div>
         </Drawer>
       )}
-      {deleteSiteTarget && <ConfirmModal title="删除站点" message={`确认删除 ${deleteSiteTarget.code} 及其全部版本？`} danger confirmText="删除" onConfirm={() => void deleteSite(deleteSiteTarget)} onClose={() => setDeleteSiteTarget(null)} />}
+      {deleteSiteTarget && <ConfirmModal title="删除站点" message={`确认删除 ${deleteSiteTarget.code} 及其全部版本？删除后会释放该归属账号的一个应用额度。`} danger confirmText="删除" onConfirm={() => void deleteSite(deleteSiteTarget)} onClose={() => setDeleteSiteTarget(null)} />}
       {deleteVersionTarget && <ConfirmModal title="删除版本" message={`确认删除 v${deleteVersionTarget.version}？`} danger confirmText="删除" onConfirm={() => { if (versionCode) { void versionAction("delete", deleteVersionTarget.version); } setDeleteVersionTarget(null); }} onClose={() => setDeleteVersionTarget(null)} />}
       {visibilityTarget && <ConfirmModal title="切换可见性" message={`确认将 ${visibilityTarget.code} ${visibilityTarget.visibility === "unlisted" ? "公开进创作市场" : "设为未公开"}？`} confirmText="确认" onConfirm={() => void toggleVisibility(visibilityTarget)} onClose={() => setVisibilityTarget(null)} />}
     </section>
@@ -3053,7 +3053,7 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
   return (
     <section className="panel">
       <div className="panel-head">
-        <div><h2>用户管理</h2><p>维护邮箱、验证状态、部署额度、角色和启用状态。</p></div>
+        <div><h2>用户管理</h2><p>维护邮箱、验证状态、应用额度、角色和启用状态。</p></div>
         <div className="actions tight">
           <button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button>
           <button className="button primary" type="button" onClick={() => setDrawerOpen(true)}><UserPlus size={16} />添加用户</button>
@@ -3061,7 +3061,7 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
       </div>
       <div className="table-wrap users-table">
         <table>
-          <thead><tr><th>用户名</th><th>邮箱</th><th style={{width:"80px",textAlign:"center"}}>额度 / 已用</th><th style={{width:"84px",textAlign:"center"}}>角色</th><th style={{width:"70px",textAlign:"center"}}>状态</th><th style={{width:"90px"}}>操作</th></tr></thead>
+          <thead><tr><th>用户名</th><th>邮箱</th><th style={{width:"80px",textAlign:"center"}}>额度 / 应用</th><th style={{width:"84px",textAlign:"center"}}>角色</th><th style={{width:"70px",textAlign:"center"}}>状态</th><th style={{width:"90px"}}>操作</th></tr></thead>
           <tbody>
             {users.map((user) => (
               <tr key={user.id}>
@@ -3117,7 +3117,7 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
         <label className="field"><span>邮箱</span><input type="email" value={email} onChange={(e) => { setEmail(e.target.value); if (!e.target.value.trim()) setEmailVerified(false); }} placeholder="user@example.com" /></label>
         <label className="check-line"><input type="checkbox" checked={emailVerified} disabled={!email.trim()} onChange={(e) => setEmailVerified(e.target.checked)} />邮箱已验证</label>
         <label className="field"><span>初始密码</span><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少 8 位" /></label>
-        <label className="field"><span>部署额度</span><input type="number" value={limit} onChange={(e) => setLimit(Number(e.target.value))} /></label>
+        <label className="field"><span>应用额度</span><input type="number" value={limit} onChange={(e) => setLimit(Number(e.target.value))} /></label>
         <label className="check-line admin-highlight"><input type="checkbox" checked={isAdmin} onChange={(e) => setIsAdmin(e.target.checked)} /><span>管理员</span><em>管理员拥有全站管理权限</em></label>
         <button className="button primary" type="button" onClick={() => void create()}><UserPlus size={16} />创建用户</button>
       </Drawer>
@@ -3130,8 +3130,8 @@ function UsersPanel({ showToast, setError }: { showToast: (msg: string) => void;
           {editingUser.email ? (
             <label className="check-line"><input type="checkbox" checked={editingUser.emailVerified} onChange={(e) => setEditingUser({ ...editingUser, emailVerified: e.target.checked })} />邮箱已验证</label>
           ) : null}
-          <label className="field"><span>部署额度</span><input type="number" value={editingUser.deployLimit} onChange={(e) => setEditingUser({ ...editingUser, deployLimit: Number(e.target.value) })} /></label>
-          <div className="field"><span>已使用</span><strong>{editingUser.deployCount || 0} 次</strong></div>
+          <label className="field"><span>应用额度</span><input type="number" value={editingUser.deployLimit} onChange={(e) => setEditingUser({ ...editingUser, deployLimit: Number(e.target.value) })} /></label>
+          <div className="field"><span>当前应用</span><strong>{editingUser.deployCount || 0} 个</strong></div>
           <div className="form-grid" style={{marginTop:"12px"}}>
             <label className="check-line admin-highlight">
               <input type="checkbox" checked={editingUser.isAdmin} onChange={(e) => setEditingUser({ ...editingUser, isAdmin: e.target.checked })} />
@@ -3175,13 +3175,13 @@ function AnonymousPanel({ setError }: { setError: (msg: string) => void }) {
     <section className="panel">
       <div className="panel-head"><div><h2>匿名 Agent</h2><p>所有未登录发布都会记录。网页匿名按浏览器 cookie；Agent 匿名按本地 sessionId 和 X-Hostctl-Session。</p></div><button className="button" type="button" onClick={() => void load()}><RefreshCw size={16} />刷新</button></div>
       <div className="stats-grid small">
-        <Metric label="Policy" value={String(limit)} note="每个匿名 session 可部署次数" />
-        <Metric label="Scope" value="发布" note="网页匿名与 Agent 匿名统一统计" />
+        <Metric label="Policy" value={limit < 0 ? "无限" : String(limit)} note="每个匿名 session 最多保有应用数" />
+        <Metric label="Scope" value="应用" note="网页匿名与 Agent 匿名统一统计" />
         <Metric label="Agents" value={String(sessions.length)} note="最近活跃匿名身份" />
       </div>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Session</th><th>Agent 标记</th><th>IP / UA</th><th>部署</th><th>剩余</th><th>状态</th><th>最近使用</th></tr></thead>
+          <thead><tr><th>Session</th><th>Agent 标记</th><th>IP / UA</th><th>应用</th><th>剩余</th><th>状态</th><th>最近使用</th></tr></thead>
           <tbody>
             {sessions.map((session) => (
               <tr key={session.id}>
@@ -3189,7 +3189,7 @@ function AnonymousPanel({ setError }: { setError: (msg: string) => void }) {
                 <td>{session.agentLabel || "-"}<br /><small>{session.agentId || "网页匿名或未上报"}</small></td>
                 <td>{session.deviceIp || "-"}<br /><small>{session.userAgent || "-"}</small></td>
                 <td>{session.deployCount || 0}</td>
-                <td>{session.remaining ?? "-"}</td>
+                <td>{session.remaining == null ? "-" : session.remaining < 0 ? "无限" : session.remaining}</td>
                 <td>{session.claimedByUserId ? <span className="badge green">已绑定用户</span> : <span className="badge slate">匿名</span>}</td>
                 <td>{formatDate(session.lastUsedAt)}</td>
               </tr>
@@ -3625,7 +3625,7 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
   const embedModeText = draft.embedPolicy === "deny" ? "禁止任何网站 iframe 嵌入应用" : draft.embedPolicy === "self" ? "只允许本站嵌入应用" : draft.embedPolicy === "allowlist" ? "本站和白名单来源可嵌入应用" : "允许任意网站 iframe 嵌入应用";
   const configSections: Array<{ id: ConfigSectionTab; label: string; note: string }> = [
     { id: "links", label: "访问链接", note: "主站入口和应用链接规则" },
-    { id: "limits", label: "发布限额", note: "匿名额度、冷却和上传限制" },
+    { id: "limits", label: "应用限额", note: "匿名额度、冷却和上传限制" },
     { id: "security", label: "跨域嵌入", note: "API CORS 与 iframe 策略" },
     { id: "injection", label: "代码注入", note: "主站与应用代码片段" }
   ];
@@ -3705,12 +3705,12 @@ function ConfigPanel({ config, onConfig, showToast, setError }: { config: Runtim
           )}
 
           {section === "limits" && (
-          <FoldSection id="limits" label="发布限额 — 控制匿名发布、上传大小和滥用防护" fold={fold}>
+          <FoldSection id="limits" label="应用限额 — 控制匿名发布、上传大小和滥用防护" fold={fold}>
             <div className="form-grid three">
               <label className="field rich-field">
-                <span>匿名额度</span>
-                <input type="number" min={0} value={draft.anonymousDeployLimit} onChange={(event) => setDraft({ ...draft, anonymousDeployLimit: Number(event.target.value) })} />
-                <em>未登录网页或匿名 Agent 最多可发布次数；注册用户不受这个匿名额度影响。</em>
+                <span>匿名应用额度</span>
+                <input type="number" min={-1} value={draft.anonymousDeployLimit} onChange={(event) => setDraft({ ...draft, anonymousDeployLimit: Number(event.target.value) })} />
+                <em>未登录网页或匿名 Agent 最多可保有的应用数；删除应用后会释放额度，设为 -1 表示不限制。</em>
               </label>
               <label className="field rich-field">
                 <span>部署冷却秒</span>

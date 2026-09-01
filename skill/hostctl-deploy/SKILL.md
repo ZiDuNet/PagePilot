@@ -55,7 +55,8 @@ python scripts/pagep.py preflight ./site
 - 匿名 Agent 会在本地创建或复用 `~/.pagep/agent.json` 和 `~/.pagep/session.json`。
 - 匿名 session 决定未登录发布的所有权；Agent 标识、IP 和 User-Agent 只用于后台展示和排查。
 - 所有未登录发布都会记录为匿名会话。只创建 session 但从未发布的空会话，不展示在后台匿名列表。
-- 匿名发布受额度限制，但可以发布、更新自己拥有的站点、删除自己的站点、设置或清除访问密码。
+- 匿名发布受当前保有应用数限制；新建应用占用一个额度，删除整个应用后立即释放。追加版本不额外占用额度，且匿名身份仍可更新、删除自己拥有的站点、设置或清除访问密码。
+- 注册用户的应用额度也按当前保有应用数计算；认领匿名 session 会转移其中仍存在的应用，若超过用户限额，先删除不再需要的应用再继续新建。
 - 用户注册或提供 Token 后，应把当前匿名 session 认领到用户：
 
 ```bash
@@ -74,7 +75,7 @@ pagep config show
 
 ## 发布前必须确认
 
-- 在上传 HTML、目录或 ZIP 前，先运行 `pagep preflight <source>`。它只读本地文件，不会创建匿名 session、不会上传，也不会消耗配额；输出里的 `success=false` 时先按 `errors[].hint` 修复再发布。`warnings` 只提示兼容性风险，可由 Agent 结合用户目标决定是否继续。
+- 在上传 HTML、目录或 ZIP 前，先运行 `pagep preflight <source>`。它只读本地文件，不会创建匿名 session、不会上传，也不会占用应用额度；输出里的 `success=false` 时先按 `errors[].hint` 修复再发布。`warnings` 只提示兼容性风险，可由 Agent 结合用户目标决定是否继续。
 - `pagep preflight ./site --filename path/to/entry.html` 可在 ZIP 或目录包含多个入口时验证用户明确指定的入口。它检查目录/ZIP 的文件数、体积、路径穿越、符号链接、重复路径和入口识别；本地默认上限会在输出 `limits` 中列出，生产环境若调整过上传限额，先运行 `pagep doctor --server <地址>` 核对服务端返回的实际限制。未配置 Token 时 `doctor` 只检查公开只读接口，不会为了探测匿名发布而创建 session。
 
 - 先确认用户要「新建发布」还是「更新已有发布」。
@@ -385,7 +386,7 @@ MCP 返回里的 URL 同样以服务端 API 返回值为准。
 | 屏幕投放失败 | 未使用注册用户 Token 或屏幕不属于该用户 | 先 `screen list`，确认 Token 和屏幕归属 |
 | 加密作品无法预览 | 需要访问密码授权 | 打开应用输入密码；授权有效期为 5 分钟，且绑定目标版本 |
 | 页面脚本或资源被拦截 | CSP / sandbox 安全策略生效 | 管理员查询审计日志 `security.csp_report`，按站点 code、IP、UA 或 blockedUri 定位 |
-| 匿名额度耗尽 | 当前匿名 session 达到限制 | 注册登录，创建 Token，再执行 `claim-session` |
+| 匿名额度耗尽 | 当前匿名 session 保有的应用数达到限制 | 删除不再需要的应用，或注册登录、创建 Token 后执行 `claim-session` |
 
 ## 安全红线
 

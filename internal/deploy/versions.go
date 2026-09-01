@@ -60,6 +60,11 @@ func (d *Deployer) ListVersions(ctx context.Context, code string) (*api.ListVers
 func (d *Deployer) LockVersion(ctx context.Context, code string, version int64, locked bool) (*api.LockResponse, *api.APIError) {
 	d.mutationMu.Lock()
 	defer d.mutationMu.Unlock()
+	lease, apiErr := d.acquireSiteMutationLease(ctx, code)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	defer func() { _ = lease.releaseLease() }()
 
 	// 校验版本存在
 	if _, err := d.store.GetVersion(ctx, code, version); err != nil {
@@ -85,6 +90,11 @@ func (d *Deployer) LockVersion(ctx context.Context, code string, version int64, 
 func (d *Deployer) SwitchCurrent(ctx context.Context, code string, version int64) (*api.SetCurrentResponse, *api.APIError) {
 	d.mutationMu.Lock()
 	defer d.mutationMu.Unlock()
+	lease, apiErr := d.acquireSiteMutationLease(ctx, code)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	defer func() { _ = lease.releaseLease() }()
 
 	site, err := d.store.GetSite(ctx, code)
 	if err != nil {
@@ -144,6 +154,11 @@ func (d *Deployer) SwitchCurrentByUUID(ctx context.Context, code, versionID stri
 func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version int64, req api.OverwriteRequest) (*api.DeployResponse, *api.APIError) {
 	d.mutationMu.Lock()
 	defer d.mutationMu.Unlock()
+	lease, apiErr := d.acquireSiteMutationLease(ctx, code)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	defer func() { _ = lease.releaseLease() }()
 
 	// 加载版本
 	v, err := d.store.GetVersion(ctx, code, version)
@@ -283,6 +298,11 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 func (d *Deployer) SetVersionStatus(ctx context.Context, code string, version int64, status string) (*api.LockResponse, *api.APIError) {
 	d.mutationMu.Lock()
 	defer d.mutationMu.Unlock()
+	lease, apiErr := d.acquireSiteMutationLease(ctx, code)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	defer func() { _ = lease.releaseLease() }()
 
 	v, err := d.store.GetVersion(ctx, code, version)
 	if err != nil {
@@ -315,6 +335,11 @@ func (d *Deployer) SetVersionStatus(ctx context.Context, code string, version in
 func (d *Deployer) DeleteVersion(ctx context.Context, code string, version int64) (*api.SetCurrentResponse, *api.APIError) {
 	d.mutationMu.Lock()
 	defer d.mutationMu.Unlock()
+	lease, apiErr := d.acquireSiteMutationLease(ctx, code)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	defer func() { _ = lease.releaseLease() }()
 
 	v, err := d.store.GetVersion(ctx, code, version)
 	if err != nil {

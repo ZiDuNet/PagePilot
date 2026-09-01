@@ -1600,6 +1600,7 @@ function MarketplaceCard({
     setDeleting(true);
     try {
       await api(`/api/admin/sites/${encodeURIComponent(item.code)}`, { method: "DELETE" });
+      showToast("作品已删除，应用额度已释放");
       onChanged();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "删除失败，请确认你有权限删除这个作品。");
@@ -1718,7 +1719,7 @@ function MarketplaceCard({
           <div className="user-confirm-card">
             <div className="user-confirm-head"><strong>删除作品</strong><button className="button ghost" type="button" onClick={() => setConfirmDelete(false)}>关闭</button></div>
             <div className="user-confirm-body">
-              <p>确认删除「{title}」？删除后站点和所有版本都会移除。</p>
+              <p>确认删除「{title}」？删除后站点和所有版本都会移除，并释放一个应用额度。</p>
               <div className="user-confirm-actions">
                 <button className="button ghost" type="button" onClick={() => setConfirmDelete(false)}>取消</button>
                 <button className="button danger" type="button" disabled={deleting} onClick={() => void deleteSite()}>确认删除</button>

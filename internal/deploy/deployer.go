@@ -64,6 +64,12 @@ func New(cfg config.Config, s store.Store) *Deployer {
 	}
 }
 
+// ManagesOwnerQuota tells the HTTP layer that new-site quota checks are
+// performed atomically with site creation in the Store implementation.
+func (d *Deployer) ManagesOwnerQuota() bool {
+	return true
+}
+
 func (d *Deployer) configSnapshot() config.Config {
 	d.cfgMu.RLock()
 	defer d.cfgMu.RUnlock()
@@ -174,11 +180,15 @@ func (d *Deployer) deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			WithRetryAfter(secs).
 			WithHint("Slow down. Use createVersion=true to iterate on an existing code instead of creating new ones.")
 	}
-	// The cooldown can intentionally be disabled. Keep metadata, version
-	// allocation, and filesystem publication mutually exclusive regardless so
-	// concurrent createVersion requests cannot reuse a version directory.
+	// The local mutex avoids duplicate version allocation in one process; the
+	// code-specific SQLite lease below extends that guarantee across processes.
 	d.mutationMu.Lock()
 	defer d.mutationMu.Unlock()
+	lease, leaseErr := d.acquireSiteMutationLease(ctx, code)
+	if leaseErr != nil {
+		return nil, leaseErr
+	}
+	defer func() { _ = lease.releaseLease() }()
 
 	// 5. 决定 version_number + 是否新建 site
 	isNewSite, versionNumber, apiErr := d.decideVersion(ctx, code, isCustom, req.CreateVersion)
@@ -203,6 +213,38 @@ func (d *Deployer) deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	}
 
 	storage := d.newVersionStorage(code, versionNumber)
+	siteCreated := false
+	cleanupNewSite := func() error {
+		if !siteCreated {
+			return nil
+		}
+		// A fresh lease check makes a late rollback fail closed instead of
+		// touching a same-code application that another process now owns.
+		leaseCtx, cancelLeaseCheck := context.WithTimeout(context.Background(), siteMutationLeaseRenewInterval)
+		defer cancelLeaseCheck()
+		if err := lease.ensure(leaseCtx); err != nil {
+			return fmt.Errorf("confirm rollback lease: %w", err)
+		}
+		// Remove metadata first so a failed filesystem cleanup leaves orphaned
+		// bytes but never an invisible app consuming an application slot.
+		if err := d.store.DeleteSite(context.Background(), code); err != nil {
+			return fmt.Errorf("delete failed site metadata: %w", err)
+		}
+		var cleanupErrs []error
+		if err := d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("delete failed version files: %w", err))
+		}
+		if err := os.RemoveAll(d.siteDir(code)); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove failed site directory: %w", err))
+		}
+		return errors.Join(cleanupErrs...)
+	}
+	newSiteFailure := func(stage, detail string) *api.APIError {
+		if cleanupErr := cleanupNewSite(); cleanupErr != nil {
+			return api.NewError(api.CodeInternal, stage, fmt.Sprintf("%s; rollback failed: %v", detail, cleanupErr))
+		}
+		return api.NewError(api.CodeInternal, stage, detail)
+	}
 	if err := d.writeFilesToStorage(ctx, code, versionNumber, storage, rfiles); err != nil {
 		_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 		return nil, api.NewError(api.CodeInternal, "write_files",
@@ -235,7 +277,7 @@ func (d *Deployer) deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			}
 			accessHash = hash
 		}
-		if err := d.store.CreateSite(ctx, store.Site{
+		if err := d.store.CreateSiteWithOwnerQuota(ctx, store.Site{
 			Code:                   code,
 			OwnerTokenID:           ownerTokenID,
 			PrimaryVersionStrategy: string(api.StrategyLikes),
@@ -247,11 +289,22 @@ func (d *Deployer) deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			AccessPasswordHash:     accessHash,
 			CreatedAt:              now,
 			Source:                 normalizeSource(req.Source),
-		}); err != nil {
+		}, d.configSnapshot().AnonymousDeployLimit); err != nil {
 			_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
+			if errors.Is(err, store.ErrDeployQuotaExceeded) {
+				if strings.HasPrefix(ownerTokenID, "anon:") {
+					return nil, api.NewError(api.CodeUnauthorized, "anonymous_quota",
+						"anonymous deploy limit reached").
+						WithHint("Ask the user to register or sign in, create a user token, then claim this anonymous session.")
+				}
+				return nil, api.NewError(api.CodeUnauthorized, "user_quota",
+					"user deploy limit reached").
+					WithHint("Ask an admin to raise your deploy quota.")
+			}
 			return nil, api.NewError(api.CodeInternal, "create_site",
 				fmt.Sprintf("failed to create site: %v", err))
 		}
+		siteCreated = true
 	} else if updateVisibility {
 		if err := d.store.SetSiteVisibility(ctx, code, visibility); err != nil {
 			_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
@@ -278,6 +331,9 @@ func (d *Deployer) deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		Status:                "active",
 		CreatedAt:             now,
 	}); err != nil {
+		if siteCreated {
+			return nil, newSiteFailure("create_version", fmt.Sprintf("failed to create version: %v", err))
+		}
 		_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 		return nil, api.NewError(api.CodeInternal, "create_version",
 			fmt.Sprintf("failed to create version: %v", err))
@@ -296,11 +352,17 @@ func (d *Deployer) deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		})
 	}
 	if err := d.store.CreateFiles(ctx, fileMetas); err != nil {
+		if siteCreated {
+			return nil, newSiteFailure("create_files", fmt.Sprintf("failed to create files: %v", err))
+		}
 		_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 		return nil, api.NewError(api.CodeInternal, "create_files",
 			fmt.Sprintf("failed to create files: %v", err))
 	}
 	if err := d.store.UpsertVersionBundle(ctx, resolved.toVersionBundle(code, versionNumber, now)); err != nil {
+		if siteCreated {
+			return nil, newSiteFailure("version_bundle", fmt.Sprintf("failed to record bundle metadata: %v", err))
+		}
 		_ = d.deleteVersionFilesForStorage(context.Background(), code, versionNumber, storage)
 		return nil, api.NewError(api.CodeInternal, "version_bundle",
 			fmt.Sprintf("failed to record bundle metadata: %v", err))
@@ -308,15 +370,24 @@ func (d *Deployer) deploy(ctx context.Context, req api.DeployRequest, ownerToken
 
 	// 9. 切 current_version + symlink
 	if err := d.store.SetCurrentVersion(ctx, code, &versionNumber); err != nil {
+		if siteCreated {
+			return nil, newSiteFailure("set_current", fmt.Sprintf("failed to set current version: %v", err))
+		}
 		return nil, api.NewError(api.CodeInternal, "set_current",
 			fmt.Sprintf("failed to set current version: %v", err))
 	}
 	if err := d.swapCurrentPointerForStorage(code, versionNumber, storage); err != nil {
+		if siteCreated {
+			return nil, newSiteFailure("swap_symlink", fmt.Sprintf("failed to swap current symlink: %v", err))
+		}
 		return nil, api.NewError(api.CodeInternal, "swap_symlink",
 			fmt.Sprintf("failed to swap current symlink: %v", err))
 	}
 	if templateSourceCode != "" {
 		if err := d.store.IncrementSiteReuseCount(ctx, templateSourceCode); err != nil {
+			if siteCreated {
+				return nil, newSiteFailure("template_reuse", fmt.Sprintf("failed to update template reuse count: %v", err))
+			}
 			return nil, api.NewError(api.CodeInternal, "template_reuse",
 				fmt.Sprintf("failed to update template reuse count: %v", err))
 		}
@@ -1261,6 +1332,11 @@ func (d *Deployer) DeleteSite(ctx context.Context, code string) *api.APIError {
 		return api.NewError(api.CodeInvalidInput, "validate",
 			fmt.Sprintf("invalid code %q", code))
 	}
+	lease, leaseErr := d.acquireSiteMutationLease(ctx, code)
+	if leaseErr != nil {
+		return leaseErr
+	}
+	defer func() { _ = lease.releaseLease() }()
 	// 校验是否存在
 	if _, err := d.store.GetSite(ctx, code); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

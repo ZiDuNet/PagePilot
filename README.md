@@ -139,10 +139,11 @@ docker compose up -d --build
 
 生产环境认证规则：
 
-- 匿名部署允许在配置的配额内进行，默认每个会话可部署 5 次。Agent 可以先调用 `/api/session` 并在写请求中携带 `X-Hostctl-Session`；如果未登录发布没有携带 session，服务端也会自动创建并记录匿名 session。
+- 匿名部署允许在配置的应用配额内进行，默认每个会话最多保有 5 个应用；删除应用后会立即释放一个额度。Agent 可以先调用 `/api/session` 并在写请求中携带 `X-Hostctl-Session`；如果未登录发布没有携带 session，服务端也会自动创建并记录匿名 session。
 - 匿名身份分两类入口但底层统一：网页匿名使用浏览器 HttpOnly cookie；Agent 匿名使用本地 `~/.pagep/session.json` 中的 `sessionId`。两者在服务端都映射为 `anon:{sessionId}` owner，Agent 标识、IP 和 UA 只用于后台展示和排查。
 - 匿名会话可以设置访问密码、删除和修改自己发布的站点；匿名统计只按实际未登录发布记录，未发布的空 session 不计入后台列表。
 - 用户注册 / 登录或使用 Bearer Token 后，可以调用 `/api/session/claim` 认领当前匿名 session。认领后该 session 已发布的站点会迁移到 `user:{userId}`，一个用户可以认领多个匿名 session。
+- 注册用户的应用额度同样按当前保有的应用数计算；追加版本、下线或隐藏不额外占用，删除整个应用才会释放额度。
 - Token 必须归属到用户。创建 Token 时默认永久有效，也可传 `expiresAt` 或 `ttlSeconds` 创建临时 Token。
 - 浏览器前台和后台登录只使用服务端 `HttpOnly`、`SameSite=Lax` 会话 Cookie，不会从 `localStorage` / `sessionStorage` 自动注入 Bearer Token；API Token 仅在 Skill、MCP、CLI 或显式 API 调用中使用。
 - 管理员控制台、令牌管理、配置写入以及整站删除都需要管理员权限（`isAdmin=true`）。

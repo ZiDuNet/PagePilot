@@ -303,7 +303,7 @@ async function verifyHTTP(baseURL, adminPassword) {
   assert(!tokens.tokens?.some((token) => token.id === "legacy-system-token"), "unowned legacy token should be removed");
 
   const { body: anonymous } = await request(baseURL, "/api/admin/anonymous-sessions", { jar: adminJar });
-  assert(anonymous.sessions?.some((session) => session.id === "anon-legacy" && session.deployCount === 5), "legacy anonymous session missing");
+  assert(!anonymous.sessions?.some((session) => session.id === "anon-legacy"), "empty legacy anonymous session should not stay in the active list");
 
   const skill = await fetch(new URL("/skill/pagep.zip", baseURL));
   assert(skill.status === 200, "Skill ZIP is not downloadable from Docker container");

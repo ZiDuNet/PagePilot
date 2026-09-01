@@ -197,7 +197,7 @@ type AnonymousSessionClaimResult struct {
 	SessionID      string
 	UserID         string
 	SiteCount      int
-	DeployCount    int
+	DeployCount    int // Number of live applications moved by this claim.
 	AlreadyClaimed bool
 }
 
@@ -306,14 +306,23 @@ var (
 	// ErrLastActiveAdmin prevents an account update from removing the final
 	// active administrator and permanently locking the instance.
 	ErrLastActiveAdmin = errors.New("cannot remove the last active admin")
+	// ErrDeployQuotaExceeded means an owner has no remaining live-application
+	// quota, or an anonymous session is no longer eligible to publish.
+	ErrDeployQuotaExceeded = errors.New("deploy quota exceeded")
 )
 
 // Store 定义元数据访问接口。
 type Store interface {
 	Close() error
 
-	// CreateSite 创建一个新 site 记录。current_version 初始为 NULL。
+	// CreateSite creates a site without quota accounting. It is reserved for
+	// migrations and test fixtures; production publishing must use
+	// CreateSiteWithOwnerQuota.
 	CreateSite(ctx context.Context, s Site) error
+	// CreateSiteWithOwnerQuota atomically consumes the canonical owner's live
+	// application quota and creates the site. anonymousLimit accepts -1 for
+	// unlimited anonymous publishing.
+	CreateSiteWithOwnerQuota(ctx context.Context, s Site, anonymousLimit int) error
 
 	// GetSite 按 code 查 site。
 	GetSite(ctx context.Context, code string) (Site, error)

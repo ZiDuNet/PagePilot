@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,6 +115,12 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate audit logs result: %w", err)
 	}
+	// deploy_count used to be a historical publish counter. Quotas now describe
+	// the number of live applications, so normalize legacy values on startup.
+	if err := reconcileDeployQuotaCounts(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("reconcile deploy quotas: %w", err)
+	}
 
 	// 给老 site 补 public_id（NULL 的填上）
 	if err := backfillSitesPublicID(db); err != nil {
@@ -160,6 +167,13 @@ func migrateAnonymousSessionsAddAgentColumns(db *sql.DB) error {
 		if err != nil && !contains(err.Error(), "duplicate column") && !contains(err.Error(), "no such table") {
 			return fmt.Errorf("alter anonymous_sessions add %s: %w", c.name, err)
 		}
+	}
+	if _, err := db.Exec(`
+		UPDATE anonymous_sessions
+		SET claimed_by_user_id = NULL, claimed_at = NULL
+		WHERE NULLIF(TRIM(COALESCE(claimed_by_user_id, '')), '') IS NULL
+	`); err != nil {
+		return fmt.Errorf("normalize anonymous session claim state: %w", err)
 	}
 	return nil
 }
@@ -274,11 +288,50 @@ func migrateSitesEnsureIndexes(db *sql.DB) error {
 	stmts := []string{
 		`CREATE INDEX IF NOT EXISTS idx_sites_status ON sites(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_sites_public_id ON sites(public_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_sites_owner ON sites(owner_token_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// reconcileDeployQuotaCounts makes quota accounting recoverable across
+// upgrades and interrupted requests. Only canonical user:/anon: owners are
+// counted; legacy opaque owners intentionally remain untouched.
+func reconcileDeployQuotaCounts(db *sql.DB) error {
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin quota reconciliation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE admin_users
+		SET deploy_count = (
+			SELECT COUNT(*) FROM sites
+			WHERE owner_token_id = 'user:' || admin_users.id
+		)
+	`); err != nil {
+		return fmt.Errorf("reconcile user quotas: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE anonymous_sessions
+		SET deploy_count = CASE
+			WHEN NULLIF(TRIM(claimed_by_user_id), '') IS NULL THEN (
+				SELECT COUNT(*) FROM sites
+				WHERE owner_token_id = 'anon:' || anonymous_sessions.id
+			)
+			ELSE 0
+		END
+	`); err != nil {
+		return fmt.Errorf("reconcile anonymous quotas: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit quota reconciliation: %w", err)
 	}
 	return nil
 }
@@ -461,17 +514,126 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
-// CreateSite 创建一个新 site。
+type sqlSiteExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+// CreateSite creates a new site without changing quota counters. It is used
+// by migrations and test fixtures; production deployment uses the atomic
+// owner-quota variant below.
 func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
+	return insertSite(ctx, s.db, site)
+}
+
+// CreateSiteWithOwnerQuota atomically checks the canonical owner's quota,
+// increments the live-site counter, and inserts the site. The INSERT is part
+// of the same transaction, so duplicate codes and write failures never leave
+// a consumed slot behind.
+func (s *SQLiteStore) CreateSiteWithOwnerQuota(ctx context.Context, site Site, anonymousLimit int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin create site with quota: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	ownerTokenID := strings.TrimSpace(site.OwnerTokenID)
+	site.OwnerTokenID = ownerTokenID
+	switch {
+	case strings.HasPrefix(ownerTokenID, "user:"):
+		userID := strings.TrimSpace(strings.TrimPrefix(ownerTokenID, "user:"))
+		if userID == "" {
+			return ErrDeployQuotaExceeded
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE admin_users
+			SET deploy_count = deploy_count + 1
+			WHERE id = ? AND is_active = 1
+			  AND (is_admin = 1 OR deploy_limit < 0 OR deploy_count < deploy_limit)
+		`, userID)
+		if err != nil {
+			return fmt.Errorf("consume user deploy quota: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("check user deploy quota: %w", err)
+		}
+		if n == 0 {
+			return ErrDeployQuotaExceeded
+		}
+	case strings.HasPrefix(ownerTokenID, "anon:"):
+		sessionID := strings.TrimSpace(strings.TrimPrefix(ownerTokenID, "anon:"))
+		if sessionID == "" {
+			return ErrDeployQuotaExceeded
+		}
+		effectiveLimit, err := anonymousDeployLimitForCreateTx(ctx, tx, anonymousLimit)
+		if err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE anonymous_sessions
+			SET deploy_count = deploy_count + 1, last_used_at = ?
+			WHERE id = ?
+			  AND NULLIF(TRIM(claimed_by_user_id), '') IS NULL
+			  AND (? < 0 OR deploy_count < ?)
+		`, time.Now().UTC(), sessionID, effectiveLimit, effectiveLimit)
+		if err != nil {
+			return fmt.Errorf("consume anonymous deploy quota: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("check anonymous deploy quota: %w", err)
+		}
+		if n == 0 {
+			return ErrDeployQuotaExceeded
+		}
+	}
+
+	if err := insertSite(ctx, tx, site); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit create site with quota: %w", err)
+	}
+	return nil
+}
+
+// anonymousDeployLimitForCreateTx prefers the persisted setting so an older
+// server process cannot keep accepting publishes with a stale in-memory limit.
+func anonymousDeployLimitForCreateTx(ctx context.Context, tx *sql.Tx, fallback int) (int, error) {
+	if fallback < -1 {
+		return 0, fmt.Errorf("invalid anonymous deploy limit %d", fallback)
+	}
+	var raw string
+	err := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'anonymous_deploy_limit'`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fallback, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("load anonymous deploy limit: %w", err)
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return fallback, nil
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit < -1 {
+		return 0, fmt.Errorf("invalid persisted anonymous deploy limit %q", raw)
+	}
+	return limit, nil
+}
+
+func insertSite(ctx context.Context, db sqlSiteExecer, site Site) error {
 	strategy := site.PrimaryVersionStrategy
 	if strategy == "" {
 		strategy = "likes"
 	}
 	publicID := site.PublicID
 	if publicID == "" {
-		if id, err := newUUID(); err == nil {
-			publicID = id
+		id, err := newUUID()
+		if err != nil {
+			return fmt.Errorf("generate site public ID: %w", err)
 		}
+		publicID = id
 	}
 	status := site.Status
 	if status == "" {
@@ -504,7 +666,7 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site Site) error {
 	if updatedAt.IsZero() {
 		updatedAt = now
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO sites (code, public_id, owner_token_id, current_version, primary_version_strategy,
 		                   visibility, reuse_policy, source_download_policy, security_mode, category, tags, view_count, like_count, reuse_count, template_source_code, template_source_version, status, access_password_hash, is_pinned, pinned_at, expires_at, created_at, updated_at, source)
 		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1211,14 +1373,23 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]SiteWithMeta, error) {
 	return out, rows.Err()
 }
 
-// DeleteSite 删除整个 site（事务：先 files，再 versions，再 sites）。
-// 磁盘文件清理由调用方负责。
+// DeleteSite deletes a whole site and reconciles its original owner's live
+// application quota in the same transaction. Filesystem cleanup is owned by
+// the caller.
 func (s *SQLiteStore) DeleteSite(ctx context.Context, code string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	var ownerTokenID string
+	if err := tx.QueryRowContext(ctx, `SELECT owner_token_id FROM sites WHERE code = ?`, code).Scan(&ownerTokenID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load site owner: %w", err)
+	}
 
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM files WHERE site_code = ?`, code); err != nil {
@@ -1262,8 +1433,46 @@ func (s *SQLiteStore) DeleteSite(ctx context.Context, code string) error {
 	if n == 0 {
 		return ErrNotFound
 	}
+	if err := reconcileOwnerDeployQuotaTx(ctx, tx, ownerTokenID); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete site: %w", err)
+	}
+	return nil
+}
+
+func reconcileOwnerDeployQuotaTx(ctx context.Context, tx *sql.Tx, ownerTokenID string) error {
+	ownerTokenID = strings.TrimSpace(ownerTokenID)
+	switch {
+	case strings.HasPrefix(ownerTokenID, "user:"):
+		userID := strings.TrimSpace(strings.TrimPrefix(ownerTokenID, "user:"))
+		if userID == "" {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE admin_users
+			SET deploy_count = (
+				SELECT COUNT(*) FROM sites WHERE owner_token_id = ?
+			)
+			WHERE id = ?
+		`, ownerTokenID, userID); err != nil {
+			return fmt.Errorf("reconcile user quota after delete: %w", err)
+		}
+	case strings.HasPrefix(ownerTokenID, "anon:"):
+		sessionID := strings.TrimSpace(strings.TrimPrefix(ownerTokenID, "anon:"))
+		if sessionID == "" {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE anonymous_sessions
+			SET deploy_count = (
+				SELECT COUNT(*) FROM sites WHERE owner_token_id = ?
+			)
+			WHERE id = ? AND NULLIF(TRIM(claimed_by_user_id), '') IS NULL
+		`, ownerTokenID, sessionID); err != nil {
+			return fmt.Errorf("reconcile anonymous quota after delete: %w", err)
+		}
 	}
 	return nil
 }

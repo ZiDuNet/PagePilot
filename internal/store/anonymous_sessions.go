@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -31,7 +32,7 @@ func (s *SQLiteStore) CreateAnonymousSession(ctx context.Context, session Anonym
 func (s *SQLiteStore) PruneAnonymousSessions(ctx context.Context, before time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		DELETE FROM anonymous_sessions
-		WHERE claimed_by_user_id IS NULL
+		WHERE NULLIF(TRIM(claimed_by_user_id), '') IS NULL
 		  AND deploy_count = 0
 		  AND last_used_at < ?
 		  AND NOT EXISTS (
@@ -112,7 +113,7 @@ func (s *SQLiteStore) IncrementAnonymousSessionDeployCount(ctx context.Context, 
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE anonymous_sessions
 		SET deploy_count = deploy_count + 1, last_used_at = ?
-		WHERE id = ? AND claimed_by_user_id IS NULL
+		WHERE id = ? AND NULLIF(TRIM(claimed_by_user_id), '') IS NULL
 	`, now, id)
 	if err != nil {
 		return AnonymousSession{}, fmt.Errorf("increment anonymous session deploy count: %w", err)
@@ -125,19 +126,22 @@ func (s *SQLiteStore) IncrementAnonymousSessionDeployCount(ctx context.Context, 
 }
 
 func (s *SQLiteStore) ClaimAnonymousSession(ctx context.Context, id, userID string) (AnonymousSessionClaimResult, error) {
+	id = strings.TrimSpace(id)
+	userID = strings.TrimSpace(userID)
+	if id == "" || userID == "" {
+		return AnonymousSessionClaimResult{}, fmt.Errorf("anonymous session and user ID are required")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return AnonymousSessionClaimResult{}, fmt.Errorf("begin claim anonymous session: %w", err)
 	}
 	defer tx.Rollback()
 
-	var sess AnonymousSession
 	var claimedByUserID sql.NullString
-	var deployCount int
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, deploy_count, claimed_by_user_id
+		SELECT claimed_by_user_id
 		FROM anonymous_sessions WHERE id = ?
-	`, id).Scan(&sess.ID, &deployCount, &claimedByUserID)
+	`, id).Scan(&claimedByUserID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AnonymousSessionClaimResult{}, ErrNotFound
 	}
@@ -145,13 +149,13 @@ func (s *SQLiteStore) ClaimAnonymousSession(ctx context.Context, id, userID stri
 		return AnonymousSessionClaimResult{}, fmt.Errorf("load anonymous session for claim: %w", err)
 	}
 
+	claimedBy := strings.TrimSpace(claimedByUserID.String)
 	result := AnonymousSessionClaimResult{
 		SessionID:      id,
 		UserID:         userID,
-		DeployCount:    deployCount,
-		AlreadyClaimed: claimedByUserID.Valid && claimedByUserID.String == userID,
+		AlreadyClaimed: claimedBy != "" && claimedBy == userID,
 	}
-	if claimedByUserID.Valid && claimedByUserID.String != "" && claimedByUserID.String != userID {
+	if claimedBy != "" && claimedBy != userID {
 		return AnonymousSessionClaimResult{}, fmt.Errorf("anonymous session already claimed")
 	}
 
@@ -165,23 +169,32 @@ func (s *SQLiteStore) ClaimAnonymousSession(ctx context.Context, id, userID stri
 	}
 	siteCount, _ := res.RowsAffected()
 	result.SiteCount = int(siteCount)
+	result.DeployCount = result.SiteCount
 
 	now := time.Now().UTC()
 	_, err = tx.ExecContext(ctx, `
 		UPDATE anonymous_sessions
-		SET claimed_by_user_id = ?, claimed_at = COALESCE(claimed_at, ?), last_used_at = ?
+		SET claimed_by_user_id = ?, claimed_at = COALESCE(claimed_at, ?), last_used_at = ?, deploy_count = 0
 		WHERE id = ?
 	`, userID, now, now, id)
 	if err != nil {
 		return AnonymousSessionClaimResult{}, fmt.Errorf("mark anonymous session claimed: %w", err)
 	}
-	if !result.AlreadyClaimed && deployCount > 0 {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE admin_users SET deploy_count = deploy_count + ? WHERE id = ?
-		`, deployCount, userID)
-		if err != nil {
-			return AnonymousSessionClaimResult{}, fmt.Errorf("carry anonymous deploy count: %w", err)
-		}
+	// A claim transfers existing applications so their owner can manage or
+	// delete them. New creations remain subject to the user's configured limit.
+	res, err = tx.ExecContext(ctx, `
+		UPDATE admin_users
+		SET deploy_count = (
+			SELECT COUNT(*) FROM sites WHERE owner_token_id = ?
+		)
+		WHERE id = ?
+	`, ownerUser, userID)
+	if err != nil {
+		return AnonymousSessionClaimResult{}, fmt.Errorf("reconcile claimed user quota: %w", err)
+	}
+	updatedUsers, _ := res.RowsAffected()
+	if updatedUsers == 0 {
+		return AnonymousSessionClaimResult{}, ErrNotFound
 	}
 	if err := tx.Commit(); err != nil {
 		return AnonymousSessionClaimResult{}, fmt.Errorf("commit anonymous claim: %w", err)
@@ -197,7 +210,8 @@ func (s *SQLiteStore) ListAnonymousSessions(ctx context.Context, limit int) ([]A
 		SELECT a.id, a.agent_id, a.agent_label, a.device_ip, a.user_agent,
 		       a.deploy_count, a.claimed_by_user_id, a.claimed_at, a.created_at, a.last_used_at
 		FROM anonymous_sessions a
-		WHERE a.deploy_count > 0
+		WHERE NULLIF(TRIM(a.claimed_by_user_id), '') IS NOT NULL
+		   OR a.deploy_count > 0
 		   OR EXISTS (SELECT 1 FROM sites s WHERE s.owner_token_id = 'anon:' || a.id)
 		ORDER BY a.last_used_at DESC
 		LIMIT ?

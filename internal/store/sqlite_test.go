@@ -279,28 +279,32 @@ func TestClaimAnonymousSessionMigratesSitesAndStats(t *testing.T) {
 	if err := store.CreateAnonymousSession(ctx, AnonymousSession{ID: "empty", CreatedAt: now, LastUsedAt: now}); err != nil {
 		t.Fatalf("create empty anonymous session: %v", err)
 	}
-	if err := store.CreateSite(ctx, Site{
-		Code:         "demo",
-		OwnerTokenID: "anon:anon-1",
-		CreatedAt:    now,
-	}); err != nil {
-		t.Fatalf("create site: %v", err)
+	for _, code := range []string{"demo-one", "demo-two"} {
+		if err := store.CreateSite(ctx, Site{
+			Code:         code,
+			OwnerTokenID: "anon:anon-1",
+			CreatedAt:    now,
+		}); err != nil {
+			t.Fatalf("create site %s: %v", code, err)
+		}
 	}
 
 	result, err := store.ClaimAnonymousSession(ctx, "anon-1", "user-1")
 	if err != nil {
 		t.Fatalf("claim anonymous session: %v", err)
 	}
-	if result.SiteCount != 1 || result.DeployCount != 2 || result.AlreadyClaimed {
+	if result.SiteCount != 2 || result.DeployCount != 2 || result.AlreadyClaimed {
 		t.Fatalf("unexpected claim result: %+v", result)
 	}
 
-	site, err := store.GetSite(ctx, "demo")
-	if err != nil {
-		t.Fatalf("get site: %v", err)
-	}
-	if site.OwnerTokenID != "user:user-1" {
-		t.Fatalf("site owner = %q, want user:user-1", site.OwnerTokenID)
+	for _, code := range []string{"demo-one", "demo-two"} {
+		site, err := store.GetSite(ctx, code)
+		if err != nil {
+			t.Fatalf("get site %s: %v", code, err)
+		}
+		if site.OwnerTokenID != "user:user-1" {
+			t.Fatalf("site %s owner = %q, want user:user-1", code, site.OwnerTokenID)
+		}
 	}
 
 	user, err := store.GetAdminUserByID(ctx, "user-1")
@@ -310,12 +314,19 @@ func TestClaimAnonymousSessionMigratesSitesAndStats(t *testing.T) {
 	if user.DeployCount != 2 {
 		t.Fatalf("user deploy count = %d, want 2", user.DeployCount)
 	}
+	session, err := store.GetAnonymousSession(ctx, "anon-1")
+	if err != nil {
+		t.Fatalf("get claimed session: %v", err)
+	}
+	if session.DeployCount != 0 || session.ClaimedByUserID != "user-1" {
+		t.Fatalf("claimed session = %+v, want zero quota and user-1", session)
+	}
 
 	again, err := store.ClaimAnonymousSession(ctx, "anon-1", "user-1")
 	if err != nil {
 		t.Fatalf("claim anonymous session again: %v", err)
 	}
-	if !again.AlreadyClaimed || again.SiteCount != 0 {
+	if !again.AlreadyClaimed || again.SiteCount != 0 || again.DeployCount != 0 {
 		t.Fatalf("unexpected repeated claim result: %+v", again)
 	}
 	user, err = store.GetAdminUserByID(ctx, "user-1")
@@ -332,6 +343,147 @@ func TestClaimAnonymousSessionMigratesSitesAndStats(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].ID != "anon-1" || sessions[0].ClaimedByUserID != "user-1" {
 		t.Fatalf("sessions = %+v, want only claimed anon-1", sessions)
+	}
+}
+
+func TestClaimAnonymousSessionReconcilesLiveSiteQuota(t *testing.T) {
+	st := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.CreateAdminUser(ctx, AdminUser{
+		ID:           "user-1",
+		Username:     "alice",
+		PasswordHash: "hash",
+		IsActive:     true,
+		DeployLimit:  20,
+		DeployCount:  41,
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.CreateAnonymousSession(ctx, AnonymousSession{ID: "anon-1", DeployCount: 99, CreatedAt: now, LastUsedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	for _, site := range []Site{
+		{Code: "user-site", OwnerTokenID: "user:user-1", CreatedAt: now},
+		{Code: "anon-site", OwnerTokenID: "anon:anon-1", CreatedAt: now},
+	} {
+		if err := st.CreateSite(ctx, site); err != nil {
+			t.Fatalf("create %s: %v", site.Code, err)
+		}
+	}
+
+	result, err := st.ClaimAnonymousSession(ctx, "anon-1", "user-1")
+	if err != nil {
+		t.Fatalf("claim session: %v", err)
+	}
+	if result.SiteCount != 1 || result.DeployCount != 1 {
+		t.Fatalf("claim result = %+v, want one live application", result)
+	}
+	user, err := st.GetAdminUserByID(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if user.DeployCount != 2 {
+		t.Fatalf("user quota = %d, want two live sites", user.DeployCount)
+	}
+	session, err := st.GetAnonymousSession(ctx, "anon-1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.DeployCount != 0 {
+		t.Fatalf("claimed anonymous quota = %d, want 0", session.DeployCount)
+	}
+}
+
+func TestDeleteSiteReconcilesOriginalOwnerQuota(t *testing.T) {
+	st := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.CreateAdminUser(ctx, AdminUser{
+		ID:           "user-1",
+		Username:     "alice",
+		PasswordHash: "hash",
+		IsActive:     true,
+		DeployLimit:  20,
+		DeployCount:  99,
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.CreateAnonymousSession(ctx, AnonymousSession{ID: "anon-1", DeployCount: 99, CreatedAt: now, LastUsedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	for _, site := range []Site{
+		{Code: "user-one", OwnerTokenID: "user:user-1", CreatedAt: now},
+		{Code: "user-two", OwnerTokenID: "user:user-1", CreatedAt: now},
+		{Code: "anon-one", OwnerTokenID: "anon:anon-1", CreatedAt: now},
+		{Code: "anon-two", OwnerTokenID: "anon:anon-1", CreatedAt: now},
+	} {
+		if err := st.CreateSite(ctx, site); err != nil {
+			t.Fatalf("create %s: %v", site.Code, err)
+		}
+	}
+
+	if err := st.DeleteSite(ctx, "user-one"); err != nil {
+		t.Fatalf("delete user site: %v", err)
+	}
+	user, err := st.GetAdminUserByID(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if user.DeployCount != 1 {
+		t.Fatalf("user quota after delete = %d, want 1", user.DeployCount)
+	}
+	if err := st.DeleteSite(ctx, "anon-one"); err != nil {
+		t.Fatalf("delete anonymous site: %v", err)
+	}
+	session, err := st.GetAnonymousSession(ctx, "anon-1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.DeployCount != 1 {
+		t.Fatalf("anonymous quota after delete = %d, want 1", session.DeployCount)
+	}
+}
+
+func TestDeleteSiteRollsBackQuotaWhenDeleteFails(t *testing.T) {
+	st := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.CreateAdminUser(ctx, AdminUser{
+		ID:           "user-1",
+		Username:     "alice",
+		PasswordHash: "hash",
+		IsActive:     true,
+		DeployLimit:  20,
+		DeployCount:  1,
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.CreateSite(ctx, Site{Code: "blocked-site", OwnerTokenID: "user:user-1", CreatedAt: now}); err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+	if _, err := st.db.Exec(`
+		CREATE TRIGGER reject_quota_delete BEFORE DELETE ON sites
+		WHEN OLD.code = 'blocked-site'
+		BEGIN SELECT RAISE(ABORT, 'blocked'); END;
+	`); err != nil {
+		t.Fatalf("create delete trigger: %v", err)
+	}
+	if err := st.DeleteSite(ctx, "blocked-site"); err == nil {
+		t.Fatal("DeleteSite succeeded despite rejecting trigger")
+	}
+	if _, err := st.GetSite(ctx, "blocked-site"); err != nil {
+		t.Fatalf("site disappeared after rolled-back delete: %v", err)
+	}
+	user, err := st.GetAdminUserByID(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if user.DeployCount != 1 {
+		t.Fatalf("user quota after failed delete = %d, want 1", user.DeployCount)
 	}
 }
 
@@ -925,8 +1077,8 @@ func TestSQLiteMigrationPreservesProductionLikeLegacyData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get migrated anonymous session: %v", err)
 	}
-	if session.DeployCount != 2 || session.AgentID != "" || session.ClaimedByUserID != "" {
-		t.Fatalf("migrated anonymous session = %+v; want deploy count and empty new fields", session)
+	if session.DeployCount != 0 || session.AgentID != "" || session.ClaimedByUserID != "" {
+		t.Fatalf("migrated anonymous session = %+v; want reconciled empty quota and empty new fields", session)
 	}
 	screens, err := store.ListScreensByUser(ctx, "user-1")
 	if err != nil {
@@ -1176,5 +1328,302 @@ func TestAdminUserDeployQuotaIsAtomic(t *testing.T) {
 	}
 	if !allowedAgain {
 		t.Fatal("released quota slot was not reusable")
+	}
+}
+
+func TestCreateSiteWithOwnerQuotaRollsBackAndRecoversAfterDelete(t *testing.T) {
+	st := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.CreateAdminUser(ctx, AdminUser{
+		ID:           "quota-user",
+		Username:     "quota-user",
+		PasswordHash: "hash",
+		IsActive:     true,
+		DeployLimit:  2,
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	first := Site{Code: "quota-first", OwnerTokenID: "user:quota-user", CreatedAt: now}
+	if err := st.CreateSiteWithOwnerQuota(ctx, first, 5); err != nil {
+		t.Fatalf("create first site: %v", err)
+	}
+	if err := st.CreateSiteWithOwnerQuota(ctx, first, 5); err == nil {
+		t.Fatal("duplicate site unexpectedly succeeded")
+	}
+	user, err := st.GetAdminUserByID(ctx, "quota-user")
+	if err != nil {
+		t.Fatalf("get user after duplicate: %v", err)
+	}
+	if user.DeployCount != 1 {
+		t.Fatalf("quota after duplicate insert = %d, want 1", user.DeployCount)
+	}
+	if err := st.CreateSiteWithOwnerQuota(ctx, Site{Code: "quota-second", OwnerTokenID: "user:quota-user", CreatedAt: now}, 5); err != nil {
+		t.Fatalf("create second site: %v", err)
+	}
+	if err := st.CreateSiteWithOwnerQuota(ctx, Site{Code: "quota-third", OwnerTokenID: "user:quota-user", CreatedAt: now}, 5); !errors.Is(err, ErrDeployQuotaExceeded) {
+		t.Fatalf("third site error = %v, want ErrDeployQuotaExceeded", err)
+	}
+	if err := st.DeleteSite(ctx, "quota-first"); err != nil {
+		t.Fatalf("delete first site: %v", err)
+	}
+	if err := st.CreateSiteWithOwnerQuota(ctx, Site{Code: "quota-reused", OwnerTokenID: "user:quota-user", CreatedAt: now}, 5); err != nil {
+		t.Fatalf("create after delete: %v", err)
+	}
+}
+
+func TestAnonymousSiteQuotaRecoversAfterDelete(t *testing.T) {
+	st := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.CreateAnonymousSession(ctx, AnonymousSession{ID: "anon-1", CreatedAt: now, LastUsedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := st.CreateSiteWithOwnerQuota(ctx, Site{Code: "anon-first", OwnerTokenID: "anon:anon-1", CreatedAt: now}, 1); err != nil {
+		t.Fatalf("create anonymous site: %v", err)
+	}
+	if err := st.CreateSiteWithOwnerQuota(ctx, Site{Code: "anon-blocked", OwnerTokenID: "anon:anon-1", CreatedAt: now}, 1); !errors.Is(err, ErrDeployQuotaExceeded) {
+		t.Fatalf("second anonymous site error = %v, want ErrDeployQuotaExceeded", err)
+	}
+	if err := st.DeleteSite(ctx, "anon-first"); err != nil {
+		t.Fatalf("delete anonymous site: %v", err)
+	}
+	if err := st.CreateSiteWithOwnerQuota(ctx, Site{Code: "anon-reused", OwnerTokenID: "anon:anon-1", CreatedAt: now}, 1); err != nil {
+		t.Fatalf("create anonymous site after delete: %v", err)
+	}
+}
+
+func TestCreateSiteWithOwnerQuotaUsesPersistedAnonymousLimit(t *testing.T) {
+	st := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.CreateAnonymousSession(ctx, AnonymousSession{ID: "anon-persisted", CreatedAt: now, LastUsedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := st.SetSetting(ctx, "anonymous_deploy_limit", "1"); err != nil {
+		t.Fatalf("set persisted anonymous limit: %v", err)
+	}
+	if err := st.CreateSiteWithOwnerQuota(ctx, Site{Code: "persisted-first", OwnerTokenID: "anon:anon-persisted", CreatedAt: now}, 5); err != nil {
+		t.Fatalf("create first site: %v", err)
+	}
+	if err := st.CreateSiteWithOwnerQuota(ctx, Site{Code: "persisted-blocked", OwnerTokenID: "anon:anon-persisted", CreatedAt: now}, 5); !errors.Is(err, ErrDeployQuotaExceeded) {
+		t.Fatalf("second site error = %v, want persisted limit rejection", err)
+	}
+}
+
+func TestAnonymousSessionWhitespaceClaimStateNormalizesToUnclaimed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "hostctl.db")
+	st, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.CreateAnonymousSession(ctx, AnonymousSession{
+		ID:              "anon-whitespace",
+		ClaimedByUserID: "   ",
+		CreatedAt:       now,
+		LastUsedAt:      now,
+	}); err != nil {
+		t.Fatalf("create whitespace session: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+
+	st, err = NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer st.Close()
+	sess, err := st.GetAnonymousSession(ctx, "anon-whitespace")
+	if err != nil {
+		t.Fatalf("get normalized session: %v", err)
+	}
+	if sess.ClaimedByUserID != "" {
+		t.Fatalf("normalized claimed user = %q, want empty", sess.ClaimedByUserID)
+	}
+	if err := st.CreateSiteWithOwnerQuota(ctx, Site{Code: "whitespace-anon", OwnerTokenID: "anon:anon-whitespace", CreatedAt: now}, 1); err != nil {
+		t.Fatalf("publish with normalized anonymous session: %v", err)
+	}
+}
+
+func TestSiteMutationLeaseRequiresCurrentHolder(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "hostctl.db")
+	first, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("open first store: %v", err)
+	}
+	defer first.Close()
+	second, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("open second store: %v", err)
+	}
+	defer second.Close()
+
+	ctx := context.Background()
+	if acquired, err := first.TryAcquireSiteMutationLease(ctx, "lease-code", "holder-a", time.Second); err != nil || !acquired {
+		t.Fatalf("first acquire = %v, %v; want true, nil", acquired, err)
+	}
+	if acquired, err := second.TryAcquireSiteMutationLease(ctx, "lease-code", "holder-b", time.Second); err != nil || acquired {
+		t.Fatalf("second acquire = %v, %v; want false, nil", acquired, err)
+	}
+	if err := second.ReleaseSiteMutationLease(ctx, "lease-code", "holder-b"); err != nil {
+		t.Fatalf("release foreign holder: %v", err)
+	}
+	if acquired, err := second.TryAcquireSiteMutationLease(ctx, "lease-code", "holder-b", time.Second); err != nil || acquired {
+		t.Fatalf("foreign release removed lease: %v, %v", acquired, err)
+	}
+	if err := first.ReleaseSiteMutationLease(ctx, "lease-code", "holder-a"); err != nil {
+		t.Fatalf("release first holder: %v", err)
+	}
+	if acquired, err := second.TryAcquireSiteMutationLease(ctx, "lease-code", "holder-b", time.Second); err != nil || !acquired {
+		t.Fatalf("second acquire after release = %v, %v; want true, nil", acquired, err)
+	}
+}
+
+func TestCreateSiteWithOwnerQuotaIsAtomicAcrossStores(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "hostctl.db")
+	first, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("open first store: %v", err)
+	}
+	defer first.Close()
+	second, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("open second store: %v", err)
+	}
+	defer second.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := first.CreateAdminUser(ctx, AdminUser{
+		ID:           "quota-user",
+		Username:     "quota-user",
+		PasswordHash: "hash",
+		IsActive:     true,
+		DeployLimit:  1,
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for i, st := range []*SQLiteStore{first, second} {
+		i, st := i, st
+		go func() {
+			<-start
+			results <- st.CreateSiteWithOwnerQuota(ctx, Site{
+				Code:         []string{"cross-one", "cross-two"}[i],
+				OwnerTokenID: "user:quota-user",
+				CreatedAt:    now,
+			}, 5)
+		}()
+	}
+	close(start)
+
+	successes, rejected := 0, 0
+	for range 2 {
+		err := <-results
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrDeployQuotaExceeded):
+			rejected++
+		default:
+			t.Fatalf("concurrent create error = %v", err)
+		}
+	}
+	if successes != 1 || rejected != 1 {
+		t.Fatalf("concurrent creates = %d success / %d quota rejected, want 1 / 1", successes, rejected)
+	}
+	user, err := first.GetAdminUserByID(ctx, "quota-user")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if user.DeployCount != 1 {
+		t.Fatalf("user quota after concurrent create = %d, want 1", user.DeployCount)
+	}
+	var sites int
+	if err := first.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sites WHERE owner_token_id = 'user:quota-user'`).Scan(&sites); err != nil {
+		t.Fatalf("count sites: %v", err)
+	}
+	if sites != 1 {
+		t.Fatalf("owned site count = %d, want 1", sites)
+	}
+}
+
+func TestSQLiteStoreReconcilesDeployQuotaCountsFromLiveSites(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "hostctl.db")
+	st, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.CreateAdminUser(ctx, AdminUser{
+		ID:           "user-1",
+		Username:     "alice",
+		PasswordHash: "hash",
+		IsActive:     true,
+		DeployLimit:  20,
+		DeployCount:  99,
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.CreateAnonymousSession(ctx, AnonymousSession{ID: "anon-live", DeployCount: 99, CreatedAt: now, LastUsedAt: now}); err != nil {
+		t.Fatalf("create live session: %v", err)
+	}
+	if err := st.CreateAnonymousSession(ctx, AnonymousSession{ID: "anon-claimed", DeployCount: 99, ClaimedByUserID: "user-1", CreatedAt: now, LastUsedAt: now}); err != nil {
+		t.Fatalf("create claimed session: %v", err)
+	}
+	for _, site := range []Site{
+		{Code: "restart-user-one", OwnerTokenID: "user:user-1", CreatedAt: now},
+		{Code: "restart-user-two", OwnerTokenID: "user:user-1", CreatedAt: now},
+		{Code: "restart-anon", OwnerTokenID: "anon:anon-live", CreatedAt: now},
+	} {
+		if err := st.CreateSite(ctx, site); err != nil {
+			t.Fatalf("create %s: %v", site.Code, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+
+	st, err = NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer st.Close()
+	user, err := st.GetAdminUserByID(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if user.DeployCount != 2 {
+		t.Fatalf("reconciled user quota = %d, want 2", user.DeployCount)
+	}
+	live, err := st.GetAnonymousSession(ctx, "anon-live")
+	if err != nil {
+		t.Fatalf("get live session: %v", err)
+	}
+	if live.DeployCount != 1 {
+		t.Fatalf("reconciled live anonymous quota = %d, want 1", live.DeployCount)
+	}
+	claimed, err := st.GetAnonymousSession(ctx, "anon-claimed")
+	if err != nil {
+		t.Fatalf("get claimed session: %v", err)
+	}
+	if claimed.DeployCount != 0 {
+		t.Fatalf("reconciled claimed anonymous quota = %d, want 0", claimed.DeployCount)
+	}
+	var ownerIndex int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_sites_owner'`).Scan(&ownerIndex); err != nil {
+		t.Fatalf("query owner index: %v", err)
+	}
+	if ownerIndex != 1 {
+		t.Fatalf("idx_sites_owner count = %d, want 1", ownerIndex)
 	}
 }

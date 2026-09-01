@@ -19,6 +19,27 @@ import (
 	"github.com/yourorg/hostctl/internal/store"
 )
 
+func TestAnonymousSessionRemainingUsesLiveQuotaAndClaimState(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit int
+		sess  store.AnonymousSession
+		want  int
+	}{
+		{name: "available", limit: 5, sess: store.AnonymousSession{DeployCount: 2}, want: 3},
+		{name: "at limit", limit: 5, sess: store.AnonymousSession{DeployCount: 5}, want: 0},
+		{name: "unlimited", limit: -1, sess: store.AnonymousSession{DeployCount: 42}, want: -1},
+		{name: "claimed", limit: 5, sess: store.AnonymousSession{DeployCount: 0, ClaimedByUserID: "user-1"}, want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := anonymousSessionRemaining(tc.limit, tc.sess); got != tc.want {
+				t.Fatalf("remaining = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCreateTokenRejectsNonAdminOwnerOverride(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
