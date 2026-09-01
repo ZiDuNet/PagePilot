@@ -66,7 +66,8 @@ type DeployRequest struct {
 }
 
 // DeployFile 是多文件部署里的单条文件。
-// content 用于文本；contentBase64 用于二进制（图片等）。两者必居其一。
+// content 用于文本；contentBase64 用于二进制（图片等）。两者最多传一个；
+// 两者都为空时表示 0 字节文件（入口文件仍需通过页面内容校验）。
 type DeployFile struct {
 	Path          string `json:"path"`
 	Content       string `json:"content,omitempty"`

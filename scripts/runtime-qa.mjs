@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { captchaAnswer } from "./captcha-qa.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -98,18 +99,6 @@ async function request(baseURL, pathOrURL, options = {}) {
     return { response, body: raw };
   }
   return { response, body: raw ? JSON.parse(raw) : null };
-}
-
-function captchaAnswer(captcha) {
-  const image = String(captcha.image || "");
-  const match = image.match(/^data:image\/svg\+xml(;base64)?,(.+)$/);
-  assert(match, "captcha image is not an SVG data URL");
-  const svg = match[1]
-    ? Buffer.from(match[2], "base64").toString("utf8")
-    : decodeURIComponent(match[2]);
-  const answer = svg.match(/>(\d{4})</)?.[1] || svg.match(/\b(\d{4})\b/)?.[1];
-  assert(answer, "could not read captcha answer from SVG");
-  return answer;
 }
 
 function makeZipBase64(files) {
@@ -282,9 +271,9 @@ async function main() {
   const adminDeleteCode = `qa-admin-delete-${suffix}`;
   const anonymousClaimCode = `qa-anon-${suffix}`;
   const runtimeUser = `qa_user_${suffix}`;
-  const runtimeUserPassword = `qa_user_Pass_${suffix}!`;
+  const runtimeUserPassword = `qa_user_Pass123_${suffix}!`;
   const managedUser = `qa_managed_${suffix}`;
-  const managedUserPassword = `qa_managed_Pass_${suffix}!`;
+  const managedUserPassword = `qa_managed_Pass123_${suffix}!`;
 
   const build = spawnSync("go", ["build", "-o", exe, "./cmd/hostctl-server"], {
     cwd: rootDir,
@@ -326,7 +315,7 @@ async function main() {
     });
     assert(tokenResp.token, "token creation response missing plaintext token");
     assert(tokenResp.ownerUserId === admin.userId, "token owner is not the logged-in admin user");
-    const authHeader = { Authorization: `Bearer ${tokenResp.token}` };
+    let authHeader = { Authorization: `Bearer ${tokenResp.token}` };
 
     await assertZipDeployError(baseURL, authHeader, "批量多入口", {
       "one/index.html": "<!doctype html><html><body><h1>one</h1></body></html>",
@@ -352,6 +341,17 @@ async function main() {
     const auditJar = new CookieJar();
     const auditAdmin = await loginAdmin(baseURL, auditJar, adminUser, changedAdminPassword);
     assert(auditAdmin.userId === admin.userId, "password change did not preserve admin user identity");
+    // Password changes revoke every previous admin session, including the
+    // session used for this request. Establish a fresh session for the rest
+    // of the admin-only checks.
+    await loginAdmin(baseURL, adminJar, adminUser, changedAdminPassword);
+    const { body: refreshedTokenResp } = await request(baseURL, "/api/token", {
+      method: "POST",
+      jar: adminJar,
+      body: { label: "runtime-qa-refreshed", isAdmin: false },
+    });
+    assert(refreshedTokenResp.token, "refreshed token creation response missing plaintext token");
+    authHeader = { Authorization: `Bearer ${refreshedTokenResp.token}` };
     const { body: authAudit } = await request(baseURL, `/api/admin/audit-logs?actorId=${encodeURIComponent(admin.userId)}&pageSize=50`, {
       jar: auditJar,
     });
@@ -580,7 +580,12 @@ $$
 
     const { body: marketList } = await request(baseURL, `/api/deploys?q=${encodeURIComponent(mdCode)}&sort=newest&pageSize=10`);
     assert(marketList.deploys?.some((item) => item.code === mdCode), "market list does not include public markdown deploy");
-    const { body: marketDetail } = await request(baseURL, `/api/deploys/${encodeURIComponent(mdCode)}`);
+    const { body: anonymousMarketDetail } = await request(baseURL, `/api/deploys/${encodeURIComponent(mdCode)}`);
+    assert(anonymousMarketDetail.reuse?.allowDownload === false, "anonymous market detail must require login for source download");
+    assert(String(anonymousMarketDetail.reuse?.policyNote || "").includes("登录"), "anonymous market detail missing login guidance");
+    const { body: marketDetail } = await request(baseURL, `/api/deploys/${encodeURIComponent(mdCode)}`, {
+      headers: authHeader,
+    });
     assert(marketDetail.bundle?.kind === "markdown", "market detail missing markdown bundle");
     assert(marketDetail.reuse?.allowDownload === true, "market detail should allow source download for public unprotected site");
     assert(String(marketDetail.reuse?.cli || "").includes("pagep get"), "market detail missing CLI reuse command");
@@ -590,6 +595,9 @@ $$
       text: true,
     });
     const markdownCSP = markdownResp.headers.get("content-security-policy") || "";
+    // The page intentionally includes an HTML-escaped source preview. Security
+    // assertions below target rendered content, not literal text in that preview.
+    const renderedMarkdown = markdownHTML.replace(/<pre class="markdown-source"[\s\S]*?<\/pre>/i, "");
     assert(markdownHTML.includes('data-theme="dark"'), "markdown runtime did not apply explicit theme");
     assert(markdownHTML.includes('class="chroma"'), "markdown runtime missing code highlight HTML");
     assert(markdownHTML.includes('class="mermaid"'), "markdown runtime missing Mermaid container");
@@ -597,12 +605,12 @@ $$
     assert(markdownHTML.includes("data-pagepilot-math-block"), "markdown runtime missing block math marker");
     assert(markdownHTML.includes("$HOME$"), "markdown runtime did not preserve dollar content inside code");
     assert(!markdownHTML.includes('<code><span class="markdown-math-inline"'), "markdown runtime converted code span dollars into math");
-    assert(!markdownHTML.toLowerCase().includes("javascript&#58;"), "markdown runtime kept encoded javascript URL");
-    assert(!markdownHTML.toLowerCase().includes("onclick="), "markdown runtime kept onclick handler");
-    assert(!markdownHTML.toLowerCase().includes("onerror="), "markdown runtime kept onerror handler");
-    assert(!markdownHTML.toLowerCase().includes("data:image/svg+xml"), "markdown runtime kept SVG data URL");
-    assert(!markdownHTML.toLowerCase().includes('srcset="data:'), "markdown runtime kept unsafe srcset");
-    assert(!markdownHTML.toLowerCase().includes("xlink:href"), "markdown runtime kept namespaced active URL attribute");
+    assert(!renderedMarkdown.toLowerCase().includes("javascript&#58;"), "markdown runtime kept encoded javascript URL");
+    assert(!renderedMarkdown.toLowerCase().includes("onclick="), "markdown runtime kept onclick handler");
+    assert(!renderedMarkdown.toLowerCase().includes("onerror="), "markdown runtime kept onerror handler");
+    assert(!renderedMarkdown.toLowerCase().includes("data:image/svg+xml"), "markdown runtime kept SVG data URL");
+    assert(!renderedMarkdown.toLowerCase().includes('srcset="data:'), "markdown runtime kept unsafe srcset");
+    assert(!renderedMarkdown.toLowerCase().includes("xlink:href"), "markdown runtime kept namespaced active URL attribute");
     assert(markdownHTML.includes('/markdown-assets/katex/katex.min.js" nonce="'), "markdown runtime missing nonce on KaTeX runtime");
     assert(markdownHTML.includes('/markdown-assets/katex/contrib/auto-render.min.js" nonce="'), "markdown runtime missing nonce on KaTeX auto-render runtime");
     assert(markdownHTML.includes('/markdown-assets/mermaid/mermaid.min.js" nonce="'), "markdown runtime missing nonce on Mermaid runtime");
@@ -967,14 +975,18 @@ $$
     assert(protectedDetail.accessProtected === true, "protected marketplace detail is not marked encrypted");
     assert(protectedDetail.reuse?.allowDownload === false, "encrypted site must not allow source download");
     assert(protectedDetail.reuse?.allowReuse === false, "encrypted site must not allow template reuse");
-    await request(baseURL, `/api/deploy/content?code=${encodeURIComponent(protectedCode)}&download=1`, {
+    const { response: ownerProtectedDownload } = await request(baseURL, `/api/deploy/content?code=${encodeURIComponent(protectedCode)}&download=1`, {
       headers: authHeader,
-      expect: 403,
+      expect: 200,
+      text: true,
     });
-    await request(baseURL, `/api/deploy/content?code=${encodeURIComponent(protectedCode)}&download=1`, {
+    assert((ownerProtectedDownload.headers.get("content-type") || "").includes("application/zip"), "site owner source download is not a ZIP response");
+    const { response: adminProtectedDownload } = await request(baseURL, `/api/deploy/content?code=${encodeURIComponent(protectedCode)}&download=1`, {
       jar: adminJar,
-      expect: 403,
+      expect: 200,
+      text: true,
     });
+    assert((adminProtectedDownload.headers.get("content-type") || "").includes("application/zip"), "admin source download is not a ZIP response");
 
     const { body: passwordPage } = await request(baseURL, `/agent/${encodeURIComponent(protectedCode)}/`, {
       jar: publicJar,
@@ -994,19 +1006,26 @@ $$
     assert(unlockedPage.includes("protected qa"), "anonymous password access did not unlock protected page");
     await request(baseURL, `/api/deploy/content?code=${encodeURIComponent(protectedCode)}&download=1`, {
       jar: publicJar,
-      expect: 403,
+      expect: 401,
     });
     const { body: protectedDownloadAudit } = await request(baseURL, `/api/admin/audit-logs?siteCode=${encodeURIComponent(protectedCode)}&action=source_download&pageSize=20`, {
       jar: adminJar,
     });
+    const protectedDownloadSuccesses = (protectedDownloadAudit.logs || []).filter((item) => item.action === "source_download" && item.result === "success");
+    assert(protectedDownloadSuccesses.length >= 2, "runtime QA missing encrypted source_download success audit logs");
+    assert(protectedDownloadSuccesses.every((item) =>
+      item.targetType === "site" &&
+      item.targetId === protectedCode &&
+      item.detail?.download === true
+    ), "encrypted source_download success audit logs are incomplete");
     const protectedDownloadFailures = (protectedDownloadAudit.logs || []).filter((item) => item.action === "source_download" && item.result === "failed");
-    assert(protectedDownloadFailures.length >= 3, "runtime QA missing encrypted source_download failure audit logs");
+    assert(protectedDownloadFailures.length >= 1, "runtime QA missing encrypted source_download failure audit logs");
     assert(protectedDownloadFailures.every((item) =>
       item.targetType === "site" &&
       item.targetId === protectedCode &&
       item.detail?.download === true &&
-      item.detail?.errorCode === "FORBIDDEN" &&
-      item.detail?.stage === "source_download"
+      item.detail?.errorCode === "UNAUTHORIZED" &&
+      item.detail?.stage === "auth"
     ), "encrypted source_download failure audit logs are incomplete");
     const { body: protectedAppend } = await request(baseURL, "/api/deploy", {
       method: "POST",

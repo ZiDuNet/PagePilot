@@ -2031,6 +2031,34 @@ tbody tr:hover {
   gap: 10px;
 }
 
+.bulk-policy-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 9px 12px;
+  border: 1px solid rgba(8, 145, 178, 0.25);
+  border-radius: 8px;
+  background: #effbff;
+  color: #275267;
+  font-size: 13px;
+}
+.bulk-policy-bar label,
+.bulk-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.bulk-policy-bar select {
+  min-height: 30px;
+  padding: 3px 7px;
+}
+.bulk-policy-bar strong { color: var(--admin-brand-dark); }
+.selection-cell { width: 34px; text-align: center; }
+.selection-cell input,
+.bulk-select-all input { width: 15px; height: 15px; accent-color: #0891b2; }
+
 .toolbar-summary {
   min-height: 36px;
   display: inline-flex;
@@ -2259,6 +2287,11 @@ tbody tr:hover {
   .mcp-card,
   .api-doc-hero,
   .toolbar-tail {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .bulk-policy-bar {
     align-items: flex-start;
     flex-direction: column;
   }
@@ -2739,9 +2772,19 @@ tbody tr:hover {
 }
 .admin-shell .deploy-stage .deploy-upload-zone:hover { border-color: rgba(15,118,158,0.48); background: rgba(240,249,255,0.68); }
 .admin-shell .deploy-stage .deploy-upload-zone input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.admin-shell .deploy-stage .deploy-upload-zone input.deploy-upload-input { display: none; }
 .admin-shell .deploy-stage .deploy-upload-zone strong { color: var(--pp-brand, #067fa9); font-size: 14px; }
 .admin-shell .deploy-stage .deploy-upload-zone span { color: var(--pp-muted); font-size: 12px; }
 .admin-shell .deploy-stage .deploy-upload-zone.large { padding: 38px 24px; }
+.admin-shell .deploy-upload-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.admin-shell .deploy-upload-action {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  min-height: 36px; padding: 0 13px; border: 1px solid rgba(6,127,169,0.24);
+  border-radius: 8px; background: #fff; color: var(--pp-brand, #067fa9);
+  font-size: 12px; font-weight: 800; cursor: pointer;
+}
+.admin-shell .deploy-upload-action:hover,
+.admin-shell .deploy-upload-action:focus-visible { border-color: rgba(6,127,169,0.48); background: #f0f9ff; }
 .admin-shell .deploy-editor-wrap {
   display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-height: 460px;
 }
@@ -2800,6 +2843,59 @@ tbody tr:hover {
 }
 .admin-shell .result-toast strong { color: #065f46; font-size: 14px; }
 .admin-shell .result-toast span { color: var(--pp-muted); font-size: 13px; margin-left: 10px; }
+
+/* Keyboard users need a consistent focus target across the dense admin console. */
+:root { --admin-focus: #b45309; }
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--admin-focus);
+  outline-offset: 3px;
+}
+.main:focus-visible { outline: 0; }
+.table-loading {
+  color: var(--admin-muted, var(--muted));
+  text-align: center;
+  font-weight: 800;
+  background: #fbfdff;
+}
+.field input:focus-visible,
+.field select:focus-visible,
+.field textarea:focus-visible,
+td input:focus-visible,
+.toolbar select:focus-visible,
+.table-select:focus-visible,
+.search-box input:focus-visible,
+.file-tree-search input:focus-visible,
+.code-input:focus-visible,
+.admin-shell .deploy-editor:focus-visible {
+  outline: 3px solid var(--admin-focus);
+  outline-offset: 1px;
+  border-color: var(--admin-focus);
+}
+.skip-link {
+  position: fixed;
+  top: -56px;
+  left: 14px;
+  z-index: 2000;
+  border: 2px solid var(--admin-focus);
+  border-radius: 8px;
+  background: #fff;
+  color: #713f12;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 900;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  transition: top 160ms ease;
+}
+.skip-link:focus-visible { top: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 
 @media (max-width: 860px) {
   .admin-shell .deploy-workspace { grid-template-columns: 1fr; }

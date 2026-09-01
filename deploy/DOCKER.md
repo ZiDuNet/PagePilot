@@ -18,10 +18,10 @@ PagePilot 不需要配置入口域名。浏览器访问时，首页、后台、`
 
 Skill、MCP 和 CLI 不读取所谓“主站域名配置”。它们使用 `--server`、`PAGEPILOT_SERVER` 或客户端保存的服务器地址作为 API 控制面入口，并把这个入口交给后端用于路径模式 URL 生成。发布成功后的 URL 仍以后端响应为准。旧 `HOSTCTL_SERVER` 仍兼容读取，但新配置建议使用 `PAGEPILOT_SERVER`。
 
-主密钥要按部署类型处理：
+主密钥必须由部署者显式提供：
 
-- 已上线旧环境：必须继续使用原来的 `HOSTCTL_MASTER_KEY`。如果旧版本从未配置过主密钥，兼容旧数据的历史值是 `pagepilot-dev-master-key-0000000`，当前 `docker-compose.yml` 会在未设置环境变量时自动使用这个值。
-- 全新空库部署：建议准备 `.env` 并生成独立主密钥：
+- 已上线环境：继续使用原来的 `HOSTCTL_MASTER_KEY`，否则旧的加密数据可能无法解密。不要在升级时更换，也不要把它提交到 Git。
+- 全新部署：准备 `.env` 并生成独立主密钥：
 
 ```bash
 cp .env.example .env
@@ -37,7 +37,7 @@ docker compose up -d --build
 docker compose logs -f hostctl
 ```
 
-默认映射端口为 `8787:8787`。如果服务器外层反向代理使用其它端口，例如 `1143`，用户用 `https://pagepilot.example.com:1143` 打开时，页面展示、复制和下载说明会直接使用这个当前地址。
+默认映射端口为 `127.0.0.1:8787:8787`，只允许本机反向代理访问。若确实需要直接暴露端口，请在受控网络中明确改成 `8787:8787`；生产环境更建议保持本机绑定并由 HTTPS 反向代理接入。外层反向代理使用其它端口（例如 `1143`）时，页面展示、复制和下载说明会直接使用当前外部地址。
 
 镜像构建会先运行前端 `npm ci && npm run build`，再把用户端和后台产物打进 Go 二进制。源码方式直接编译二进制时，请确认以下产物来自最新代码：
 
@@ -48,16 +48,9 @@ docker compose logs -f hostctl
 
 ## 首次管理员
 
-空数据库首次启动时，容器会自动创建默认管理员：
-
-```yaml
-HOSTCTL_ADMIN_USERNAME: "admin"
-HOSTCTL_ADMIN_PASSWORD: "123456"
-```
-
-打开 `/admin` 登录后，请立即在后台“账号设置”修改密码。已有用户时，这两个变量不会覆盖现有账号。
-
-生产环境建议把默认密码改成一次性强密码，或在首次登录后从 compose 中移除默认密码。
+没有可用管理员的首次启动时，容器不会使用固定管理员或固定密码。除显式配置
+`HOSTCTL_MASTER_KEY` 外，还必须配置你自己的
+`HOSTCTL_ADMIN_USERNAME` 和 `HOSTCTL_ADMIN_PASSWORD`；服务只在没有可用管理员（`is_admin=1` 且 `is_active=1`）时使用它们创建首个管理员，不会覆盖已有账号。
 
 ## 数据卷
 
@@ -213,8 +206,8 @@ docker compose up -d
 ## 安全注意
 
 - 生产环境保持 `REQUIRE_AUTH=true`。
-- 已上线环境必须保留原 `HOSTCTL_MASTER_KEY`；旧版本从未配置时使用历史兼容值 `pagepilot-dev-master-key-0000000`。全新空库推荐使用 `openssl rand -base64 32` 生成独立值并写入 `.env`，不要把 `.env` 提交到 Git。
-- 首次登录后立即修改默认管理员密码。
+- 已上线环境必须保留原 `HOSTCTL_MASTER_KEY`；全新空库使用 `openssl rand -base64 32` 生成独立值并写入 `.env`。生产环境未配置主密钥时服务不会启动，不要把 `.env` 提交到 Git。
+- 没有可用管理员的首次启动必须显式提供首个管理员凭据；首次登录后请使用后台账号设置更新密码。
 - Token 明文只返回一次，请使用密码管理器或 CI Secret 保存。
 - 访问密码仅保护前台查看入口。匿名用户也可以输入访问密码查看加密站点；输入正确后浏览器获得 5 分钟访问票据，改密码后旧票据立即失效。
 - 用户上传的 HTML/JS 会以托管应用形式运行。路径模式默认加 CSP sandbox，建议生产环境使用泛域名模式隔离用户上传脚本，详见 [APP_URL_MODE.md](APP_URL_MODE.md)。
@@ -229,5 +222,5 @@ docker compose up -d
 | `/skill/pagep.zip` 404 | 确认镜像包含 `internal/web/skill/hostctl-deploy.zip`，并已重新构建；正常情况下没有后台上传包也会返回内置默认包。旧 `/skill/hostctl-deploy.zip` 也保留兼容。 |
 | 二维码或分享链接域名错误 | 请先确认浏览器当前打开的域名正确；再检查反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，不要把内网地址透传给后端。 |
 | Skill/MCP 发布后返回内网链接 | 检查 `--server` 或 `PAGEPILOT_SERVER` 是否使用了内网地址。路径模式下要返回公网链接，就让 Skill/MCP 用公网入口调用 PagePilot。旧 `HOSTCTL_SERVER` 仅兼容读取。 |
-| 登录默认管理员失败 | 如果数据库已有用户，默认管理员不会再次创建；请用已有管理员或备份恢复。 |
+| 首个管理员登录失败 | 检查启动时数据库是否没有可用管理员（`is_admin=1` 且 `is_active=1`），并显式设置 `HOSTCTL_ADMIN_USERNAME`、`HOSTCTL_ADMIN_PASSWORD`；这两个变量不会覆盖已有账号，请使用已有管理员或备份恢复。 |
 | 发布后静态文件丢失 | 检查 `./data/docker/hosted` 是否正确挂载且未被清空。 |

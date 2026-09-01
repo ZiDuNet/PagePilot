@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 
 
 ROOT = pathlib.Path(__file__).resolve().parent
@@ -16,13 +17,40 @@ SCRIPT = ROOT / "skill" / "hostctl-deploy" / "scripts" / "hostctl_deploy.py"
 SERVER = os.environ.get("HOSTCTL_SERVER", "http://127.0.0.1:8787")
 
 
+def cooldown_delay(data: dict | None) -> float:
+    """Return the server-provided cooldown delay, including absolute timestamps."""
+    if not data:
+        return 0.0
+    delay = float(data.get("retryAfterSeconds") or 0)
+    raw = str(data.get("nextAvailableAt") or "").strip()
+    if raw:
+        try:
+            available = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if available.tzinfo is None:
+                available = available.replace(tzinfo=timezone.utc)
+            delay = max(delay, (available - datetime.now(timezone.utc)).total_seconds())
+        except ValueError:
+            pass
+    return max(0.0, delay)
+
+
 def run(*args: str, output: pathlib.Path | None = None, env: dict[str, str] | None = None) -> dict | None:
     cmd = [sys.executable, str(SCRIPT), "--server", SERVER, *args]
-    proc = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, check=False, env=env)
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stdout)
-        sys.stderr.write(proc.stderr)
-        raise SystemExit(proc.returncode)
+    proc = None
+    for attempt in range(6):
+        proc = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, check=False, env=env)
+        if proc.returncode == 0:
+            break
+        try:
+            error_data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            error_data = None
+        if not error_data or error_data.get("httpStatus") != 429 or attempt >= 5:
+            sys.stderr.write(proc.stdout)
+            sys.stderr.write(proc.stderr)
+            raise SystemExit(proc.returncode)
+        time.sleep(cooldown_delay(error_data) + 0.2)
+    assert proc is not None
     if output is not None:
         output.write_text(proc.stdout, encoding="utf-8")
     try:
@@ -36,12 +64,23 @@ def assert_ok(name: str, data: dict) -> None:
     assert data.get("success", True) is not False, (name, data)
 
 
+def wait_for_next_available(data: dict | None) -> None:
+    """Honor the server's configured deploy cooldown without hard-coded sleeps."""
+    delay = cooldown_delay(data)
+    if delay > 0:
+        time.sleep(delay + 0.2)
+
+
 def main() -> None:
-    code = f"skill-smoke-{int(time.time())}"
+    # Keep concurrent smoke processes from publishing to the same site code.
+    code = f"skill-smoke-{int(time.time())}-{os.getpid()}"
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         env = os.environ.copy()
         env["HOSTCTL_SESSION_FILE"] = str(root / "session.json")
+        env["HOSTCTL_PROJECTS_FILE"] = str(root / "projects.json")
+        env["HOSTCTL_AGENT_FILE"] = str(root / "agent.json")
+        env["HOSTCTL_CONFIG_FILE"] = str(root / "config.json")
         site = root / "site"
         site_v2 = root / "site-v2"
         site.mkdir()
@@ -61,7 +100,7 @@ def main() -> None:
         deploy = run("deploy", str(site), "--code", code, "--title", "技能冒烟页面", "--description", "Skill smoke test version one.", env=env)
         assert_ok("deploy", deploy or {})
 
-        time.sleep(11)
+        wait_for_next_available(deploy)
 
         append = run("append", code, str(site_v2), "--title", "技能冒烟页面新版", "--description", "Skill smoke test version two.", env=env)
         assert_ok("append", append or {})
@@ -80,11 +119,25 @@ def main() -> None:
         show = run("market", "show", code, env=env)
         assert_ok("market show", show or {})
 
-        content_path = root / "content.json"
-        content = run("get", code, "--output", str(content_path), env=env)
-        assert content is None
-        content_data = json.loads(content_path.read_text(encoding="utf-8"))
-        assert content_data["code"] == code
+        if env.get("PAGEPILOT_TOKEN") or env.get("HOSTCTL_TOKEN"):
+            content_path = root / "content.json"
+            content = run("get", code, "--output", str(content_path), env=env)
+            assert content is None
+            content_data = json.loads(content_path.read_text(encoding="utf-8"))
+            assert content_data["code"] == code
+        else:
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT), "--server", SERVER, "get", code],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+            assert proc.returncode != 0, proc.stdout
+            denied = json.loads(proc.stdout)
+            assert denied.get("httpStatus") == 401, denied
+            assert denied.get("errorCode") == "UNAUTHORIZED", denied
 
         print("skill smoke ok:", code)
 

@@ -82,6 +82,45 @@ func TestSiteAccessCookieInvalidatesWhenPasswordChanges(t *testing.T) {
 	}
 }
 
+func TestSiteAccessLoginRateLimitsBySiteAndIP(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	hash, err := auth.HashPassword("secret123")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	srv.deployer = &siteAccessDeployerStub{
+		site: store.Site{Code: "demo", AccessPasswordHash: hash},
+	}
+
+	for attempt := 1; attempt <= loginFailThreshold; attempt++ {
+		body, _ := json.Marshal(siteAccessRequest{Password: "wrong-pass"})
+		req := httptest.NewRequest(http.MethodPost, "/api/deploys/demo/access", bytes.NewReader(body))
+		req.RemoteAddr = "198.51.100.77:1234"
+		req.SetPathValue("code", "demo")
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.handleSiteAccessLogin(rr, req.WithContext(withRequestID(req.Context(), "rate-limit-test")))
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d, body = %s; want %d", attempt, rr.Code, rr.Body.String(), http.StatusUnauthorized)
+		}
+	}
+
+	body, _ := json.Marshal(siteAccessRequest{Password: "wrong-pass"})
+	req := httptest.NewRequest(http.MethodPost, "/api/deploys/demo/access", bytes.NewReader(body))
+	req.RemoteAddr = "198.51.100.77:1234"
+	req.SetPathValue("code", "demo")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSiteAccessLogin(rr, req.WithContext(withRequestID(req.Context(), "rate-limit-test")))
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("locked status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusTooManyRequests)
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("locked response missing Retry-After header")
+	}
+}
+
 func TestSiteAccessCookieInvalidatesWhenCurrentVersionChanges(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
@@ -177,11 +216,11 @@ func TestSiteAccessAllowsRegisteredOwnerWithoutPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	owner, err := authSvc.CreateUser(t.Context(), "owner", "password123", false, 20)
+	owner, err := authSvc.CreateUser(context.Background(), "owner", "password123", false, 20)
 	if err != nil {
 		t.Fatalf("create owner: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "owner-token", false, owner.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "owner-token", false, owner.ID, nil)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
@@ -326,11 +365,11 @@ func TestSourceContentDownloadRequiresLogin(t *testing.T) {
 func TestSourceContentDownloadRecordsAuditLog(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	user, err := authSvc.CreateUser(t.Context(), "reader", "password123", false, 20)
+	user, err := authSvc.CreateUser(context.Background(), "reader", "password123", false, 20)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "reader-token", false, user.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "reader-token", false, user.ID, nil)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
@@ -378,11 +417,11 @@ func TestSourceContentAllowsEncryptedSiteForOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	owner, err := authSvc.CreateUser(t.Context(), "owner", "password123", false, 20)
+	owner, err := authSvc.CreateUser(context.Background(), "owner", "password123", false, 20)
 	if err != nil {
 		t.Fatalf("create owner: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "owner-token", false, owner.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "owner-token", false, owner.ID, nil)
 	if err != nil {
 		t.Fatalf("generate owner token: %v", err)
 	}
@@ -421,11 +460,11 @@ func TestSourceContentAllowsEncryptedSiteForAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	admin, err := authSvc.CreateUser(t.Context(), "admin", "password123", true, -1)
+	admin, err := authSvc.CreateUser(context.Background(), "admin", "password123", true, -1)
 	if err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "admin-token", true, admin.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "admin-token", true, admin.ID, nil)
 	if err != nil {
 		t.Fatalf("generate admin token: %v", err)
 	}

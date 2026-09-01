@@ -35,6 +35,7 @@ test("入口文件名默认隐藏且不再预填 index.html", () => {
 test("上传文件名会清洗后作为入口提示，粘贴源码不强制传 filename", () => {
   assert.match(source, /function normalizeUploadedFilePath/);
   assert.match(deployPage, /setFilename\(normalizeUploadedFilePath\(file\.name, "upload"\)\)/);
-  assert.match(deployPage, /normalizeUploadedFilePath\(rawPath, "asset"\)/);
+  assert.match(deployPage, /normalizeUploadedFilePath\(uploadPaths\[index\], "asset"\)/);
+  assert.match(source, /function stripCommonUploadRoot/);
   assert.doesNotMatch(deployPage, /setFilename\(file\.name \|\| "index\.html"\)/);
 });

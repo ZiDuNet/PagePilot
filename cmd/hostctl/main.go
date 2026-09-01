@@ -14,13 +14,16 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yourorg/hostctl/internal/api"
 	"github.com/yourorg/hostctl/internal/client"
+	appversion "github.com/yourorg/hostctl/internal/version"
 )
 
 var htmlTitleRe = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
@@ -75,6 +78,45 @@ func loadConfig() map[string]string {
 	return cfg
 }
 
+func normalizeServerAddress(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+// savedTokenForServer prevents a token saved for one PagePilot instance from
+// being sent to a different server selected with --server or environment.
+func savedTokenForServer(cfg map[string]string, server string) string {
+	token := strings.TrimSpace(cfg["token"])
+	if token == "" {
+		return ""
+	}
+	savedServer := normalizeServerAddress(cfg["server"])
+	if savedServer != "" && savedServer != normalizeServerAddress(server) {
+		return ""
+	}
+	return token
+}
+
+func maskedToken(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	if len(token) <= 8 {
+		return "***"
+	}
+	return token[:4] + "..." + token[len(token)-4:]
+}
+
+func resolvedToken(cfg map[string]string, server, explicit string) string {
+	if token := strings.TrimSpace(explicit); token != "" {
+		return token
+	}
+	if token := firstEnv("PAGEPILOT_TOKEN", "HOSTCTL_TOKEN"); token != "" {
+		return token
+	}
+	return savedTokenForServer(cfg, server)
+}
+
 // saveConfig 写配置。
 func saveConfig(cfg map[string]string) error {
 	p := configPath()
@@ -103,12 +145,7 @@ func buildClient() *client.Client {
 	if flagServer == "" {
 		flagServer = defaultServer
 	}
-	if flagToken == "" {
-		flagToken = cfg["token"]
-	}
-	if flagToken == "" {
-		flagToken = firstEnv("PAGEPILOT_TOKEN", "HOSTCTL_TOKEN")
-	}
+	flagToken = resolvedToken(cfg, flagServer, flagToken)
 	return client.New(flagServer, flagToken)
 }
 
@@ -117,11 +154,22 @@ func withSignalCancel() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			signal.Stop(sigCh)
+			cancel()
+		})
+	}
 	go func() {
-		<-sigCh
-		cancel()
+		select {
+		case <-sigCh:
+			stop()
+		case <-ctx.Done():
+			stop()
+		}
 	}()
-	return ctx, cancel
+	return ctx, stop
 }
 
 func main() {
@@ -142,6 +190,9 @@ func main() {
 	root.PersistentFlags().BoolVar(&flagNoColor, "no-color", false, "disable ANSI color output")
 
 	root.AddCommand(
+		cmdVersion(),
+		cmdDoctor(),
+		cmdPreflight(),
 		cmdDeploy(),
 		cmdAppend(),
 		cmdVersions(),
@@ -163,18 +214,287 @@ func main() {
 	)
 
 	if err := root.Execute(); err != nil {
-		// 错误由 RunE 内部用 printErr 友好输出；cobra 已被静音
-		if errors.Is(err, errSilent) {
-			os.Exit(1)
+		// Commands that call printErr return errSilent to avoid duplicate output.
+		// Validation and Cobra parsing errors can arrive here directly, so render
+		// them as well; this keeps --json useful for failures, not only successes.
+		if !errors.Is(err, errSilent) {
+			printErr(err)
 		}
 		os.Exit(1)
 	}
 }
 
+func cmdVersion() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the pagep CLI version",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			payload := map[string]any{
+				"success": true,
+				"name":    "pagep",
+				"version": appversion.Current,
+			}
+			if flagJSON {
+				return json.NewEncoder(os.Stdout).Encode(payload)
+			}
+			fmt.Printf("pagep %s\n", appversion.Current)
+			return nil
+		},
+	}
+}
+
+type doctorClient interface {
+	Health(context.Context) (*client.HealthResponse, error)
+	Config(context.Context) (*api.ConfigResponse, error)
+	AdminSession(context.Context) (*api.AdminSessionResponse, error)
+	OpenAPI(context.Context) (map[string]any, error)
+	ListTokens(context.Context) (*api.TokenListResponse, error)
+}
+
+type doctorCheck struct {
+	Name       string `json:"name"`
+	OK         bool   `json:"ok"`
+	Skipped    bool   `json:"skipped,omitempty"`
+	HTTPStatus int    `json:"httpStatus,omitempty"`
+	ErrorCode  string `json:"errorCode,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+}
+
+type doctorReport struct {
+	Success          bool          `json:"success"`
+	Server           string        `json:"server"`
+	Mode             string        `json:"mode,omitempty"`
+	ServerVersion    string        `json:"serverVersion,omitempty"`
+	TokenConfigured  bool          `json:"tokenConfigured"`
+	RequireAdmin     bool          `json:"requireAdmin"`
+	UploadLimits     *api.Limits   `json:"uploadLimits,omitempty"`
+	Checks           []doctorCheck `json:"checks"`
+	RecommendedSteps []string      `json:"recommendedSteps,omitempty"`
+}
+
+// cmdDoctor checks the endpoint and the currently configured credential without
+// printing credential material. --require-admin adds an explicit admin check.
+func cmdDoctor() *cobra.Command {
+	var requireAdmin bool
+	c := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check PagePilot service, upload limits, and credential readiness",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl := buildClient()
+			ctx, cancel := withSignalCancel()
+			defer cancel()
+			report := runDoctor(ctx, cl, strings.TrimRight(flagServer, "/"), strings.TrimSpace(flagToken) != "", requireAdmin)
+			if flagJSON {
+				_ = json.NewEncoder(os.Stdout).Encode(report)
+			} else {
+				printDoctorReport(report)
+			}
+			if !report.Success {
+				return errSilent
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&requireAdmin, "require-admin", false, "fail unless the configured token is an administrator token")
+	return c
+}
+
+func runDoctor(ctx context.Context, cl doctorClient, server string, tokenConfigured, requireAdmin bool) doctorReport {
+	report := doctorReport{
+		Success:         true,
+		Server:          server,
+		TokenConfigured: tokenConfigured,
+		RequireAdmin:    requireAdmin,
+		Checks:          make([]doctorCheck, 0, 6),
+	}
+	appendFailure := func(name string, err error, required bool) {
+		check := doctorCheck{Name: name}
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) {
+			check.HTTPStatus = apiErr.Status
+			if apiErr.Body != nil {
+				check.ErrorCode = string(apiErr.Body.ErrorCode)
+				check.Detail = apiErr.Body.Detail
+			}
+		}
+		if check.Detail == "" {
+			check.Detail = err.Error()
+		}
+		report.Checks = append(report.Checks, check)
+		if required {
+			report.Success = false
+		}
+	}
+
+	health, err := cl.Health(ctx)
+	if err != nil {
+		appendFailure("health", err, true)
+	} else if health == nil {
+		appendFailure("health", errors.New("health endpoint returned an empty response"), true)
+	} else if !health.Success {
+		report.Checks = append(report.Checks, doctorCheck{Name: "health", Detail: "health endpoint did not report success"})
+		report.Success = false
+	} else {
+		report.Checks = append(report.Checks, doctorCheck{Name: "health", OK: true, HTTPStatus: 200, Detail: health.Status})
+	}
+
+	config, err := cl.Config(ctx)
+	if err != nil {
+		appendFailure("config", err, true)
+	} else if config == nil {
+		appendFailure("config", errors.New("config endpoint returned an empty response"), true)
+	} else if !config.Success {
+		report.Checks = append(report.Checks, doctorCheck{Name: "config", Detail: "config endpoint did not report success"})
+		report.Success = false
+	} else {
+		report.Mode = config.Mode
+		report.ServerVersion = config.Version
+		limits := config.Limits
+		report.UploadLimits = &limits
+		report.Checks = append(report.Checks, doctorCheck{Name: "config", OK: true, HTTPStatus: 200})
+	}
+
+	openAPI, err := cl.OpenAPI(ctx)
+	if err != nil {
+		appendFailure("openapi", err, true)
+	} else if strings.TrimSpace(asString(openAPI["openapi"])) == "" {
+		report.Checks = append(report.Checks, doctorCheck{Name: "openapi", Detail: "OpenAPI version field is missing"})
+		report.Success = false
+	} else {
+		report.Checks = append(report.Checks, doctorCheck{Name: "openapi", OK: true, HTTPStatus: 200, Detail: asString(openAPI["openapi"])})
+	}
+
+	if tokenConfigured {
+		if _, err := cl.ListTokens(ctx); err != nil {
+			appendFailure("credential", err, true)
+		} else {
+			report.Checks = append(report.Checks, doctorCheck{Name: "credential", OK: true, HTTPStatus: 200, Detail: "registered user token"})
+		}
+	} else {
+		report.Checks = append(report.Checks, doctorCheck{Name: "credential", OK: true, Skipped: true, Detail: "no bearer token configured; anonymous deployment quota may apply"})
+		// GET /api/session creates persistent state when no session is supplied.
+		// Doctor must remain read-only; anonymous deployment creates its session on demand.
+		report.Checks = append(report.Checks, doctorCheck{Name: "anonymous_session", OK: true, Skipped: true, Detail: "anonymous session is created on first deployment; doctor does not create persistent sessions"})
+	}
+
+	if requireAdmin {
+		if !tokenConfigured {
+			report.Checks = append(report.Checks, doctorCheck{Name: "admin_session", Detail: "no bearer token configured"})
+			report.Success = false
+		} else if session, err := cl.AdminSession(ctx); err != nil {
+			appendFailure("admin_session", err, true)
+		} else if session == nil {
+			appendFailure("admin_session", errors.New("admin session endpoint returned an empty response"), true)
+		} else if !session.Success || !session.IsAdmin {
+			report.Checks = append(report.Checks, doctorCheck{Name: "admin_session", Detail: "configured token is not an administrator token"})
+			report.Success = false
+		} else {
+			report.Checks = append(report.Checks, doctorCheck{Name: "admin_session", OK: true, HTTPStatus: 200, Detail: session.Username})
+		}
+	}
+
+	if !report.Success {
+		report.RecommendedSteps = append(report.RecommendedSteps, "Check the server URL and reverse-proxy route, then run pagep doctor again.")
+		if tokenConfigured {
+			report.RecommendedSteps = append(report.RecommendedSteps, "Verify that the saved token is active and belongs to the intended PagePilot user.")
+		} else {
+			report.RecommendedSteps = append(report.RecommendedSteps, "Create or save a user token for persistent publishing: pagep token create <label> --save.")
+		}
+	}
+	return report
+}
+
+func printDoctorReport(report doctorReport) {
+	status := "READY"
+	if !report.Success {
+		status = "NEEDS ATTENTION"
+	}
+	fmt.Printf("PagePilot doctor: %s\n", status)
+	fmt.Printf("  Server: %s\n", report.Server)
+	if report.Mode != "" {
+		fmt.Printf("  Mode:   %s", report.Mode)
+		if report.ServerVersion != "" {
+			fmt.Printf(" (server %s)", report.ServerVersion)
+		}
+		fmt.Println()
+	}
+	if report.UploadLimits != nil {
+		fmt.Printf("  Limits: %d bytes/file, %d bytes/site, %d files/site\n", report.UploadLimits.MaxSingleFileBytes, report.UploadLimits.MaxSiteTotalBytes, report.UploadLimits.MaxFilesPerSite)
+	}
+	for _, check := range report.Checks {
+		marker := "FAIL"
+		if check.OK {
+			marker = "OK"
+		}
+		if check.Skipped {
+			marker = "INFO"
+		}
+		fmt.Printf("  [%s] %s", marker, check.Name)
+		if check.Detail != "" {
+			fmt.Printf(": %s", check.Detail)
+		}
+		if check.ErrorCode != "" {
+			fmt.Printf(" (%s)", check.ErrorCode)
+		}
+		fmt.Println()
+	}
+	for _, step := range report.RecommendedSteps {
+		fmt.Printf("  Next: %s\n", step)
+	}
+}
+
 // ===== 输出工具 =====
 
+type cliErrorPayload struct {
+	Success           bool   `json:"success"`
+	HTTPStatus        int    `json:"httpStatus,omitempty"`
+	ErrorCode         string `json:"errorCode"`
+	Stage             string `json:"stage,omitempty"`
+	Detail            string `json:"detail"`
+	Hint              string `json:"hint,omitempty"`
+	RetryAfterSeconds *int   `json:"retryAfterSeconds,omitempty"`
+	RequestID         string `json:"requestId,omitempty"`
+}
+
+func jsonErrorPayload(err error) cliErrorPayload {
+	payload := cliErrorPayload{
+		Success:   false,
+		ErrorCode: "CLI_ERROR",
+		Detail:    "unknown error",
+	}
+	if err == nil {
+		return payload
+	}
+	payload.Detail = err.Error()
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) {
+		return payload
+	}
+	payload.HTTPStatus = apiErr.Status
+	if apiErr.Body == nil {
+		payload.ErrorCode = "HTTP_ERROR"
+		return payload
+	}
+	payload.ErrorCode = string(apiErr.Body.ErrorCode)
+	payload.Stage = apiErr.Body.Stage
+	payload.Detail = apiErr.Body.Detail
+	payload.Hint = apiErr.Body.Hint
+	payload.RetryAfterSeconds = apiErr.Body.RetryAfterSeconds
+	payload.RequestID = apiErr.Body.RequestID
+	return payload
+}
+
 func printErr(err error) {
-	if apiErr, ok := err.(*client.APIError); ok && apiErr.Body != nil {
+	if flagJSON {
+		// Keep machine-readable failures on stdout, alongside successful JSON
+		// responses. Human-readable diagnostics remain on stderr below.
+		_ = json.NewEncoder(os.Stdout).Encode(jsonErrorPayload(err))
+		return
+	}
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) && apiErr.Body != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", apiErr.Body.ErrorCode)
 		fmt.Fprintf(os.Stderr, "  detail: %s\n", apiErr.Body.Detail)
 		if apiErr.Body.Hint != "" {
@@ -182,6 +502,9 @@ func printErr(err error) {
 		}
 		if apiErr.Body.RetryAfterSeconds != nil {
 			fmt.Fprintf(os.Stderr, "  retry:  %ds\n", *apiErr.Body.RetryAfterSeconds)
+		}
+		if apiErr.Body.RequestID != "" {
+			fmt.Fprintf(os.Stderr, "  request: %s\n", apiErr.Body.RequestID)
 		}
 		return
 	}
@@ -225,9 +548,12 @@ func color() (string, string) {
 
 // readSource 读取源（文件 / 目录），构造 DeployRequest 的 Content 或 Files。
 func readSource(source string) (files []api.DeployFile, mainEntry string, err error) {
-	info, err := os.Stat(source)
+	info, err := os.Lstat(source)
 	if err != nil {
 		return nil, "", fmt.Errorf("stat source: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, "", fmt.Errorf("refusing symbolic-link source: %s", source)
 	}
 
 	if !info.IsDir() {
@@ -261,6 +587,9 @@ func readSource(source string) (files []api.DeployFile, mainEntry string, err er
 	err = filepath.Walk(source, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symbolic link in source directory: %s", p)
 		}
 		if info.IsDir() {
 			return nil
@@ -349,9 +678,12 @@ type multipartSource struct {
 }
 
 func prepareMultipartSource(source string) (multipartSource, error) {
-	info, err := os.Stat(source)
+	info, err := os.Lstat(source)
 	if err != nil {
 		return multipartSource{}, fmt.Errorf("stat source: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return multipartSource{}, fmt.Errorf("refusing symbolic-link source: %s", source)
 	}
 	if !info.IsDir() {
 		return multipartSource{Path: source, Name: filepath.Base(source), Cleanup: func() {}}, nil
@@ -367,6 +699,9 @@ func prepareMultipartSource(source string) (multipartSource, error) {
 		if walkErr != nil {
 			return walkErr
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symbolic link in source directory: %s", path)
+		}
 		if info.IsDir() {
 			return nil
 		}
@@ -374,7 +709,10 @@ func prepareMultipartSource(source string) (multipartSource, error) {
 		if err != nil {
 			return err
 		}
-		rel = filepath.ToSlash(rel)
+		rel = strings.ReplaceAll(filepath.ToSlash(rel), "\\", "/")
+		if !safePreflightPath(rel) {
+			return fmt.Errorf("refusing unsafe path in source directory: %s", rel)
+		}
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
 			return err
@@ -408,6 +746,28 @@ func prepareMultipartSource(source string) (multipartSource, error) {
 		return multipartSource{}, fmt.Errorf("close temp zip: %w", fileCloseErr)
 	}
 	return multipartSource{Path: tmpPath, Name: filepath.Base(source) + ".zip", Cleanup: cleanup}, nil
+}
+
+func normalizeFilenameHint(raw string) (string, error) {
+	value := strings.ReplaceAll(strings.TrimSpace(raw), "\\", "/")
+	if value == "" {
+		return "", nil
+	}
+	if !safePreflightPath(value) {
+		return "", fmt.Errorf("--filename %q is not a safe relative path", value)
+	}
+	return value, nil
+}
+
+func parseVersionArg(raw string) (int64, error) {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || value <= 0 {
+		if err == nil {
+			err = fmt.Errorf("version must be positive")
+		}
+		return 0, fmt.Errorf("invalid version %q: %w", raw, err)
+	}
+	return value, nil
 }
 
 func sourceEntryHint(source string) (string, error) {
@@ -523,6 +883,11 @@ func cmdDeploy() *cobra.Command {
 		Short: "Deploy a static site from HTML, Markdown, ZIP, or a directory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			normalizedFilename, err := normalizeFilenameHint(filename)
+			if err != nil {
+				return err
+			}
+			filename = normalizedFilename
 			if description == "" {
 				return fmt.Errorf("--description is required (max 240 chars)")
 			}
@@ -725,8 +1090,9 @@ func cmdGet() *cobra.Command {
 					return errSilent
 				}
 				defer r.Close()
+				outFile := ""
 				if strings.Contains(ct, "zip") {
-					outFile := filepath.Join(output, fmt.Sprintf("%s.zip", args[0]))
+					outFile = filepath.Join(output, fmt.Sprintf("%s.zip", args[0]))
 					if versionPtr != nil {
 						outFile = filepath.Join(output, fmt.Sprintf("%s-v%d.zip", args[0], *versionPtr))
 					}
@@ -738,12 +1104,9 @@ func cmdGet() *cobra.Command {
 					if _, err := io.Copy(f, r); err != nil {
 						return err
 					}
-					if !flagJSON {
-						fmt.Printf("Downloaded %s\n", outFile)
-					}
 				} else {
 					// 单 HTML，直接保存
-					outFile := filepath.Join(output, "index.html")
+					outFile = filepath.Join(output, "index.html")
 					f, err := os.Create(outFile)
 					if err != nil {
 						return err
@@ -752,10 +1115,20 @@ func cmdGet() *cobra.Command {
 					if _, err := io.Copy(f, r); err != nil {
 						return err
 					}
-					if !flagJSON {
-						fmt.Printf("Downloaded %s\n", outFile)
-					}
 				}
+				if flagJSON {
+					payload := map[string]any{
+						"success":     true,
+						"code":        args[0],
+						"output":      outFile,
+						"contentType": ct,
+					}
+					if versionPtr != nil {
+						payload["version"] = *versionPtr
+					}
+					return json.NewEncoder(os.Stdout).Encode(payload)
+				}
+				fmt.Printf("Downloaded %s\n", outFile)
 				return nil
 			}
 			resp, err := cl.GetContent(ctx, args[0], versionPtr)
@@ -807,9 +1180,9 @@ func cmdOverwrite() *cobra.Command {
 			if description == "" {
 				return fmt.Errorf("--description is required")
 			}
-			var version int64
-			if _, err := fmt.Sscanf(args[1], "%d", &version); err != nil {
-				return fmt.Errorf("invalid version %q: %v", args[1], err)
+			version, err := parseVersionArg(args[1])
+			if err != nil {
+				return err
 			}
 			source, err := prepareMultipartSource(args[2])
 			if err != nil {
@@ -845,8 +1218,8 @@ func cmdLock() *cobra.Command {
 		Short: "Lock a version (no further modifications or deletions)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var version int64
-			if _, err := fmt.Sscanf(args[1], "%d", &version); err != nil {
+			version, err := parseVersionArg(args[1])
+			if err != nil {
 				return err
 			}
 			ctx, cancel := withSignalCancel()
@@ -872,8 +1245,8 @@ func cmdUnlock() *cobra.Command {
 		Short: "Unlock a previously locked version",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var version int64
-			if _, err := fmt.Sscanf(args[1], "%d", &version); err != nil {
+			version, err := parseVersionArg(args[1])
+			if err != nil {
 				return err
 			}
 			ctx, cancel := withSignalCancel()
@@ -901,8 +1274,8 @@ func cmdStatus() *cobra.Command {
 		Short: "Set version status (active/inactive)",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var version int64
-			if _, err := fmt.Sscanf(args[1], "%d", &version); err != nil {
+			version, err := parseVersionArg(args[1])
+			if err != nil {
 				return err
 			}
 			status := args[2]
@@ -934,8 +1307,8 @@ func cmdCurrent() *cobra.Command {
 		Short: "Switch the current live version",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var version int64
-			if _, err := fmt.Sscanf(args[1], "%d", &version); err != nil {
+			version, err := parseVersionArg(args[1])
+			if err != nil {
 				return err
 			}
 			ctx, cancel := withSignalCancel()
@@ -967,8 +1340,8 @@ func cmdDeleteVersion() *cobra.Command {
 			if !confirm {
 				return fmt.Errorf("add --confirm to actually delete (this is irreversible)")
 			}
-			var version int64
-			if _, err := fmt.Sscanf(args[1], "%d", &version); err != nil {
+			version, err := parseVersionArg(args[1])
+			if err != nil {
 				return err
 			}
 			ctx, cancel := withSignalCancel()
@@ -1073,6 +1446,15 @@ func cmdToken() *cobra.Command {
 			}
 			if err := saveConfig(cfg); err != nil {
 				return err
+			}
+			if flagJSON {
+				return json.NewEncoder(os.Stdout).Encode(map[string]any{
+					"success":    true,
+					"key":        "token",
+					"server":     cfg["server"],
+					"tokenSaved": true,
+					"configFile": configPath(),
+				})
 			}
 			fmt.Printf("Saved token to %s\n", configPath())
 			return nil
@@ -1377,6 +1759,15 @@ func cmdConfig() *cobra.Command {
 			if err := saveConfig(cfg); err != nil {
 				return err
 			}
+			if flagJSON {
+				return json.NewEncoder(os.Stdout).Encode(map[string]any{
+					"success":    true,
+					"key":        args[0],
+					"server":     cfg["server"],
+					"tokenSaved": strings.TrimSpace(cfg["token"]) != "",
+					"configFile": configPath(),
+				})
+			}
 			fmt.Printf("Set %s\n", args[0])
 			return nil
 		},
@@ -1390,11 +1781,29 @@ func cmdConfig() *cobra.Command {
 			cfg := loadConfig()
 			v, ok := cfg[args[0]]
 			if !ok {
+				if flagJSON {
+					return json.NewEncoder(os.Stdout).Encode(map[string]any{
+						"success":    true,
+						"key":        args[0],
+						"value":      "",
+						"configured": false,
+						"configFile": configPath(),
+					})
+				}
 				fmt.Println("(unset)")
 				return nil
 			}
-			if args[0] == "token" && len(v) > 8 {
-				v = v[:4] + "..." + v[len(v)-4:]
+			if args[0] == "token" {
+				v = maskedToken(v)
+			}
+			if flagJSON {
+				return json.NewEncoder(os.Stdout).Encode(map[string]any{
+					"success":    true,
+					"key":        args[0],
+					"value":      v,
+					"configured": true,
+					"configFile": configPath(),
+				})
 			}
 			fmt.Println(v)
 			return nil
@@ -1408,12 +1817,33 @@ func cmdConfig() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			if len(cfg) == 0 {
+				if flagJSON {
+					return json.NewEncoder(os.Stdout).Encode(map[string]any{
+						"success":    true,
+						"configFile": configPath(),
+						"config":     map[string]string{},
+					})
+				}
 				fmt.Println("(empty)")
 				return nil
 			}
+			if flagJSON {
+				masked := make(map[string]string, len(cfg))
+				for k, v := range cfg {
+					if k == "token" {
+						v = maskedToken(v)
+					}
+					masked[k] = v
+				}
+				return json.NewEncoder(os.Stdout).Encode(map[string]any{
+					"success":    true,
+					"configFile": configPath(),
+					"config":     masked,
+				})
+			}
 			for k, v := range cfg {
-				if k == "token" && len(v) > 8 {
-					v = v[:4] + "..." + v[len(v)-4:]
+				if k == "token" {
+					v = maskedToken(v)
 				}
 				fmt.Printf("%s: %s\n", k, v)
 			}

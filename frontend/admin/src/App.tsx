@@ -10,6 +10,7 @@ import {
   FileArchive,
   FileText,
   FileUp,
+  FolderOpen,
   Heart,
   KeyRound,
   LayoutDashboard,
@@ -27,7 +28,8 @@ import {
   Upload,
   UserPlus,
   Users,
-  Workflow
+  Workflow,
+  X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildDeviceInfoRows, formatDeviceInfoSummary } from "./deviceInfo";
@@ -385,8 +387,7 @@ function authHeaders(headers: Record<string, string> = {}) {
   if (typeof location !== "undefined" && !headers["X-Hostctl-Current-Origin"]) {
     headers["X-Hostctl-Current-Origin"] = location.origin;
   }
-  const token = localStorage.getItem("hostctl-admin-token") || localStorage.getItem("hostctl-token") || "";
-  return token && !headers.Authorization ? { ...headers, Authorization: `Bearer ${token}` } : headers;
+  return headers;
 }
 
 function userMessage(message: string) {
@@ -410,6 +411,9 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     body = text;
   }
   if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new Event("hostctl:session-expired"));
+    }
     const err = new APIError(userMessage(body?.detail || body?.errorCode || `HTTP ${res.status}`));
     err.status = res.status;
     err.body = body;
@@ -801,6 +805,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>(() => initialAdminTab());
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
 
   const isAdmin = !!session?.isAdmin;
   const visibleNav = navItems.filter((item) => !item.adminOnly || isAdmin);
@@ -818,16 +823,6 @@ export default function App() {
     setToast(message);
     window.clearTimeout((showToast as any).timer);
     (showToast as any).timer = window.setTimeout(() => setToast(""), 2200);
-  }, []);
-
-  const refreshSession = useCallback(async (token?: string) => {
-    if (typeof token === "string") {
-      if (token) localStorage.setItem("hostctl-admin-token", token);
-      else localStorage.removeItem("hostctl-admin-token");
-    }
-    const data = await api<SessionInfo>("/api/admin/session");
-    setSession(data);
-    return data;
   }, []);
 
   const probeSession = useCallback(async () => {
@@ -882,9 +877,27 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [error]);
 
-  function logout() {
-    localStorage.removeItem("hostctl-admin-token");
-    fetch("/api/admin/logout", { method: "POST" }).finally(() => location.reload());
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setAuthNotice("登录已失效，请重新登录");
+      setSession(null);
+    };
+    window.addEventListener("hostctl:session-expired", handleSessionExpired);
+    return () => window.removeEventListener("hostctl:session-expired", handleSessionExpired);
+  }, []);
+
+  async function logout() {
+    try {
+      const res = await fetch("/api/admin/logout", {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store"
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      location.reload();
+    } catch {
+      setError("退出登录失败，请检查网络后重试。");
+    }
   }
 
   if (authChecking) {
@@ -897,7 +910,11 @@ export default function App() {
         config={config}
         needsSetup={!!session?.needsSetup}
         requestedMode={requestedAuthMode}
-        onAuthed={(next) => setSession(next)}
+        notice={authNotice}
+        onAuthed={(next) => {
+          setAuthNotice("");
+          setSession(next);
+        }}
         onConfig={setConfig}
       />
     );
@@ -905,6 +922,7 @@ export default function App() {
 
   return (
     <div className="admin-shell">
+      <a className="skip-link" href="#admin-main">跳到主要内容</a>
       <aside className="sidebar">
         <a className="brand" href="/">
           <Logo />
@@ -916,6 +934,7 @@ export default function App() {
               className={activeTab === item.tab ? "nav-item active" : "nav-item"}
               key={item.tab}
               type="button"
+              aria-current={activeTab === item.tab ? "page" : undefined}
               onClick={() => selectTab(item.tab)}
             >
               {item.icon}
@@ -929,7 +948,7 @@ export default function App() {
           <button className="button ghost" type="button" onClick={logout}>退出登录</button>
         </div>
       </aside>
-      <main className="main">
+      <main className="main" id="admin-main" tabIndex={-1}>
         <header className="topline">
           <div>
             <span className="eyebrow">{session.mode === "dev" ? "DEV" : "PROD"} · {isAdmin ? "管理员" : "用户"}</span>
@@ -943,9 +962,9 @@ export default function App() {
           </div>
         </header>
 
-        {error && <div className="alert error global-alert"><span>{error}</span><button type="button" onClick={() => setError("")}>关闭</button></div>}
+        {error && <div className="alert error global-alert" role="alert"><span>{error}</span><button type="button" onClick={() => setError("")}>关闭</button></div>}
         {activeTab === "overview" && <Overview config={config} session={session} setError={setError} setTab={selectTab} />}
-        {activeTab === "account" && <AccountPanel session={session} showToast={showToast} />}
+        {activeTab === "account" && <AccountPanel session={session} onSessionRevoked={() => { setAuthNotice("密码已修改，请重新登录"); setSession(null); }} />}
         {activeTab === "deploy" && <DeployPanel config={config} showToast={showToast} setError={setError} />}
         {activeTab === "sites" && <SitesPanel isAdmin={isAdmin} showToast={showToast} setError={setError} />}
         {activeTab === "categories" && isAdmin && <CategoriesPanel showToast={showToast} setError={setError} />}
@@ -958,7 +977,7 @@ export default function App() {
         {activeTab === "skill" && isAdmin && <SkillMCPPanel config={config} showToast={showToast} setError={setError} />}
         {activeTab === "apiDocs" && <ApiDocsPanel config={config} />}
       </main>
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className="toast" role="status" aria-live="polite" aria-atomic="true">{toast}</div>}
     </div>
   );
 }
@@ -1005,12 +1024,14 @@ function LoginScreen({
   config,
   needsSetup,
   requestedMode,
+  notice,
   onAuthed,
   onConfig
 }: {
   config: RuntimeConfig | null;
   needsSetup: boolean;
   requestedMode: "login" | "register";
+  notice?: string;
   onAuthed: (session: SessionInfo) => void;
   onConfig: (cfg: RuntimeConfig) => void;
 }) {
@@ -1104,11 +1125,9 @@ function LoginScreen({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim(), password, captchaId: captcha.id, captcha: captchaAnswer.trim() })
       });
-      localStorage.removeItem("hostctl-admin-token");
       const session = await api<SessionInfo>("/api/admin/session");
       onAuthed(session);
     } catch (err) {
-      localStorage.removeItem("hostctl-admin-token");
       setError(friendlyAuthErrorMessage(err));
       void loadCaptcha();
     } finally {
@@ -1182,6 +1201,7 @@ function LoginScreen({
               <button className="button" type="button" onClick={() => void loadCaptcha()}>换一张</button>
             </div>
           </label>
+          {!error && notice && <div className="alert success" role="status">{notice}</div>}
           {error && <div className={success ? "alert success" : "alert error"}>{error}</div>}
           <button className="button primary full" type="submit" disabled={busy}>{busy ? "提交中..." : needsSetup ? "创建管理员" : authMode === "register" ? "注册账号" : "登录"}</button>
         </form>
@@ -1203,11 +1223,13 @@ function Overview({ config, session, setError, setTab }: { config: RuntimeConfig
   const [screens, setScreens] = useState<ScreenItem[]>([]);
   const [tokens, setTokens] = useState<TokenItem[]>([]);
   const [anonymous, setAnonymous] = useState<AnonymousSession[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const isAdmin = !!session.isAdmin;
 
   useEffect(() => {
     async function load() {
+      setLoading(true);
       try {
         const [siteData, screenData, tokenData] = await Promise.all([
           api<{ sites?: SiteItem[] }>("/api/admin/sites"),
@@ -1223,6 +1245,8 @@ function Overview({ config, session, setError, setTab }: { config: RuntimeConfig
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
       }
     }
     void load();
@@ -1232,14 +1256,14 @@ function Overview({ config, session, setError, setTab }: { config: RuntimeConfig
   const storage = sites.reduce((sum, site) => sum + Number(site.totalSize || 0), 0);
 
   return (
-    <section className="page-grid">
+    <section className="page-grid overview-page" aria-busy={loading}>
       <div className="stats-grid">
-        <Metric label="Sites" value={String(sites.length)} note="已发布站点" />
-        <Metric label="Versions" value={String(versions)} note="累计版本" />
-        <Metric label="Screens" value={String(screens.length)} note="已绑定屏幕" />
-        <Metric label="Storage" value={formatSize(storage)} note="版本文件总量" />
-        <Metric label="Tokens" value={String(tokens.filter((t) => !t.isRevoked).length)} note="可用 Token" />
-        {isAdmin && <Metric label="Anonymous" value={String(anonymous.length)} note={`每个 session ${config?.anonymousPolicy?.deployLimit ?? "-"} 次`} />}
+        <Metric label="Sites" value={loading ? "..." : String(sites.length)} note="已发布站点" />
+        <Metric label="Versions" value={loading ? "..." : String(versions)} note="累计版本" />
+        <Metric label="Screens" value={loading ? "..." : String(screens.length)} note="已绑定屏幕" />
+        <Metric label="Storage" value={loading ? "..." : formatSize(storage)} note="版本文件总量" />
+        <Metric label="Tokens" value={loading ? "..." : String(tokens.filter((t) => !t.isRevoked).length)} note="可用 Token" />
+        {isAdmin && <Metric label="Anonymous" value={loading ? "..." : String(anonymous.length)} note={`每个 session ${config?.anonymousPolicy?.deployLimit ?? "-"} 次`} />}
       </div>
       <div className="panel">
         <div className="panel-head">
@@ -1263,7 +1287,8 @@ function Overview({ config, session, setError, setTab }: { config: RuntimeConfig
           <table>
             <thead><tr><th>Code</th><th>状态</th><th>版本</th><th>修改</th></tr></thead>
             <tbody>
-              {sites.slice(0, 8).map((site) => (
+              {loading && <tr><td colSpan={4} className="table-loading">正在加载站点...</td></tr>}
+              {!loading && sites.slice(0, 8).map((site) => (
                 <tr key={site.code}>
                   <td><code>{site.code}</code></td>
                   <td>{statusBadge(site.status || "active", site.accessProtected)}</td>
@@ -1271,7 +1296,7 @@ function Overview({ config, session, setError, setTab }: { config: RuntimeConfig
                   <td>{formatDate(site.lastVersionAt || site.createdAt)}</td>
                 </tr>
               ))}
-              {!sites.length && <tr><td colSpan={4}>暂无站点。</td></tr>}
+              {!loading && !sites.length && <tr><td colSpan={4}>暂无站点。</td></tr>}
             </tbody>
           </table>
         </div>
@@ -1280,7 +1305,7 @@ function Overview({ config, session, setError, setTab }: { config: RuntimeConfig
   );
 }
 
-function AccountPanel({ session, showToast }: { session: SessionInfo; showToast: (msg: string) => void }) {
+function AccountPanel({ session, onSessionRevoked }: { session: SessionInfo; onSessionRevoked: () => void }) {
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [error, setError] = useState("");
@@ -1297,7 +1322,7 @@ function AccountPanel({ session, showToast }: { session: SessionInfo; showToast:
       setOldPassword("");
       setNewPassword("");
       setShowPasswordForm(false);
-      showToast("密码已修改");
+      onSessionRevoked();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1383,7 +1408,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
       .catch(() => setCategories([]));
   }, []);
 
-  async function readFiles(list: FileList | null) {
+  async function readFiles(list: FileList | readonly File[] | null) {
     if (!list?.length) return;
     if (mode === "single") {
       const file = list[0];
@@ -1419,6 +1444,13 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
       loaded.forEach((file) => next.set(file.path, file));
       return Array.from(next.values());
     });
+  }
+
+  function handlePickerChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const selected = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
+    // Reset so choosing the same path after a local edit still emits change.
+    event.currentTarget.value = "";
+    void readFiles(selected);
   }
 
   function payload() {
@@ -1501,7 +1533,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
           {mode === "single" ? (
             <>
               <label className="deploy-upload-zone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); void readFiles(e.dataTransfer.files); }}>
-                <input type="file" accept=".html,.htm,.md,.markdown,.zip" onChange={(e) => void readFiles(e.target.files)} />
+                <input type="file" accept=".html,.htm,.md,.markdown,.zip" onChange={handlePickerChange} />
                 <FileUp size={28} />
                 <strong>上传 HTML / Markdown / ZIP</strong>
                 <span>或直接粘贴源码到下方编辑器</span>
@@ -1519,13 +1551,17 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
             </>
           ) : (
             <div className="deploy-upload-area">
-              <label className="deploy-upload-zone large" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); void readFiles(e.dataTransfer.files); }}>
-                <input type="file" multiple onChange={(e) => void readFiles(e.target.files)} />
-                <input type="file" multiple webkitdirectory="" onChange={(e) => void readFiles(e.target.files)} />
+              <div className="deploy-upload-zone large" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); void readFiles(e.dataTransfer.files); }}>
+                <input ref={fileInput} className="deploy-upload-input" type="file" multiple onChange={handlePickerChange} />
+                <input ref={dirInput} className="deploy-upload-input" type="file" multiple webkitdirectory="" onChange={handlePickerChange} />
                 <FileUp size={36} />
-                <strong>选择文件或拖拽到此处</strong>
+                <strong>拖拽文件到此处；选择目录可保留目录结构</strong>
+                <div className="deploy-upload-actions">
+                  <button className="deploy-upload-action" type="button" onClick={() => fileInput.current?.click()}><FileUp size={15} />选择文件</button>
+                  <button className="deploy-upload-action" type="button" onClick={() => dirInput.current?.click()}><FolderOpen size={15} />选择目录</button>
+                </div>
                 <span>支持多文件、整个目录、或单 ZIP 包。自动识别入口文件。</span>
-              </label>
+              </div>
               <div className="deploy-file-list">
                 {files.map((f) => (
                   <div className="deploy-file-row" key={f.path}>
@@ -1576,6 +1612,14 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
               更新已有发布
             </label>
             {append && <div className="hint-box">更新必须填写已有 <code>code</code>。公开方式和访问密码沿用原设置。</div>}
+            <details className="entry-field-toggle">
+              <summary>高级：指定入口文件</summary>
+              <label className="field">
+                <span>入口文件名（可选）</span>
+                <input className="mono" value={entry} onChange={(e) => setEntry(e.target.value)} placeholder="例如 index.html" />
+              </label>
+              <p className="muted">ZIP 或多文件项目会自动识别入口；只有识别不符合预期时才需要手动指定。</p>
+            </details>
             <label className="field">
               <span>可见性</span>
               <select value={visibility} disabled={append} onChange={(e) => setVisibility(e.target.value)}>
@@ -1642,6 +1686,10 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
   const [detail, setDetail] = useState<SiteDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [selectedSiteCodes, setSelectedSiteCodes] = useState<string[]>([]);
+  const [bulkReusePolicy, setBulkReusePolicy] = useState<ReusePolicyValue>("auto");
+  const [bulkSourceDownloadPolicy, setBulkSourceDownloadPolicy] = useState<ReusePolicyValue>("auto");
+  const [bulkUpdating, setBulkUpdating] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -1695,6 +1743,8 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
     return hit && statusHit && visibilityHit && categoryHit && tagHit && ownerHit && kindHit;
   }), [category, kind, ownerScope, query, sites, status, tagFilter, visibility]);
   const hasActiveFilters = Boolean(query || status || visibility || ownerScope || category || tagFilter || kind);
+  const selectedVisibleCodes = useMemo(() => new Set(selectedSiteCodes.filter((code) => filtered.some((site) => site.code === code))), [filtered, selectedSiteCodes]);
+  const allVisibleSelected = filtered.length > 0 && filtered.every((site) => selectedVisibleCodes.has(site.code));
 
   function clearFilters() {
     setQuery("");
@@ -1704,6 +1754,42 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
     setCategory("");
     setTagFilter("");
     setKind("");
+  }
+
+  function toggleSiteSelection(code: string) {
+    setSelectedSiteCodes((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code]);
+  }
+
+  function toggleVisibleSelection() {
+    setSelectedSiteCodes((current) => {
+      const visibleCodes = new Set(filtered.map((site) => site.code));
+      if (allVisibleSelected) return current.filter((code) => !visibleCodes.has(code));
+      return Array.from(new Set([...current, ...visibleCodes]));
+    });
+  }
+
+  async function applyBulkReusePolicy() {
+    const codes = Array.from(selectedVisibleCodes);
+    if (!codes.length || bulkUpdating) return;
+    if (!window.confirm(`确定将 ${codes.length} 个当前筛选结果的源码下载和模板复用策略批量更新为所选值吗？`)) return;
+    setBulkUpdating(true);
+    try {
+      const results: PromiseSettledResult<unknown>[] = [];
+      for (let index = 0; index < codes.length; index += 8) {
+        const batch = codes.slice(index, index + 8).map((code) => api(`/api/admin/sites/${encodeURIComponent(code)}/reuse-policy`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reusePolicy: bulkReusePolicy, sourceDownloadPolicy: bulkSourceDownloadPolicy })
+        }));
+        results.push(...await Promise.allSettled(batch));
+      }
+      const failed = results.filter((result) => result.status === "rejected").length;
+      setSelectedSiteCodes([]);
+      await load();
+      showToast(failed ? `已更新 ${codes.length - failed} 个应用，${failed} 个失败` : `已更新 ${codes.length} 个应用的复用策略`);
+    } finally {
+      setBulkUpdating(false);
+    }
   }
 
   async function setPassword(site: SiteItem, password: string) {
@@ -1873,13 +1959,31 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
           </div>
         </div>
       </div>
+      {isAdmin && (
+        <div className="bulk-policy-bar" aria-label="批量模板复用策略">
+          <label className="bulk-select-all"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleSelection} />选择当前筛选结果</label>
+          <strong>{selectedVisibleCodes.size} 个已选</strong>
+          <label>模板复用
+            <select value={bulkReusePolicy} onChange={(event) => setBulkReusePolicy(event.target.value as ReusePolicyValue)}>
+              <option value="auto">自动</option><option value="allow">允许</option><option value="deny">禁止</option>
+            </select>
+          </label>
+          <label>源码下载
+            <select value={bulkSourceDownloadPolicy} onChange={(event) => setBulkSourceDownloadPolicy(event.target.value as ReusePolicyValue)}>
+              <option value="auto">自动</option><option value="allow">允许</option><option value="deny">禁止</option>
+            </select>
+          </label>
+          <button className="button compact" type="button" disabled={!selectedVisibleCodes.size || bulkUpdating} onClick={() => void applyBulkReusePolicy()}>{bulkUpdating ? "更新中..." : "应用策略"}</button>
+        </div>
+      )}
       {viewMode === "list" ? (
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Code</th><th>名称</th><th>归属</th><th>分类 / 标签</th><th>状态</th><th>版本</th><th>数据</th><th>大小</th><th>修改</th><th>操作</th></tr></thead>
+          <thead><tr>{isAdmin && <th className="selection-cell"><input type="checkbox" aria-label="选择当前筛选结果" checked={allVisibleSelected} onChange={toggleVisibleSelection} /></th>}<th>Code</th><th>名称</th><th>归属</th><th>分类 / 标签</th><th>状态</th><th>版本</th><th>数据</th><th>大小</th><th>修改</th><th>操作</th></tr></thead>
           <tbody>
             {filtered.map((site) => (
               <tr key={site.code}>
+                {isAdmin && <td className="selection-cell"><input type="checkbox" aria-label={`选择 ${site.code}`} checked={selectedVisibleCodes.has(site.code)} onChange={() => toggleSiteSelection(site.code)} /></td>}
                 <td><code>{site.code}</code></td>
                 <td>
                   <div className="site-name-cell" title={site.description || siteDisplayName(site)}>
@@ -1921,7 +2025,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                 </td>
               </tr>
             ))}
-            {!filtered.length && <tr><td colSpan={10}>暂无应用。</td></tr>}
+            {!filtered.length && <tr><td colSpan={isAdmin ? 11 : 10}>暂无应用。</td></tr>}
           </tbody>
         </table>
       </div>
@@ -4016,7 +4120,7 @@ function Drawer({ title, open, onClose, children, width }: { title: string; open
       <div className="drawer" style={width ? { width } : undefined} onMouseDown={(event) => { event.stopPropagation(); }}>
         <div className="drawer-head">
           <strong>{title}</strong>
-          <button className="button ghost" type="button" onClick={onClose}></button>
+          <button className="button ghost" type="button" aria-label="关闭" title="关闭" onClick={onClose}><X size={16} /></button>
         </div>
         <div className="drawer-body">{children}</div>
       </div>

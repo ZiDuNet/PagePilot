@@ -7,11 +7,13 @@ token management, site administration, and production readiness checks.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import pathlib
 import platform
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -20,9 +22,11 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from contextlib import redirect_stderr
 
 SKILL_VERSION = "0.3.1"
 UA = f"pagep-skill/{SKILL_VERSION}"
+JSON_OUTPUT = False
 
 
 def env_first(*names: str) -> str:
@@ -57,6 +61,15 @@ ALLOWED_BINARY_EXT = {
 MAX_SINGLE_FILE_BYTES = 1024 * 1024
 MAX_SITE_TOTAL_BYTES = 10 * 1024 * 1024
 MAX_FILES_PER_SITE = 100
+
+PREFERRED_PAGE_ENTRIES = (
+    "index.html", "index.htm", "README.md", "readme.md",
+    "README.markdown", "readme.markdown",
+)
+TEXT_FILE_EXTENSIONS = (
+    ".html", ".htm", ".css", ".js", ".mjs", ".json", ".txt",
+    ".md", ".markdown", ".svg", ".xml", ".csv", ".webmanifest", ".map",
+)
 
 
 def normalize_server(value: str) -> str:
@@ -216,7 +229,26 @@ def load_session_id(base: str) -> str:
 
 def save_session_id(base: str, session_id: str) -> None:
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(json.dumps({"server": base, "sessionId": session_id}, indent=2), encoding="utf-8")
+    fd, temp_name = tempfile.mkstemp(prefix=".session-", dir=str(SESSION_FILE.parent))
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        else:
+            os.chmod(temp_name, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"server": base, "sessionId": session_id}, handle, indent=2)
+            handle.write("\n")
+        os.replace(temp_name, SESSION_FILE)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def ensure_session(base: str) -> str:
@@ -229,6 +261,46 @@ def ensure_session(base: str) -> str:
         save_session_id(base, sid)
         return sid
     die("Could not create anonymous session: " + json.dumps({"httpStatus": status, **data}, ensure_ascii=False))
+
+
+def structured_http_error(status: int, body: str, fallback: str = "") -> dict:
+    """Keep CLI/API errors machine-readable when an upstream returns non-JSON."""
+    raw_detail = str(body or "").strip()
+    try:
+        parsed = json.loads(body) if body else {}
+    except (TypeError, json.JSONDecodeError):
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+
+    data = dict(parsed)
+    data["success"] = False
+    if not str(data.get("errorCode") or "").strip():
+        data["errorCode"] = "HTTP_ERROR"
+    detail = str(data.get("detail") or data.get("error") or raw_detail or fallback or f"HTTP {status} request failed").strip()
+    data["detail"] = detail
+    if not str(data.get("hint") or "").strip():
+        data["hint"] = "Check the PagePilot server URL and reverse-proxy response, then retry."
+    return data
+
+
+def structured_invalid_response(status: int, body: str) -> dict:
+    detail = str(body or "").strip() or f"HTTP {status} returned an empty response"
+    return {
+        "success": False,
+        "errorCode": "INVALID_RESPONSE",
+        "detail": detail,
+        "hint": "Check the PagePilot server URL and reverse-proxy response, then retry.",
+    }
+
+
+def network_error_payload(detail: str) -> dict:
+    return {
+        "success": False,
+        "errorCode": "NETWORK_ERROR",
+        "detail": str(detail),
+        "hint": "Check network connectivity and the PagePilot server URL, then retry.",
+    }
 
 
 def request_json(base: str, token: str, path: str, method: str = "GET",
@@ -251,17 +323,23 @@ def request_json(base: str, token: str, path: str, method: str = "GET",
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            body = resp.read().decode("utf-8")
-            return resp.status, json.loads(body) if body else {}
+            body = resp.read().decode("utf-8", "replace")
+            if not body.strip():
+                return resp.status, structured_invalid_response(resp.status, body)
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError:
+                return resp.status, structured_invalid_response(resp.status, body)
+            if not isinstance(parsed, dict):
+                return resp.status, structured_invalid_response(resp.status, body)
+            return resp.status, parsed
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")
-        try:
-            parsed = json.loads(body)
-        except Exception:
-            parsed = {"success": False, "error": body}
-        return e.code, parsed
+        return e.code, structured_http_error(e.code, body, str(e))
+    except TimeoutError as e:
+        return 0, network_error_payload(str(e) or "request timed out")
     except urllib.error.URLError as e:
-        return 0, {"success": False, "errorCode": "NETWORK_ERROR", "detail": str(e)}
+        return 0, network_error_payload(str(e))
 
 
 def print_result(status: int, data: dict) -> int:
@@ -382,17 +460,23 @@ def request_multipart(
     req = urllib.request.Request(base + path, data=bytes(body), headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            resp_body = resp.read().decode("utf-8")
-            return resp.status, json.loads(resp_body) if resp_body else {}
+            resp_body = resp.read().decode("utf-8", "replace")
+            if not resp_body.strip():
+                return resp.status, structured_invalid_response(resp.status, resp_body)
+            try:
+                parsed = json.loads(resp_body)
+            except json.JSONDecodeError:
+                return resp.status, structured_invalid_response(resp.status, resp_body)
+            if not isinstance(parsed, dict):
+                return resp.status, structured_invalid_response(resp.status, resp_body)
+            return resp.status, parsed
     except urllib.error.HTTPError as e:
         resp_body = e.read().decode("utf-8", "replace")
-        try:
-            parsed = json.loads(resp_body)
-        except Exception:
-            parsed = {"success": False, "error": resp_body}
-        return e.code, parsed
+        return e.code, structured_http_error(e.code, resp_body, str(e))
+    except TimeoutError as e:
+        return 0, network_error_payload(str(e) or "request timed out")
     except urllib.error.URLError as e:
-        return 0, {"success": False, "errorCode": "NETWORK_ERROR", "detail": str(e)}
+        return 0, network_error_payload(str(e))
 
 
 def safe_multipart_filename(name: str) -> str:
@@ -417,23 +501,739 @@ def registered_token(args, action: str = "screen command") -> str:
 
 
 def die(msg: str) -> None:
+    if JSON_OUTPUT:
+        print(json.dumps({
+            "success": False,
+            "errorCode": "CLI_ERROR",
+            "detail": str(msg),
+            "hint": "Fix the reported input and rerun the command.",
+        }, ensure_ascii=False))
+        raise SystemExit(1)
     raise SystemExit(msg)
 
 
 def rel_path(root: pathlib.Path, p: pathlib.Path) -> str:
-    rel = p.relative_to(root).as_posix()
-    if rel.startswith("/") or ".." in rel.split("/"):
+    rel = str(p.relative_to(root)).replace("\\", "/")
+    if not _preflight_is_safe_path(rel):
         die(f"Refusing unsafe path: {rel}")
     return rel
+
+
+def _preflight_issue(code: str, detail: str, hint: str = "") -> dict:
+    issue = {"code": code, "detail": detail}
+    if hint:
+        issue["hint"] = hint
+    return issue
+
+
+def _preflight_report(source: str) -> dict:
+    return {
+        "success": False,
+        "source": source,
+        "sourceType": "unknown",
+        "kind": "unknown",
+        "files": [],
+        "count": 0,
+        "bytes": 0,
+        "mainEntry": "",
+        "root": "",
+        "warnings": [],
+        "errors": [],
+        "limits": {
+            "maxSingleFileBytes": MAX_SINGLE_FILE_BYTES,
+            "maxSiteTotalBytes": MAX_SITE_TOTAL_BYTES,
+            "maxFiles": MAX_FILES_PER_SITE,
+        },
+    }
+
+
+def _preflight_is_html_path(path: str) -> bool:
+    return path.lower().endswith((".html", ".htm"))
+
+
+def _preflight_is_markdown_path(path: str) -> bool:
+    return path.lower().endswith((".md", ".markdown"))
+
+
+def _preflight_is_page_entry(path: str) -> bool:
+    return _preflight_is_html_path(path) or _preflight_is_markdown_path(path)
+
+
+def _preflight_is_binary_path(path: str) -> bool:
+    return not path.lower().endswith(TEXT_FILE_EXTENSIONS)
+
+
+def _preflight_is_safe_path(path: str) -> bool:
+    value = str(path).replace("\\", "/")
+    if not value or "\x00" in value or value.startswith("/") or value.startswith("//"):
+        return False
+    if len(value.encode("utf-8")) > 255 or "//" in value:
+        return False
+    if len(value) >= 2 and value[1] == ":":
+        return False
+    segments = value.split("/")
+    if len(segments) > 16:
+        return False
+    for segment in segments:
+        if segment in {"", ".", ".."}:
+            return False
+        if len(segment) >= 2 and segment[1] == ":":
+            return False
+        if segment.endswith((".", " ")):
+            return False
+        if any(not char.isprintable() or char in '<>:"\\|?*' for char in segment):
+            return False
+        # Windows reserves the device-name prefix even when multiple
+        # extensions follow it (for example CON.foo.bar), so split at the
+        # first dot.
+        dot = segment.find(".")
+        stem = segment[:dot] if dot > 0 else segment
+        if stem.casefold() in {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}:
+            return False
+    return True
+
+
+def _preflight_normalize_path(path: str) -> str:
+    return str(path).replace("\\", "/")
+
+
+def _zip_datetime(path: pathlib.Path) -> tuple[int, int, int, int, int, int]:
+    """Return a ZIP-compatible timestamp, clamping files outside DOS limits."""
+    try:
+        value = time.localtime(path.stat().st_mtime)
+    except (OSError, OverflowError, ValueError):
+        return (1980, 1, 1, 0, 0, 0)
+    if value.tm_year < 1980:
+        return (1980, 1, 1, 0, 0, 0)
+    if value.tm_year > 2107:
+        return (2107, 12, 31, 23, 59, 58)
+    return (value.tm_year, value.tm_mon, value.tm_mday, value.tm_hour, value.tm_min, value.tm_sec - (value.tm_sec % 2))
+
+
+def _zip_write_file(archive: zipfile.ZipFile, source: pathlib.Path, arcname: str) -> None:
+    """Write a regular file without letting an invalid mtime abort ZIP creation."""
+    info = zipfile.ZipInfo(arcname, date_time=_zip_datetime(source))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = (stat.S_IFREG | 0o644) << 16
+    with source.open("rb") as src, archive.open(info, "w") as dst:
+        while True:
+            chunk = src.read(1024 * 1024)
+            if not chunk:
+                break
+            dst.write(chunk)
+
+
+def _preflight_skip_archive_path(path: str) -> bool:
+    if not path or path.endswith("/"):
+        return True
+    base = path.rsplit("/", 1)[-1]
+    return path.startswith("__MACOSX/") or base in {".DS_Store", "Thumbs.db"}
+
+
+def _preflight_path_dir(path: str) -> str:
+    if "/" not in path:
+        return ""
+    return path.rsplit("/", 1)[0].strip("/")
+
+
+def _preflight_common_root(roots: list[str]) -> tuple[str, bool]:
+    if not roots:
+        return "", False
+    root = roots[0].strip("/")
+    return root, all(candidate.strip("/") == root for candidate in roots[1:])
+
+
+def _preflight_choose_root(records: list[dict], entry_hint: str) -> tuple[str, dict | None]:
+    if entry_hint:
+        for record in records:
+            if record["path"].casefold() == entry_hint.casefold() and _preflight_is_page_entry(record["path"]):
+                return _preflight_path_dir(record["path"]), None
+
+    for preferred in PREFERRED_PAGE_ENTRIES:
+        candidates = [
+            _preflight_path_dir(record["path"])
+            for record in records
+            if record["path"].rsplit("/", 1)[-1].casefold() == preferred.casefold()
+        ]
+        if len(candidates) == 1:
+            return candidates[0], None
+        if len(candidates) > 1:
+            root, ok = _preflight_common_root(candidates)
+            if ok:
+                return root, None
+            return "", _preflight_issue(
+                "ZIP_AMBIGUOUS_ENTRY",
+                f"bundle contains multiple possible {preferred} entries",
+                "Package one deployable website root per ZIP, or pass --filename with the intended entry.",
+            )
+
+    candidates = [_preflight_path_dir(record["path"]) for record in records if _preflight_is_page_entry(record["path"])]
+    if not candidates:
+        return "", _preflight_issue(
+            "ZIP_ENTRY_MISSING",
+            "bundle did not contain an HTML or Markdown entry",
+            "Put index.html or README.md in the site folder, or pass --filename with an entry path.",
+        )
+    if len(candidates) == 1:
+        return candidates[0], None
+    root, ok = _preflight_common_root(candidates)
+    if ok:
+        return root, None
+    return "", _preflight_issue(
+        "ZIP_AMBIGUOUS_ENTRY",
+        "bundle contains multiple possible page entries",
+        "Package one deployable website root per ZIP, or pass --filename with the intended entry.",
+    )
+
+
+def _preflight_entry_after_root(entry_hint: str, root: str) -> str:
+    if not entry_hint or not root:
+        return entry_hint
+    prefix = root.strip("/") + "/"
+    if len(entry_hint) > len(prefix) and entry_hint[:len(prefix)].casefold() == prefix.casefold():
+        return entry_hint[len(prefix):]
+    return entry_hint
+
+
+def _preflight_choose_main_entry(records: list[dict], entry_hint: str) -> str:
+    if entry_hint and _preflight_is_page_entry(entry_hint):
+        for record in records:
+            if record["path"] == entry_hint:
+                return entry_hint
+    for preferred in PREFERRED_PAGE_ENTRIES:
+        for record in records:
+            if record["path"].casefold() == preferred.casefold():
+                return record["path"]
+    for record in records:
+        if _preflight_is_html_path(record["path"]):
+            return record["path"]
+    for record in records:
+        if _preflight_is_markdown_path(record["path"]):
+            return record["path"]
+    return ""
+
+
+def _preflight_read_limited(stream, limit: int = MAX_SINGLE_FILE_BYTES) -> bytes:
+    data = bytearray()
+    while len(data) <= limit:
+        chunk = stream.read(min(64 * 1024, limit + 1 - len(data)))
+        if not chunk:
+            break
+        data.extend(chunk)
+    if len(data) > limit:
+        raise ValueError("file exceeds configured single-file limit")
+    return bytes(data)
+
+
+def _preflight_content_is_binary(data: bytes) -> bool:
+    """Mirror the server's lightweight multipart binary detector for entries."""
+    if not data:
+        return False
+    sample = data[:512]
+    non_printable = 0
+    for value in sample:
+        if value == 0:
+            return True
+        if value < 0x09 or (value > 0x0D and value < 0x20):
+            non_printable += 1
+    return non_printable * 8 > len(sample)
+
+
+def _preflight_entry_text(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace").strip()
+
+
+def _preflight_validate_entry(record: dict, load_bytes, report: dict) -> None:
+    try:
+        data = load_bytes(record)
+    except ValueError:
+        report["errors"].append(_preflight_issue(
+            "ZIP_FILE_TOO_LARGE",
+            f"file {record['path']} exceeds max single-file size ({MAX_SINGLE_FILE_BYTES} bytes)",
+            "Split large assets or raise the single-file upload limit in admin settings.",
+        ))
+        return
+    except (OSError, RuntimeError, NotImplementedError, EOFError, zipfile.BadZipFile) as exc:
+        report["errors"].append(_preflight_issue(
+            "ZIP_ENTRY_READ_FAILED",
+            f"could not read main entry {record['path']}: {exc}",
+            "Rebuild the source archive and run preflight again.",
+        ))
+        return
+
+    if _preflight_content_is_binary(data):
+        report["errors"].append(_preflight_issue(
+            "ZIP_ENTRY_MISSING",
+            f"main entry {record['path']} is binary and cannot be rendered as a page",
+            "Make the HTML or Markdown entry a UTF-8 text file.",
+        ))
+        return
+
+    text = _preflight_entry_text(data)
+    if _preflight_is_markdown_path(record["path"]):
+        if len(text.encode("utf-8")) < 3:
+            report["errors"].append(_preflight_issue(
+                "INVALID_INPUT",
+                f"main Markdown entry {record['path']} is too short",
+                "Upload a Markdown document with at least one heading or paragraph.",
+            ))
+        return
+
+    lower = text.lower()
+    if len(text.encode("utf-8")) < 32:
+        report["errors"].append(_preflight_issue(
+            "INVALID_INPUT",
+            f"main HTML entry {record['path']} is too short to be a page",
+            "Upload a real HTML file with tags such as <html>, <body>, <main>, <script>, or <style>.",
+        ))
+        return
+    html_tags = (
+        "main", "section", "article", "nav", "header", "footer", "div", "p",
+        "h1", "h2", "h3", "ul", "ol", "table", "form", "button", "canvas",
+        "svg", "script", "style",
+    )
+    if "<" not in lower or ">" not in lower or not any(f"<{tag}" in lower for tag in html_tags):
+        report["errors"].append(_preflight_issue(
+            "INVALID_INPUT",
+            f"main HTML entry {record['path']} does not look like an HTML page",
+            "Plain text is not deployable here. Provide a valid HTML document or generated static site.",
+        ))
+
+
+def _preflight_set_files(report: dict, records: list[dict]) -> None:
+    report["files"] = [
+        {"path": record["path"], "bytes": record["bytes"], "isBinary": record["isBinary"]}
+        for record in sorted(records, key=lambda item: item["path"])
+    ]
+    report["count"] = len(records)
+    report["bytes"] = sum(record["bytes"] for record in records)
+
+
+def _preflight_measure_directory_archive(source_path: pathlib.Path, report: dict) -> None:
+    """Measure the ZIP produced by the multipart directory packer.
+
+    The server validates the uploaded ZIP as one multipart file before expanding
+    it, so the compressed archive itself must fit the single-file limit too.
+    """
+    fd, temp_name = tempfile.mkstemp(prefix="pagepilot-preflight-", suffix=".zip")
+    os.close(fd)
+    temp_path = pathlib.Path(temp_name)
+    try:
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(source_path.rglob("*"), key=lambda item: item.as_posix()):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                rel = path.relative_to(source_path).as_posix()
+                if _preflight_skip_archive_path(rel):
+                    continue
+                _zip_write_file(archive, path, rel)
+        archive_size = temp_path.stat().st_size
+        report["sourceBytes"] = archive_size
+        if archive_size > MAX_SINGLE_FILE_BYTES:
+            report["errors"].append(_preflight_issue(
+                "ZIP_FILE_TOO_LARGE",
+                f"generated site ZIP is {archive_size} bytes; single-file upload limit is {MAX_SINGLE_FILE_BYTES} bytes",
+                "Reduce the compressed archive size or raise the single-file upload limit in admin settings.",
+            ))
+        elif archive_size > MAX_SITE_TOTAL_BYTES:
+            report["errors"].append(_preflight_issue(
+                "ZIP_TOTAL_TOO_LARGE",
+                f"generated site ZIP is {archive_size} bytes; site upload limit is {MAX_SITE_TOTAL_BYTES} bytes",
+                "Reduce the source directory before uploading.",
+            ))
+    except (OSError, ValueError, OverflowError, RuntimeError, NotImplementedError, EOFError, zipfile.BadZipFile) as exc:
+        report["errors"].append(_preflight_issue(
+            "SOURCE_PREPARE_FAILED",
+            f"could not create the upload ZIP: {exc}",
+            "Check that every source file is readable, then run preflight again.",
+        ))
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _preflight_analyze_records(records: list[dict], source_type: str, entry_hint: str,
+                               load_bytes, report: dict) -> None:
+    root, root_error = _preflight_choose_root(records, entry_hint)
+    if root_error:
+        report["errors"].append(root_error)
+        _preflight_set_files(report, records)
+        return
+
+    selected: list[dict] = []
+    seen: set[str] = set()
+    total_size = 0
+    for record in records:
+        path = record["path"]
+        if root:
+            if not path.startswith(root + "/"):
+                continue
+            path = path[len(root) + 1:]
+        if not path or _preflight_skip_archive_path(path):
+            continue
+        if not _preflight_is_safe_path(path):
+            report["errors"].append(_preflight_issue(
+                "ZIP_UNSAFE_PATH",
+                f"bundle entry {path!r} is not a safe relative path",
+                "Paths must not contain '..', absolute paths, drive letters, or empty path segments.",
+            ))
+            continue
+        copied = dict(record)
+        copied["path"] = path
+        selected.append(copied)
+        if path in seen:
+            report["errors"].append(_preflight_issue(
+                "ZIP_DUPLICATE_PATH",
+                f"duplicate file path after bundle root detection: {path}",
+                "Rename duplicate files that collapse to the same relative path after root detection.",
+            ))
+        seen.add(path)
+        total_size += copied["bytes"]
+
+    _preflight_set_files(report, selected)
+    report["root"] = root
+    if len(selected) > MAX_FILES_PER_SITE:
+        report["errors"].append(_preflight_issue(
+            "ZIP_TOO_MANY_FILES",
+            f"too many files in bundle ({len(selected)}); max {MAX_FILES_PER_SITE} per site",
+            "Reduce generated artifacts or raise the file-count limit in admin settings.",
+        ))
+    if total_size > MAX_SITE_TOTAL_BYTES:
+        report["errors"].append(_preflight_issue(
+            "ZIP_TOTAL_TOO_LARGE",
+            f"total size exceeds site limit ({MAX_SITE_TOTAL_BYTES} bytes)",
+            "Remove unused assets or raise the whole-site upload limit in admin settings.",
+        ))
+
+    main_hint = _preflight_entry_after_root(entry_hint, root)
+    if entry_hint and _preflight_is_page_entry(entry_hint) and not any(
+        record["path"] == main_hint for record in selected
+    ):
+        report["warnings"].append(_preflight_issue(
+            "ENTRY_HINT_NOT_FOUND",
+            f"--filename {entry_hint!r} did not match a deployable page entry; automatic detection was used.",
+        ))
+    main_entry = _preflight_choose_main_entry(selected, main_hint)
+    if not main_entry:
+        report["errors"].append(_preflight_issue(
+            "ZIP_ENTRY_MISSING",
+            "bundle did not contain an HTML or Markdown entry",
+            "Put index.html or README.md in the site folder, or pass --filename with an entry path.",
+        ))
+        return
+
+    report["mainEntry"] = main_entry
+    if _preflight_is_markdown_path(main_entry):
+        report["kind"] = "markdown"
+    elif source_type in {"directory", "zip"}:
+        report["kind"] = "zip_site"
+    elif len(selected) <= 1:
+        report["kind"] = "single_html"
+    else:
+        report["kind"] = "static_site"
+
+    for record in selected:
+        if record["path"] == main_entry:
+            if record["bytes"] <= MAX_SINGLE_FILE_BYTES:
+                _preflight_validate_entry(record, load_bytes, report)
+            break
+
+
+def _preflight_directory(source_path: pathlib.Path, entry_hint: str, report: dict) -> None:
+    records: list[dict] = []
+    try:
+        paths = sorted(source_path.rglob("*"), key=lambda item: item.as_posix())
+    except OSError as exc:
+        report["errors"].append(_preflight_issue("SOURCE_READ_FAILED", f"could not inspect directory: {exc}"))
+        return
+
+    for path in paths:
+        try:
+            if path.is_symlink():
+                rel = path.relative_to(source_path).as_posix()
+                report["errors"].append(_preflight_issue(
+                    "UNSAFE_SYMLINK",
+                    f"directory contains symbolic link: {rel}",
+                    "Replace symbolic links with files contained inside the source directory.",
+                ))
+                continue
+            if not path.is_file():
+                continue
+            rel = _preflight_normalize_path(path.relative_to(source_path).as_posix())
+            if not _preflight_is_safe_path(rel):
+                report["errors"].append(_preflight_issue(
+                    "ZIP_UNSAFE_PATH",
+                    f"directory entry {rel!r} is not a safe relative path",
+                    "Paths must not contain '..', absolute paths, drive letters, or empty path segments.",
+                ))
+                continue
+            if _preflight_skip_archive_path(rel):
+                report["warnings"].append(_preflight_issue(
+                    "IGNORED_ARCHIVE_METADATA", f"ignored archive metadata: {rel}",
+                ))
+                continue
+            size = path.stat().st_size
+        except OSError as exc:
+            report["errors"].append(_preflight_issue("SOURCE_READ_FAILED", f"could not inspect {path}: {exc}"))
+            continue
+
+        records.append({
+            "path": rel,
+            "bytes": size,
+            "isBinary": _preflight_is_binary_path(rel),
+            "_source": path,
+        })
+        if size > MAX_SINGLE_FILE_BYTES:
+            report["errors"].append(_preflight_issue(
+                "ZIP_FILE_TOO_LARGE",
+                f"file {rel} exceeds max single-file size ({MAX_SINGLE_FILE_BYTES} bytes)",
+                "Split large assets or raise the single-file upload limit in admin settings.",
+            ))
+
+    if not records and not report["errors"]:
+        report["errors"].append(_preflight_issue(
+            "ZIP_EMPTY",
+            "directory did not contain deployable files",
+            "Add index.html, README.md, or a static site folder.",
+        ))
+        return
+
+    # Directory upload first creates a ZIP locally, so enforce its input limits too.
+    # Bundle-root trimming below can legitimately reduce the hosted file set, but it
+    # cannot bypass the local packer's limits.
+    raw_total = sum(record["bytes"] for record in records)
+    if len(records) > MAX_FILES_PER_SITE:
+        report["errors"].append(_preflight_issue(
+            "SOURCE_TOO_MANY_FILES",
+            f"directory contains too many files ({len(records)}); max {MAX_FILES_PER_SITE} for local upload",
+            "Remove generated artifacts before publishing this directory.",
+        ))
+    if raw_total > MAX_SITE_TOTAL_BYTES:
+        report["errors"].append(_preflight_issue(
+            "SOURCE_TOTAL_TOO_LARGE",
+            f"directory totals {raw_total} bytes; local upload limit is {MAX_SITE_TOTAL_BYTES} bytes",
+            "Remove unused assets or raise the whole-site upload limit in admin settings.",
+        ))
+    _preflight_measure_directory_archive(source_path, report)
+
+    def load_bytes(record: dict) -> bytes:
+        with pathlib.Path(record["_source"]).open("rb") as stream:
+            return _preflight_read_limited(stream)
+
+    _preflight_analyze_records(records, "directory", entry_hint, load_bytes, report)
+
+
+def _preflight_zip(source_path: pathlib.Path, entry_hint: str, report: dict) -> None:
+    try:
+        source_size = source_path.stat().st_size
+    except OSError as exc:
+        report["errors"].append(_preflight_issue("SOURCE_READ_FAILED", f"could not inspect ZIP: {exc}"))
+        return
+    report["sourceBytes"] = source_size
+    if source_size > MAX_SINGLE_FILE_BYTES:
+        report["errors"].append(_preflight_issue(
+            "ZIP_FILE_TOO_LARGE",
+            f"source ZIP is {source_size} bytes; single-file upload limit is {MAX_SINGLE_FILE_BYTES} bytes",
+            "Reduce the compressed archive size or raise the single-file upload limit in admin settings.",
+        ))
+        return
+    if source_size > MAX_SITE_TOTAL_BYTES:
+        report["errors"].append(_preflight_issue(
+            "SOURCE_TOO_LARGE",
+            f"source ZIP is {source_size} bytes; upload limit is {MAX_SITE_TOTAL_BYTES} bytes",
+            "Reduce the archive size before uploading.",
+        ))
+        return
+
+    records: list[dict] = []
+    try:
+        with zipfile.ZipFile(source_path) as archive:
+            for index, info in enumerate(archive.infolist()):
+                if info.is_dir():
+                    continue
+                raw_path = info.filename
+                if stat.S_ISLNK(info.external_attr >> 16):
+                    report["warnings"].append(_preflight_issue(
+                        "ZIP_SYMLINK_TREATED_AS_FILE",
+                        f"ZIP entry {raw_path!r} is a symbolic link and will be stored as file content",
+                        "Replace it with a regular file when the application expects a linked asset.",
+                    ))
+                if not _preflight_is_safe_path(raw_path):
+                    report["errors"].append(_preflight_issue(
+                        "ZIP_UNSAFE_PATH",
+                        f"ZIP entry {raw_path!r} is not a safe relative path",
+                        "ZIP entries must not contain '..', absolute paths, drive letters, UNC paths, or empty path segments.",
+                    ))
+                    continue
+                path = _preflight_normalize_path(raw_path)
+                if _preflight_skip_archive_path(path):
+                    report["warnings"].append(_preflight_issue(
+                        "IGNORED_ARCHIVE_METADATA", f"ignored archive metadata: {path}",
+                    ))
+                    continue
+                record = {
+                    "path": path,
+                    "bytes": int(info.file_size),
+                    "isBinary": _preflight_is_binary_path(path),
+                    "_zipIndex": index,
+                }
+                records.append(record)
+                if info.file_size > MAX_SINGLE_FILE_BYTES:
+                    report["errors"].append(_preflight_issue(
+                        "ZIP_FILE_TOO_LARGE",
+                        f"file {path} exceeds max single-file size ({MAX_SINGLE_FILE_BYTES} bytes)",
+                        "Split large assets or raise the single-file upload limit in admin settings.",
+                    ))
+                    continue
+                try:
+                    with archive.open(info) as stream:
+                        actual = _preflight_read_limited(stream)
+                    if len(actual) != info.file_size:
+                        raise zipfile.BadZipFile("ZIP entry size did not match its header")
+                except ValueError:
+                    report["errors"].append(_preflight_issue(
+                        "ZIP_FILE_TOO_LARGE",
+                        f"file {path} exceeds max single-file size ({MAX_SINGLE_FILE_BYTES} bytes)",
+                        "Split large assets or raise the single-file upload limit in admin settings.",
+                    ))
+                except (OSError, RuntimeError, NotImplementedError, EOFError, zipfile.BadZipFile) as exc:
+                    report["errors"].append(_preflight_issue(
+                        "ZIP_ENTRY_READ_FAILED",
+                        f"ZIP entry {path!r} cannot be read: {exc}",
+                        "Rebuild the archive and run preflight again.",
+                    ))
+    except (OSError, RuntimeError, NotImplementedError, EOFError, zipfile.BadZipFile) as exc:
+        report["errors"].append(_preflight_issue(
+            "ZIP_OPEN_FAILED",
+            f"ZIP file {source_path.name!r} cannot be opened: {exc}",
+            "Upload a valid .zip archive.",
+        ))
+        return
+
+    if not records and not report["errors"]:
+        report["errors"].append(_preflight_issue(
+            "ZIP_EMPTY",
+            "ZIP did not contain deployable files",
+            "Upload a ZIP containing index.html, README.md, or a static site folder.",
+        ))
+        return
+
+    def load_bytes(record: dict) -> bytes:
+        with zipfile.ZipFile(source_path) as archive:
+            info = archive.infolist()[record["_zipIndex"]]
+            with archive.open(info) as stream:
+                return _preflight_read_limited(stream)
+
+    _preflight_analyze_records(records, "zip", entry_hint, load_bytes, report)
+
+
+def _preflight_file(source_path: pathlib.Path, entry_hint: str, report: dict) -> None:
+    try:
+        size = source_path.stat().st_size
+    except OSError as exc:
+        report["errors"].append(_preflight_issue("SOURCE_READ_FAILED", f"could not inspect file: {exc}"))
+        return
+    report["sourceBytes"] = size
+    path = safe_multipart_filename(source_path.name)
+    record = {
+        "path": path,
+        "bytes": size,
+        "isBinary": _preflight_is_binary_path(path),
+        "_source": source_path,
+    }
+    if size > MAX_SITE_TOTAL_BYTES:
+        report["errors"].append(_preflight_issue(
+            "SOURCE_TOO_LARGE",
+            f"source file is {size} bytes; upload limit is {MAX_SITE_TOTAL_BYTES} bytes",
+            "Reduce the source file size before uploading.",
+        ))
+    if size > MAX_SINGLE_FILE_BYTES:
+        report["errors"].append(_preflight_issue(
+            "ZIP_FILE_TOO_LARGE",
+            f"file {path} exceeds max single-file size ({MAX_SINGLE_FILE_BYTES} bytes)",
+            "Split large assets or raise the single-file upload limit in admin settings.",
+        ))
+
+    def load_bytes(item: dict) -> bytes:
+        with pathlib.Path(item["_source"]).open("rb") as stream:
+            return _preflight_read_limited(stream)
+
+    _preflight_analyze_records([record], "file", entry_hint, load_bytes, report)
+
+
+def preflight_source(source_arg: str, filename_hint: str = "") -> dict:
+    """Inspect a local deploy source without creating a session or uploading it."""
+    source_text = str(source_arg)
+    report = _preflight_report(source_text)
+    hint = str(filename_hint or "").strip()
+    if hint:
+        hint = _preflight_normalize_path(hint)
+        if not _preflight_is_safe_path(hint):
+            report["errors"].append(_preflight_issue(
+                "UNSAFE_ENTRY_PATH",
+                f"--filename {hint!r} is not a safe relative path",
+                "Use a clean relative HTML or Markdown path without '..', absolute paths, or drive letters.",
+            ))
+            return report
+        if not _preflight_is_page_entry(hint):
+            report["warnings"].append(_preflight_issue(
+                "ENTRY_HINT_IGNORED",
+                f"--filename {hint!r} is not an HTML or Markdown entry and will be ignored.",
+            ))
+
+    source_path = pathlib.Path(source_text)
+    try:
+        if source_path.is_symlink():
+            report["errors"].append(_preflight_issue(
+                "UNSAFE_SYMLINK",
+                f"source path is a symbolic link: {source_text}",
+                "Use the real source file or directory instead of a symbolic link.",
+            ))
+        elif not source_path.exists():
+            report["errors"].append(_preflight_issue("SOURCE_NOT_FOUND", f"source not found: {source_text}"))
+        elif source_path.is_dir():
+            report["sourceType"] = "directory"
+            _preflight_directory(source_path, hint, report)
+        elif source_path.is_file():
+            if source_path.suffix.lower() == ".zip":
+                report["sourceType"] = "zip"
+                _preflight_zip(source_path, hint, report)
+            else:
+                report["sourceType"] = "file"
+                _preflight_file(source_path, hint, report)
+        else:
+            report["errors"].append(_preflight_issue(
+                "UNSUPPORTED_SOURCE",
+                f"source is neither a regular file nor a directory: {source_text}",
+            ))
+    except (OSError, ValueError, OverflowError, RuntimeError, zipfile.BadZipFile) as exc:
+        report["errors"].append(_preflight_issue("SOURCE_READ_FAILED", f"could not inspect source: {exc}"))
+
+    report["success"] = not report["errors"]
+    return report
+
+
+def cmd_preflight(args) -> int:
+    report = preflight_source(args.source, getattr(args, "filename", ""))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["success"] else 1
 
 
 def prepare_multipart_source(source_arg: str) -> tuple[pathlib.Path, str, callable]:
     root = pathlib.Path(source_arg)
     if not root.exists():
         die(f"Source not found: {source_arg}")
+    if root.is_symlink():
+        die(f"Refusing symbolic-link source: {source_arg}")
     if root.is_file():
-        if root.stat().st_size > MAX_SITE_TOTAL_BYTES:
-            die(f"Source too large ({root.stat().st_size} bytes); limit is {MAX_SITE_TOTAL_BYTES}.")
+        size = root.stat().st_size
+        if size > MAX_SINGLE_FILE_BYTES:
+            die(f"Source too large ({size} bytes); single-file limit is {MAX_SINGLE_FILE_BYTES}.")
+        if size > MAX_SITE_TOTAL_BYTES:
+            die(f"Source too large ({size} bytes); limit is {MAX_SITE_TOTAL_BYTES}.")
         return root, root.name, lambda: None
 
     fd, temp_name = tempfile.mkstemp(prefix="pagepilot-", suffix=".zip")
@@ -443,28 +1243,53 @@ def prepare_multipart_source(source_arg: str) -> tuple[pathlib.Path, str, callab
     def cleanup() -> None:
         try:
             temp_path.unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
 
     total_size = 0
-    walked = sorted(p for p in root.rglob("*") if p.is_file())
-    if len(walked) > MAX_FILES_PER_SITE:
-        cleanup()
-        die(f"Too many files ({len(walked)}); limit is {MAX_FILES_PER_SITE}.")
+    walked = []
     try:
-        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for p in walked:
-                rel = rel_path(root, p)
-                size = p.stat().st_size
-                if size > MAX_SINGLE_FILE_BYTES:
-                    cleanup()
-                    die(f"File too large: {rel} ({size} bytes); limit is {MAX_SINGLE_FILE_BYTES}.")
-                total_size += size
-                if total_size > MAX_SITE_TOTAL_BYTES:
-                    cleanup()
-                    die(f"Site total exceeds {MAX_SITE_TOTAL_BYTES} bytes; aborting at {rel}.")
-                zf.write(p, rel)
-    except Exception:
+        for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+            if path.is_symlink():
+                die(f"Refusing symbolic link in source directory: {path.relative_to(root).as_posix()}")
+            if path.is_file():
+                rel = rel_path(root, path)
+                if not _preflight_skip_archive_path(rel):
+                    walked.append(path)
+        if len(walked) > MAX_FILES_PER_SITE:
+            die(f"Too many files ({len(walked)}); limit is {MAX_FILES_PER_SITE}.")
+    except BaseException:
+        # rel_path()/rglob() can fail before the archive-writing block below;
+        # always remove the mkstemp file on those early exits as well.
+        cleanup()
+        raise
+    try:
+        try:
+            with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for p in walked:
+                    rel = rel_path(root, p)
+                    size = p.stat().st_size
+                    if size > MAX_SINGLE_FILE_BYTES:
+                        cleanup()
+                        die(f"File too large: {rel} ({size} bytes); limit is {MAX_SINGLE_FILE_BYTES}.")
+                    total_size += size
+                    if total_size > MAX_SITE_TOTAL_BYTES:
+                        cleanup()
+                        die(f"Site total exceeds {MAX_SITE_TOTAL_BYTES} bytes; aborting at {rel}.")
+                    _zip_write_file(zf, p, rel)
+            archive_size = temp_path.stat().st_size
+            if archive_size > MAX_SINGLE_FILE_BYTES:
+                cleanup()
+                die(f"Generated site ZIP is too large ({archive_size} bytes); single-file upload limit is {MAX_SINGLE_FILE_BYTES}.")
+            if archive_size > MAX_SITE_TOTAL_BYTES:
+                cleanup()
+                die(f"Generated site ZIP exceeds {MAX_SITE_TOTAL_BYTES} bytes; reduce the source directory before uploading.")
+        except (OSError, ValueError, OverflowError, RuntimeError, NotImplementedError, EOFError, zipfile.BadZipFile) as exc:
+            cleanup()
+            die(f"Could not package source directory: {exc}")
+    except BaseException:
+        # Covers rel_path(), archive I/O, and interruption paths not handled by
+        # the typed packaging errors above.
         cleanup()
         raise
     return temp_path, pathlib.Path(source_arg).name + ".zip", cleanup
@@ -522,7 +1347,21 @@ def ensure_title(args) -> None:
         die("--title must contain a meaningful Chinese name for the PagePilot listing.")
 
 
+def normalized_filename_arg(args) -> str:
+    """Use the same slash-normalized entry hint for preflight and upload."""
+    raw = str(getattr(args, "filename", "") or "").strip()
+    if not raw:
+        return ""
+    value = _preflight_normalize_path(raw)
+    if not _preflight_is_safe_path(value):
+        die(f"--filename {value!r} is not a safe relative path")
+    return value
+
+
 def add_deploy_options(payload: dict, args) -> None:
+    filename = normalized_filename_arg(args)
+    if filename:
+        payload["filename"] = filename
     if getattr(args, "title", ""):
         payload["title"] = args.title
     if getattr(args, "visibility", ""):
@@ -572,17 +1411,42 @@ def cmd_doctor(args) -> int:
     _, config_data, config_ok = check("config", "/api/config")
     mode = config_data.get("mode") if config_ok else "unknown"
     report["mode"] = mode
-    if mode == "prod" or args.require_admin:
-        _, _, ok = check("admin_session", "/api/admin/session", required=True, use_token=True)
+    if config_ok and isinstance(config_data.get("limits"), dict):
+        report["uploadLimits"] = config_data["limits"]
+    if token:
+        check("credential", "/api/tokens", required=True, use_token=True)
+    else:
+        report["checks"].append({
+            "name": "credential",
+            "ok": True,
+            "skipped": True,
+            "detail": "no bearer token configured; anonymous deployment quota may apply",
+        })
+
+        # /api/session intentionally creates a persistent session. Doctor only
+        # probes read-only endpoints; anonymous deployment creates it on demand.
+        report["checks"].append({
+            "name": "anonymous_session",
+            "ok": True,
+            "skipped": True,
+            "detail": "anonymous session is created on first deployment; doctor does not create persistent sessions",
+        })
+
+    if args.require_admin:
+        _, admin_data, session_ok = check("admin_session", "/api/admin/session", required=False, use_token=True)
+        is_admin = isinstance(admin_data, dict) and admin_data.get("isAdmin") is True
+        admin_check = report["checks"][-1]
         if not token:
+            admin_check["ok"] = False
             report["success"] = False
             report["hint"] = "Set PAGEPILOT_TOKEN or pass --token with an admin token."
-        elif not ok:
+        elif not session_ok or not is_admin:
+            admin_check["ok"] = False
+            admin_check["detail"] = "configured token is not an administrator token"
+            report["success"] = False
             report["hint"] = "The token is missing, invalid, revoked, or not an admin token."
-    else:
+    elif token:
         check("admin_session", "/api/admin/session", required=False, use_token=bool(token))
-        status, data = request_json(base, "", "/api/session", session_id=load_session_id(base))
-        report["checks"].append({"name": "anonymous_session", "ok": 200 <= status < 300, "httpStatus": status, "data": data})
     status, data = request_json(base, "", "/openapi.json")
     report["checks"].append({"name": "openapi", "ok": status == 200 and data.get("openapi") != "", "httpStatus": status})
     if status != 200:
@@ -623,8 +1487,6 @@ def cmd_deploy(args) -> int:
     token = auth_token(args)
     code = args.code or remembered_code(base, args.source)
     payload = {"description": args.description}
-    if args.filename:
-        payload["filename"] = args.filename
     add_deploy_options(payload, args)
     if code:
         payload["enableCustomCode"] = True
@@ -638,7 +1500,9 @@ def cmd_deploy(args) -> int:
     if 200 <= status < 300 and data.get("code"):
         remember_project(base, args.source, data["code"])
         apply_access_password_after_deploy(args, base, token, str(data["code"]))
-        print_deploy_summary(data)
+        # Keep stdout machine-readable for Agent callers; human context belongs
+        # on stderr so json.loads(stdout) remains reliable after a deploy.
+        print_deploy_summary(data, stream=sys.stderr)
     return print_result(status, data)
 
 
@@ -653,14 +1517,12 @@ def cmd_append(args) -> int:
         "customCode": args.code,
         "createVersion": True,
     }
-    if args.filename:
-        payload["filename"] = args.filename
     add_deploy_options(payload, args)
     status, data = deploy_multipart(args, payload, args.source)
     if 200 <= status < 300 and data.get("code"):
         remember_project(base, args.source, data["code"])
         apply_access_password_after_deploy(args, base, token, str(data["code"]))
-        print_deploy_summary(data)
+        print_deploy_summary(data, stream=sys.stderr)
     return print_result(status, data)
 
 
@@ -680,10 +1542,36 @@ def cmd_get(args) -> int:
     qs = urllib.parse.urlencode(query)
     if not args.download:
         status, data = request_json(base, auth_token(args), f"/api/deploy/content?{qs}")
-        if args.output and 200 <= status < 300:
-            pathlib.Path(args.output).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if args.output and 200 <= status < 300 and data.get("success", True) is not False:
+            try:
+                pathlib.Path(args.output).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                if JSON_OUTPUT:
+                    print(json.dumps({
+                        "success": False,
+                        "errorCode": "OUTPUT_WRITE_FAILED",
+                        "detail": f"could not write metadata to {args.output}: {exc}",
+                        "hint": "Choose a writable output path and retry.",
+                    }, ensure_ascii=False))
+                    return 1
+                die(f"Could not write metadata to {args.output}: {exc}")
+            if JSON_OUTPUT:
+                return print_result(status, {
+                    "success": True,
+                    "output": str(args.output),
+                    "metadata": data,
+                })
             return 0
         return print_result(status, data)
+
+    if JSON_OUTPUT and not args.output:
+        print(json.dumps({
+            "success": False,
+            "errorCode": "OUTPUT_REQUIRED",
+            "detail": "--json with --download requires --output so stdout remains JSON.",
+            "hint": "Pass --output <directory> (or an explicit .zip file path).",
+        }, ensure_ascii=False))
+        return 1
 
     url = f"{base}/api/deploy/content?{qs}"
     headers = {"User-Agent": UA, "Accept": "application/json,text/html,application/zip,*/*"}
@@ -694,12 +1582,45 @@ def cmd_get(args) -> int:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read()
+            status = getattr(resp, "status", 200)
+            content_type = resp.headers.get("Content-Type", "")
     except urllib.error.HTTPError as e:
-        sys.stderr.write(e.read().decode("utf-8", "replace"))
-        return 1
+        error_body = e.read().decode("utf-8", "replace")
+        data = structured_http_error(e.code, error_body, str(e))
+        return print_result(e.code, data)
+    except TimeoutError as exc:
+        return print_result(0, network_error_payload(str(exc) or "request timed out"))
+    except urllib.error.URLError as exc:
+        return print_result(0, network_error_payload(str(exc)))
     if args.output:
-        pathlib.Path(args.output).write_bytes(body)
-        print(f"Saved {len(body)} bytes to {args.output}")
+        output = pathlib.Path(args.output)
+        try:
+            if output.suffix.lower() == ".zip":
+                output.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                output.mkdir(parents=True, exist_ok=True)
+                suffix = ".zip" if "zip" in content_type.lower() else ".html"
+                name = f"{args.code}-v{args.version}{suffix}" if args.version else f"{args.code}{suffix}"
+                output = output / safe_multipart_filename(name)
+            output.write_bytes(body)
+        except OSError as exc:
+            if JSON_OUTPUT:
+                print(json.dumps({
+                    "success": False,
+                    "errorCode": "OUTPUT_WRITE_FAILED",
+                    "detail": f"could not write download to {output}: {exc}",
+                    "hint": "Choose a writable output path and retry.",
+                }, ensure_ascii=False))
+                return 1
+            die(f"Could not write download to {output}: {exc}")
+        if JSON_OUTPUT:
+            return print_result(status, {
+                "success": True,
+                "output": str(output),
+                "bytes": len(body),
+                "contentType": content_type,
+            })
+        print(f"Saved {len(body)} bytes to {output}")
     else:
         try:
             sys.stdout.write(body.decode("utf-8"))
@@ -728,8 +1649,6 @@ def cmd_overwrite(args) -> int:
     ensure_title(args)
     _ensure_unlocked(args, "overwrite")
     payload = {"description": args.description}
-    if args.filename:
-        payload["filename"] = args.filename
     add_deploy_options(payload, args)
     status, data = overwrite_multipart(args, payload, args.source)
     return print_result(status, data)
@@ -1158,8 +2077,6 @@ def cmd_screen_publish(args) -> int:
             die("--description is required when publishing a local path to a screen.")
         ensure_title(args)
         payload = {"description": args.description}
-        if args.filename:
-            payload["filename"] = args.filename
         add_deploy_options(payload, args)
         deploy_status, deploy_data = deploy_multipart(args, payload, args.source)
         if not (200 <= deploy_status < 300 and deploy_data.get("code")):
@@ -1244,6 +2161,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deploy and manage PagePilot static apps")
     parser.add_argument("--server", help="PagePilot server URL (default: saved config, $PAGEPILOT_SERVER, or https://pagepilot.dell.4dbim.cc:1143/)")
     parser.add_argument("--token", help="bearer token (default: saved config or $PAGEPILOT_TOKEN)")
+    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON (the Skill already uses JSON by default)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("version", help="Print pagep Skill version")
@@ -1252,6 +2170,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor", help="Check health, config, OpenAPI, and admin auth readiness")
     p.add_argument("--require-admin", action="store_true", help="Fail unless an admin session validates")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("preflight", help="Inspect a local file, directory, or ZIP before upload")
+    p.add_argument("source", help="Path to an HTML/Markdown file, website ZIP, or site directory")
+    p.add_argument("--filename", "-f", default="", help="Optional explicit entry path used for ZIP root detection")
+    p.set_defaults(func=cmd_preflight)
 
     p = sub.add_parser("session", help="Validate current token against /api/admin/session")
     p.set_defaults(func=cmd_session)
@@ -1486,9 +2409,69 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def normalize_global_options(argv: list[str]) -> list[str]:
+    """Accept global options before or after a subcommand.
+
+    argparse only accepts root options before a subcommand by default, while the
+    published Skill examples intentionally put the target server and JSON mode
+    next to doctor or deploy. Keep both spellings working without duplicating
+    every flag.
+    """
+    global_args: list[str] = []
+    remaining: list[str] = []
+    index = 0
+    while index < len(argv):
+        value = argv[index]
+        if value in {"--server", "--token"}:
+            global_args.append(value)
+            if index + 1 < len(argv):
+                global_args.append(argv[index + 1])
+                index += 2
+                continue
+        elif value == "--json":
+            global_args.append(value)
+            index += 1
+            continue
+        elif value.startswith("--server=") or value.startswith("--token="):
+            global_args.append(value)
+            index += 1
+            continue
+        remaining.append(value)
+        index += 1
+    return global_args + remaining
+
+
+def parse_cli_args(parser: argparse.ArgumentParser, argv: list[str] | None = None):
+    global JSON_OUTPUT
+    raw = list(sys.argv[1:] if argv is None else argv)
+    JSON_OUTPUT = any(value == "--json" or value.startswith("--json=") for value in raw)
+    normalized = normalize_global_options(raw)
+    if not JSON_OUTPUT:
+        return parser.parse_args(normalized)
+
+    # argparse writes usage errors to stderr and exits before command handlers
+    # can format them. Capture that text so a documented --json invocation still
+    # produces one parseable object on stdout.
+    captured = io.StringIO()
+    try:
+        with redirect_stderr(captured):
+            return parser.parse_args(normalized)
+    except SystemExit as exc:
+        if exc.code:
+            detail = captured.getvalue().strip().splitlines()
+            detail = detail[-1] if detail else "invalid command-line arguments"
+            print(json.dumps({
+                "success": False,
+                "errorCode": "CLI_USAGE",
+                "detail": detail,
+                "hint": "Run pagep --help to see valid commands and options.",
+            }, ensure_ascii=False))
+        raise
+
+
 def main() -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parse_cli_args(parser)
     raise SystemExit(args.func(args))
 
 

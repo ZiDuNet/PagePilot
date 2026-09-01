@@ -2,8 +2,8 @@
 #
 # 使用方式：
 #   1. 启动服务：docker compose up -d --build
-#   2. 打开后台：http://<服务器地址>:8787/admin
-#   3. 使用下方初始管理员登录，并立刻修改密码。
+#   2. 在 .env 中设置主密钥和首个管理员凭据
+#   3. 打开后台：http://<服务器地址>:8787/admin
 # 完整部署说明：deploy/DOCKER.md
 #
 # 持久化目录映射：
@@ -12,10 +12,8 @@
 #   ./data/docker/hosted   -> /var/www/hosted       已发布的静态站点文件
 #   ./data/docker/logs     -> /var/log/hostctl      服务日志目录，后续启用文件日志时使用
 #
-# 首次启动默认管理员：
-#   用户名：admin
-#   密码：123456
-# 首次登录后请立刻修改密码。已有数据库不会被覆盖。
+# 首次启动不会使用固定管理员或固定密码；空数据库必须在 .env 中提供
+# HOSTCTL_ADMIN_USERNAME/HOSTCTL_ADMIN_PASSWORD。已有数据库不会覆盖用户。
 
 services:
   hostctl:
@@ -33,7 +31,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
 
     environment:
       # 应用访问链接规则。默认使用 path，保持 /agent/{code}/ 路径模式兼容。
@@ -47,16 +45,15 @@ services:
       # 生产模式：创建首个管理员后，后台访问必须登录。
       REQUIRE_AUTH: "true"
 
-      # 主密钥：已有线上必须沿用旧值；旧版本未配置时会使用下方历史兼容值。
-      # 全新空库部署建议在 .env 中设置 HOSTCTL_MASTER_KEY=$(openssl rand -base64 32)。
-      HOSTCTL_MASTER_KEY: "${HOSTCTL_MASTER_KEY:-pagepilot-dev-master-key-0000000}"
+      # 主密钥必须显式配置；已有线上必须沿用原值。
+      HOSTCTL_MASTER_KEY: "${HOSTCTL_MASTER_KEY:?HOSTCTL_MASTER_KEY must be set in .env}"
 
       # 发布冷却时间，用于降低 Agent 误触发重复发布的风险。
       HOSTCTL_COOLDOWN_SECONDS: "10"
 
       # 首次启动管理员初始化。仅在数据库没有任何用户时生效。
-      HOSTCTL_ADMIN_USERNAME: "admin"
-      HOSTCTL_ADMIN_PASSWORD: "123456"
+      HOSTCTL_ADMIN_USERNAME: "${HOSTCTL_ADMIN_USERNAME:-}"
+      HOSTCTL_ADMIN_PASSWORD: "${HOSTCTL_ADMIN_PASSWORD:-}"
 
       # 注册邮箱验证。SMTP 未配置好之前建议保持关闭。
       HOSTCTL_EMAIL_VERIFICATION_ENABLED: "false"

@@ -35,6 +35,26 @@ var (
 	ErrExpired   = errors.New("session expired")
 )
 
+// PasswordMeetsStrength applies the account password policy shared by the
+// HTTP API and startup bootstrap path: at least eight non-edge-whitespace
+// characters, including at least one ASCII letter and one digit.
+func PasswordMeetsStrength(password string) bool {
+	p := strings.TrimSpace(password)
+	if len(p) < 8 {
+		return false
+	}
+	hasLetter, hasDigit := false, false
+	for _, r := range p {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			hasLetter = true
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		}
+	}
+	return hasLetter && hasDigit
+}
+
 // Service 是鉴权服务。
 type Service struct {
 	store store.Store
@@ -67,6 +87,16 @@ func (a *Service) Generate(ctx context.Context, label string, isAdmin bool, owne
 	// 32 字节随机 → base64url ≈ 43 字符
 	ownerUserID = strings.TrimSpace(ownerUserID)
 	if ownerUserID == "" {
+		return nil, ErrInvalid
+	}
+	owner, err := a.store.GetAdminUserByID(ctx, ownerUserID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrUnknown
+		}
+		return nil, fmt.Errorf("lookup token owner: %w", err)
+	}
+	if !owner.IsActive || (isAdmin && !owner.IsAdmin) {
 		return nil, ErrInvalid
 	}
 	if expiresAt != nil {
@@ -117,12 +147,8 @@ func (a *Service) EnsureBootstrapAdmin(ctx context.Context, username, password s
 	if username == "" || password == "" {
 		return nil
 	}
-	n, err := a.store.CountAdminUsers(ctx)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
+	if !PasswordMeetsStrength(password) {
+		return ErrInvalid
 	}
 	hash, err := HashPassword(password)
 	if err != nil {
@@ -132,7 +158,7 @@ func (a *Service) EnsureBootstrapAdmin(ctx context.Context, username, password s
 	if err != nil {
 		return err
 	}
-	return a.store.CreateAdminUser(ctx, store.AdminUser{
+	err = a.store.CreateFirstAdmin(ctx, store.AdminUser{
 		ID:           id,
 		Username:     username,
 		PasswordHash: hash,
@@ -142,8 +168,16 @@ func (a *Service) EnsureBootstrapAdmin(ctx context.Context, username, password s
 		DeployLimit:  -1,
 		CreatedAt:    time.Now().UTC(),
 	})
+	if errors.Is(err, store.ErrAlreadyExists) {
+		// Another process may have initialized the database first. Treat that
+		// outcome as success so a second server instance can continue startup.
+		return nil
+	}
+	return err
 }
 
+// HasAdminUser reports whether at least one active administrator exists. This
+// is also the bootstrap readiness check used by the server startup path.
 func (a *Service) HasAdminUser(ctx context.Context) (bool, error) {
 	n, err := a.store.CountAdminUsers(ctx)
 	if err != nil {
@@ -154,14 +188,7 @@ func (a *Service) HasAdminUser(ctx context.Context) (bool, error) {
 
 func (a *Service) CreateFirstAdmin(ctx context.Context, username, password string) (store.AdminUser, error) {
 	username = strings.TrimSpace(username)
-	if username == "" || password == "" {
-		return store.AdminUser{}, ErrInvalid
-	}
-	n, err := a.store.CountAdminUsers(ctx)
-	if err != nil {
-		return store.AdminUser{}, err
-	}
-	if n > 0 {
+	if username == "" || !PasswordMeetsStrength(password) {
 		return store.AdminUser{}, ErrInvalid
 	}
 	hash, err := HashPassword(password)
@@ -182,7 +209,10 @@ func (a *Service) CreateFirstAdmin(ctx context.Context, username, password strin
 		DeployLimit:  -1,
 		CreatedAt:    time.Now().UTC(),
 	}
-	if err := a.store.CreateAdminUser(ctx, user); err != nil {
+	if err := a.store.CreateFirstAdmin(ctx, user); err != nil {
+		if errors.Is(err, store.ErrAlreadyExists) {
+			return store.AdminUser{}, ErrInvalid
+		}
 		return store.AdminUser{}, err
 	}
 	return user, nil
@@ -282,7 +312,7 @@ func (a *Service) CreateUser(ctx context.Context, username, password string, isA
 func (a *Service) CreateUserWithEmail(ctx context.Context, username, email string, emailVerified bool, password string, isAdmin bool, deployLimit int) (store.AdminUser, error) {
 	username = strings.TrimSpace(username)
 	email = strings.TrimSpace(strings.ToLower(email))
-	if username == "" || password == "" {
+	if username == "" || !PasswordMeetsStrength(password) {
 		return store.AdminUser{}, ErrInvalid
 	}
 	hash, err := HashPassword(password)
@@ -329,7 +359,7 @@ func (a *Service) DeleteUser(ctx context.Context, id string) error {
 }
 
 func (a *Service) ChangeUserPassword(ctx context.Context, id, oldPassword, newPassword string) error {
-	if strings.TrimSpace(id) == "" || oldPassword == "" || newPassword == "" {
+	if strings.TrimSpace(id) == "" || oldPassword == "" || !PasswordMeetsStrength(newPassword) {
 		return ErrInvalid
 	}
 	user, err := a.store.GetAdminUserByID(ctx, id)
@@ -349,6 +379,19 @@ func (a *Service) ChangeUserPassword(ctx context.Context, id, oldPassword, newPa
 
 func (a *Service) IncrementUserDeployCount(ctx context.Context, id string) (store.AdminUser, error) {
 	return a.store.IncrementAdminUserDeployCount(ctx, id)
+}
+
+// TryConsumeUserDeployQuota atomically reserves one new-site deployment slot
+// for a registered user. A false result means the account is inactive,
+// missing, or has reached its configured limit.
+func (a *Service) TryConsumeUserDeployQuota(ctx context.Context, id string) (bool, error) {
+	return a.store.TryConsumeAdminUserDeployQuota(ctx, id)
+}
+
+// ReleaseUserDeployQuota rolls back a reservation when the deployment does
+// not result in a newly created site.
+func (a *Service) ReleaseUserDeployQuota(ctx context.Context, id string) error {
+	return a.store.ReleaseAdminUserDeployQuota(ctx, id)
 }
 
 // VerifyToken validates a Bearer header and returns the token record.
@@ -381,6 +424,16 @@ func (a *Service) VerifyToken(ctx context.Context, bearerHeader string) (store.T
 	}
 	if tok.ExpiresAt != nil && !tok.ExpiresAt.After(time.Now()) {
 		return store.Token{}, ErrExpired
+	}
+	owner, err := a.store.GetAdminUserByID(ctx, tok.OwnerUserID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return store.Token{}, ErrRevoked
+		}
+		return store.Token{}, fmt.Errorf("lookup token owner: %w", err)
+	}
+	if !owner.IsActive || (tok.IsAdmin && !owner.IsAdmin) {
+		return store.Token{}, ErrRevoked
 	}
 	// constant-time compare（虽然 DB lookup 已经唯一，但加一道）
 	if subtle.ConstantTimeCompare([]byte(tok.TokenHash), []byte(hash)) != 1 {

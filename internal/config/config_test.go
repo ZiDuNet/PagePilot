@@ -51,6 +51,19 @@ func TestDefaultDevUsesHTTPAppURLScheme(t *testing.T) {
 	}
 }
 
+func TestDefaultDevAcceptsTruthyEnvironmentValues(t *testing.T) {
+	t.Setenv("HOSTCTL_DEV", "true")
+
+	cfg := Default()
+
+	if cfg.HostedDir != "data/hosted" || cfg.DBPath != "data/hostctl.db" {
+		t.Fatalf("dev paths = %q, %q; want data/hosted and data/hostctl.db", cfg.HostedDir, cfg.DBPath)
+	}
+	if cfg.AppURLScheme != "http" {
+		t.Fatalf("AppURLScheme = %q; want http in dev mode", cfg.AppURLScheme)
+	}
+}
+
 func TestDefaultDevKeepsExplicitAppURLScheme(t *testing.T) {
 	t.Setenv("HOSTCTL_DEV", "1")
 	t.Setenv("HOSTCTL_APP_URL_SCHEME", "https")
@@ -59,5 +72,26 @@ func TestDefaultDevKeepsExplicitAppURLScheme(t *testing.T) {
 
 	if cfg.AppURLScheme != "https" {
 		t.Fatalf("AppURLScheme = %q; want explicit https", cfg.AppURLScheme)
+	}
+}
+
+func TestDefaultIgnoresOutOfRangeCooldownEnvironment(t *testing.T) {
+	t.Setenv("HOSTCTL_COOLDOWN_SECONDS", "9223372037")
+	t.Setenv("COOLDOWN_SECONDS", "")
+
+	cfg := Default()
+	if cfg.CooldownSeconds != DefaultCooldownSeconds {
+		t.Fatalf("CooldownSeconds = %d; want default %d", cfg.CooldownSeconds, DefaultCooldownSeconds)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateRejectsOutOfRangeCooldown(t *testing.T) {
+	cfg := Default()
+	cfg.CooldownSeconds = MaxCooldownSeconds + 1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted cooldown above the maximum")
 	}
 }

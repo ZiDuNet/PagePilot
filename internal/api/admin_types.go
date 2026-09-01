@@ -9,7 +9,8 @@ import (
 
 // ===== 设置（GET/PUT /api/config） =====
 
-// ConfigResponse 是 GET /api/config 响应。包含可读的运行时配置。
+// ConfigResponse 是 GET /api/config 响应。匿名请求只返回前台所需的能力摘要；
+// 管理员请求还会返回 CORS/嵌入白名单、SMTP 连接信息和存储定位等管理字段。
 type ConfigResponse struct {
 	Success             bool                          `json:"success"`
 	CurrentBaseURL      string                        `json:"currentBaseURL"`
@@ -41,14 +42,14 @@ type EmailConfig struct {
 }
 
 type StorageConfig struct {
-	Backend          string `json:"backend"`
+	Backend          string `json:"backend,omitempty"`
 	HostedDir        string `json:"hostedDir,omitempty"`
 	OSSProvider      string `json:"ossProvider,omitempty"`
 	OSSEndpoint      string `json:"ossEndpoint,omitempty"`
 	OSSBucket        string `json:"ossBucket,omitempty"`
 	OSSPrefix        string `json:"ossPrefix,omitempty"`
 	OSSPublicBaseURL string `json:"ossPublicBaseURL,omitempty"`
-	OSSConfigured    bool   `json:"ossConfigured"`
+	OSSConfigured    bool   `json:"ossConfigured,omitempty"`
 }
 
 // Limits 是配额描述。

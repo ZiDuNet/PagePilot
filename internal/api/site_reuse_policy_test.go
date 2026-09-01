@@ -15,11 +15,11 @@ import (
 func TestAdminSetSiteReusePolicy(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	admin, err := authSvc.CreateUser(t.Context(), "admin", "password123", true, -1)
+	admin, err := authSvc.CreateUser(context.Background(), "admin", "password123", true, -1)
 	if err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "admin-token", true, admin.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "admin-token", true, admin.ID, nil)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
@@ -66,11 +66,11 @@ func TestAdminSetSiteReusePolicy(t *testing.T) {
 func TestAdminSetSiteSecurityMode(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	admin, err := authSvc.CreateUser(t.Context(), "admin", "password123", true, -1)
+	admin, err := authSvc.CreateUser(context.Background(), "admin", "password123", true, -1)
 	if err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "admin-token", true, admin.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "admin-token", true, admin.ID, nil)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}

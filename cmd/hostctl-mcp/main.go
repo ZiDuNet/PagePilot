@@ -34,7 +34,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/yourorg/hostctl/internal/bundle"
 	"github.com/yourorg/hostctl/internal/client"
+	appversion "github.com/yourorg/hostctl/internal/version"
 )
 
 const defaultServer = "https://pagepilot.dell.4dbim.cc:1143/"
@@ -124,10 +126,21 @@ func main() {
 		}
 
 		resp := dispatch(context.Background(), c, &req)
+		// JSON-RPC notifications (including MCP's initialized notification) do
+		// not receive a response. Keep explicit IDs such as null, 0, and false
+		// on the request/response path; only an omitted id is a notification.
+		if isNotification(req) {
+			continue
+		}
 		resp.JSONRPC = "2.0"
 		resp.ID = req.ID
 		_ = enc.Encode(resp)
 	}
+}
+
+func isNotification(req rpcReq) bool {
+	id := strings.TrimSpace(string(req.ID))
+	return id == ""
 }
 
 func firstEnv(names ...string) string {
@@ -153,7 +166,7 @@ func dispatch(ctx context.Context, c *client.Client, req *rpcReq) rpcResp {
 			"protocolVersion": "2024-11-05",
 			"serverInfo": map[string]any{
 				"name":    "pagepilot",
-				"version": "0.1.0",
+				"version": appversion.Current,
 			},
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
@@ -980,9 +993,12 @@ type multipartSource struct {
 }
 
 func prepareMultipartSource(source string) (multipartSource, error) {
-	info, err := os.Stat(source)
+	info, err := os.Lstat(source)
 	if err != nil {
 		return multipartSource{}, fmt.Errorf("stat source: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return multipartSource{}, fmt.Errorf("refusing symbolic-link source: %s", source)
 	}
 	if !info.IsDir() {
 		return multipartSource{Path: source, Name: filepath.Base(source), Cleanup: func() {}}, nil
@@ -998,6 +1014,9 @@ func prepareMultipartSource(source string) (multipartSource, error) {
 		if walkErr != nil {
 			return walkErr
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symbolic link in source directory: %s", path)
+		}
 		if info.IsDir() {
 			return nil
 		}
@@ -1005,11 +1024,15 @@ func prepareMultipartSource(source string) (multipartSource, error) {
 		if err != nil {
 			return err
 		}
+		rel = strings.ReplaceAll(filepath.ToSlash(rel), "\\", "/")
+		if !bundle.IsSafePath(rel) {
+			return fmt.Errorf("refusing unsafe path in source directory: %s", rel)
+		}
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
 			return err
 		}
-		header.Name = filepath.ToSlash(rel)
+		header.Name = rel
 		header.Method = zip.Deflate
 		part, err := zipWriter.CreateHeader(header)
 		if err != nil {
@@ -1044,9 +1067,12 @@ func prepareMultipartSource(source string) (multipartSource, error) {
 //   - source 是单文件：返回单个 chunk
 //   - source 是目录：递归读取
 func readSourceDir(source string) ([]fileChunk, error) {
-	info, err := os.Stat(source)
+	info, err := os.Lstat(source)
 	if err != nil {
 		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing symbolic-link source: %s", source)
 	}
 	if !info.IsDir() {
 		data, err := os.ReadFile(source)
@@ -1062,6 +1088,9 @@ func readSourceDir(source string) ([]fileChunk, error) {
 		if err != nil {
 			return err
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symbolic link in source directory: %s", path)
+		}
 		if info.IsDir() {
 			return nil
 		}
@@ -1069,7 +1098,10 @@ func readSourceDir(source string) ([]fileChunk, error) {
 		if err != nil {
 			return err
 		}
-		rel = filepath.ToSlash(rel)
+		rel = strings.ReplaceAll(filepath.ToSlash(rel), "\\", "/")
+		if !bundle.IsSafePath(rel) {
+			return fmt.Errorf("refusing unsafe path in source directory: %s", rel)
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err

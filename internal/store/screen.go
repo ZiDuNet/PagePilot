@@ -221,12 +221,15 @@ func (s *SQLiteStore) CompleteScreenPairing(ctx context.Context, pairingID, pair
 		UPDATE screens
 		SET device_token_hash = ?, status = 'online', updated_at = ?, last_seen_at = ?
 		WHERE id = ? AND revoked_at IS NULL
+		  AND (device_token_hash IS NULL OR device_token_hash = '')
 	`, deviceTokenHash, now, now, screenID)
 	if err != nil {
 		return fmt.Errorf("store screen device token: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
+		// The pairing was already completed (or the screen was revoked). Keeping
+		// the original token intact makes the short-lived pairing secret one-shot.
 		return ErrNotFound
 	}
 	if err := tx.Commit(); err != nil {

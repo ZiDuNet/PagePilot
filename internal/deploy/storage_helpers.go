@@ -12,7 +12,7 @@ import (
 )
 
 func (d *Deployer) useOSS() bool {
-	return strings.EqualFold(strings.TrimSpace(d.cfg.StorageBackend), "oss")
+	return strings.EqualFold(strings.TrimSpace(d.configSnapshot().StorageBackend), "oss")
 }
 
 type versionStorage struct {
@@ -21,8 +21,9 @@ type versionStorage struct {
 }
 
 func (d *Deployer) newVersionStorage(code string, version int64) versionStorage {
-	if d.useOSS() {
-		oss := newOSSStorage(d.cfg)
+	cfg := d.configSnapshot()
+	if strings.EqualFold(strings.TrimSpace(cfg.StorageBackend), "oss") {
+		oss := newOSSStorage(cfg)
 		return versionStorage{Backend: "oss", Prefix: strings.TrimSuffix(oss.versionPrefix(code, version), "/")}
 	}
 	return versionStorage{Backend: "local", Prefix: filepath.ToSlash(filepath.Join(code, "versions", fmt.Sprintf("%d", version)))}
@@ -36,7 +37,7 @@ func (d *Deployer) versionStorage(v store.Version) versionStorage {
 	prefix := strings.Trim(strings.ReplaceAll(v.StoragePrefix, "\\", "/"), "/")
 	if prefix == "" {
 		if backend == "oss" {
-			oss := newOSSStorage(d.cfg)
+			oss := newOSSStorage(d.configSnapshot())
 			prefix = strings.TrimSuffix(oss.versionPrefix(v.SiteCode, v.VersionNumber), "/")
 		} else {
 			prefix = filepath.ToSlash(filepath.Join(v.SiteCode, "versions", fmt.Sprintf("%d", v.VersionNumber)))
@@ -57,7 +58,7 @@ func (d *Deployer) localVersionDir(s versionStorage, code string, version int64)
 	if strings.TrimSpace(s.Prefix) == "" {
 		return d.versionDir(code, version), nil
 	}
-	root := d.cfg.HostedDir
+	root := d.configSnapshot().HostedDir
 	full := filepath.Join(root, filepath.FromSlash(strings.Trim(s.Prefix, "/")))
 	if err := ensureWithin(root, full); err != nil {
 		return "", err
@@ -75,7 +76,7 @@ func (d *Deployer) deleteVersionFiles(ctx context.Context, code string, version 
 
 func (d *Deployer) deleteVersionFilesForStorage(ctx context.Context, code string, version int64, storage versionStorage) error {
 	if storage.Backend == "oss" {
-		oss := newOSSStorage(d.cfg)
+		oss := newOSSStorage(d.configSnapshot())
 		return oss.deletePrefix(ctx, strings.Trim(storage.Prefix, "/")+"/")
 	}
 	dir, err := d.localVersionDir(storage, code, version)

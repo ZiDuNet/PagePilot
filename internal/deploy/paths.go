@@ -7,10 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/yourorg/hostctl/internal/api"
+	"github.com/yourorg/hostctl/internal/bundle"
 )
 
 // maxFileDepth 限制路径深度，防止过深嵌套。
@@ -21,7 +20,7 @@ const maxPathSegments = 16
 
 // validateFilePath 校验单个 file.path 是否合法。
 // 规则：
-//   - 必须匹配白名单正则
+//   - 必须满足 bundle 包的跨平台安全路径规则
 //   - 不允许绝对路径（Windows 盘符或 UNC）
 //   - 不允许 .. 段
 //   - 不允许前导 /
@@ -34,11 +33,6 @@ func validateFilePath(p string) *api.APIError {
 	if len(p) > 255 {
 		return api.NewError(api.CodeInvalidFilePath, "validate",
 			fmt.Sprintf("file path too long (max 255 chars): %s", truncate(p, 50)))
-	}
-	if !filePathCharsSafe(p) {
-		return api.NewError(api.CodeInvalidFilePath, "validate",
-			fmt.Sprintf("file path contains invalid characters: %s", truncate(p, 50))).
-			WithHint("Only letters, digits, Unicode letters, hyphen, underscore, dot, and slash are allowed.")
 	}
 	if strings.HasPrefix(p, "/") {
 		return api.NewError(api.CodeInvalidFilePath, "validate",
@@ -78,33 +72,22 @@ func validateFilePath(p string) *api.APIError {
 				fmt.Sprintf("file path uses reserved name %q", seg))
 		}
 	}
+	if !bundle.IsSafePath(p) {
+		return api.NewError(api.CodeInvalidFilePath, "validate",
+			fmt.Sprintf("file path contains unsupported or unsafe characters: %s", truncate(p, 50))).
+			WithHint(`Use a safe relative path. Control characters and Windows-reserved characters < > : " \ | ? * are not allowed.`)
+	}
 	return nil
 }
 
-func filePathCharsSafe(p string) bool {
-	if !utf8.ValidString(p) {
-		return false
-	}
-	for _, r := range p {
-		if r == '/' || r == '-' || r == '_' || r == '.' {
-			continue
-		}
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
 // resolveFileContent 把 DeployFile 解码成原始字节 + 是否二进制。
-// 二选一：content（文本）或 contentBase64（二进制）。
+// content（文本）和 contentBase64（二进制）二选一；两者都为空时表示
+// 一个合法的 0 字节文本文件（入口文件仍会在 validateEntrypoint 中拒绝）。
 func resolveFileContent(f api.DeployFile) ([]byte, bool, *api.APIError) {
 	hasText := f.Content != ""
 	hasB64 := f.ContentBase64 != ""
 	if !hasText && !hasB64 {
-		return nil, false, api.NewError(api.CodeInvalidInput, "validate",
-			fmt.Sprintf("file %q has neither content nor contentBase64", f.Path))
+		return []byte{}, false, nil
 	}
 	if hasText && hasB64 {
 		return nil, false, api.NewError(api.CodeInvalidInput, "validate",
@@ -124,12 +107,18 @@ func resolveFileContent(f api.DeployFile) ([]byte, bool, *api.APIError) {
 // safeJoin 把相对路径安全地拼到 base 目录。
 // 同时做 realpath 校验，确保最终路径在 base 之下。
 func safeJoin(base, rel string) (string, error) {
-	cleaned := filepath.Clean("/" + rel) // 强制为绝对路径再清理，剥离 ..
-	if strings.Contains(cleaned, "..") {
+	// Check traversal by path segment, not by substring: names such as
+	// "foo..bar.js" are valid files and must not be rejected.
+	normalized := strings.ReplaceAll(rel, "\\", "/")
+	for _, segment := range strings.Split(normalized, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", fmt.Errorf("path traversal detected: %s", rel)
+		}
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(normalized))
+	if filepath.IsAbs(cleaned) || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path traversal detected: %s", rel)
 	}
-	// 去掉前导 /
-	cleaned = strings.TrimPrefix(cleaned, "/")
 	if cleaned == "" {
 		return "", fmt.Errorf("empty path after clean")
 	}
@@ -154,8 +143,9 @@ func safeJoin(base, rel string) (string, error) {
 // isWindowsReservedName 判断是否是 Windows 保留文件名。
 // 在 Linux 上也拒绝，保证跨平台一致。
 func isWindowsReservedName(name string) bool {
-	// 去掉扩展名
-	if i := strings.LastIndex(name, "."); i > 0 {
+	// Windows reserves the device-name prefix even when multiple extensions
+	// follow it (for example CON.foo.bar), so split at the first dot.
+	if i := strings.IndexByte(name, '.'); i > 0 {
 		name = name[:i]
 	}
 	name = strings.ToUpper(name)

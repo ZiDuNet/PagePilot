@@ -7,6 +7,9 @@
 推荐先用 Docker 验证生产配置，或直接用于单机部署：
 
 ```bash
+cp .env.example .env
+openssl rand -base64 32
+# 将生成的主密钥以及你自己的管理员凭据写入 .env
 docker compose up -d --build
 ```
 
@@ -17,14 +20,9 @@ docker compose up -d --build
 
 Skill、MCP 和 CLI 通过 `--server`、`PAGEPILOT_SERVER` 或客户端保存的服务器地址连接 PagePilot。这个地址只表示本次 API 控制面入口；路径模式下发布成功返回的应用链接会按该入口生成，泛域名模式下应用链接按后台配置的应用域名生成。旧 `HOSTCTL_SERVER` 仅兼容读取。
 
-首次启动会在空数据库中自动创建默认管理员：
-
-```yaml
-HOSTCTL_ADMIN_USERNAME: "admin"
-HOSTCTL_ADMIN_PASSWORD: "123456"
-```
-
-打开 `https://pagepilot.example.com/admin`，使用 `admin / 123456` 登录。首次登录后请进入“账号设置”立即修改密码。这个默认账号只会在数据库里没有任何用户时创建；如果已经有用户，不会覆盖现有账号。
+Docker 没有固定管理员或固定密码。生产环境必须在 `.env` 中显式设置
+`HOSTCTL_MASTER_KEY`；当数据库中没有可用管理员（`is_admin=1` 且 `is_active=1`）时，还必须设置你自己的
+`HOSTCTL_ADMIN_USERNAME` 和 `HOSTCTL_ADMIN_PASSWORD`。服务只会在此时使用这两个变量创建首个管理员，不会覆盖已有账号。
 
 Docker 默认把这些目录挂载到宿主机的 `./data/docker/` 下：
 
@@ -129,21 +127,17 @@ Caddy 直接把整个站点反向代理到 hostctl 即可。hostctl 自己处理
 
 ## 5. 首次登录
 
-默认管理员账号：
+首次登录请使用你在部署环境中配置的管理员凭据，并随后进入后台“账号设置”更新密码。
 
-- 用户名：`admin`
-- 密码：`123456`
-
-首次登录后请进入后台“账号设置”修改密码。
-
-systemd 部署如果要使用同样的默认账号，请在 unit 中添加：
+systemd 部署在没有可用管理员的首次启动时也必须显式提供管理员凭据（建议通过受限的环境文件注入）：
 
 ```ini
-Environment=HOSTCTL_ADMIN_USERNAME=admin
-Environment=HOSTCTL_ADMIN_PASSWORD=123456
+Environment=HOSTCTL_MASTER_KEY=<generated-secret>
+Environment=HOSTCTL_ADMIN_USERNAME=<your-admin-username>
+Environment=HOSTCTL_ADMIN_PASSWORD=<your-strong-password>
 ```
 
-这两个变量只会在数据库里没有任何用户时创建首个管理员，不会覆盖已有账号。
+主密钥必须在升级和重启期间保持不变；管理员变量只会在数据库没有可用管理员（`is_admin=1` 且 `is_active=1`）时生效，不会覆盖已有账号。
 
 ## 6. 验证
 

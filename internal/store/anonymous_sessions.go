@@ -26,6 +26,25 @@ func (s *SQLiteStore) CreateAnonymousSession(ctx context.Context, session Anonym
 	return nil
 }
 
+// PruneAnonymousSessions removes abandoned sessions that never owned a site.
+// Deployed or claimed sessions remain available for ownership and audit views.
+func (s *SQLiteStore) PruneAnonymousSessions(ctx context.Context, before time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM anonymous_sessions
+		WHERE claimed_by_user_id IS NULL
+		  AND deploy_count = 0
+		  AND last_used_at < ?
+		  AND NOT EXISTS (
+			  SELECT 1 FROM sites
+			  WHERE sites.owner_token_id = 'anon:' || anonymous_sessions.id
+		  )
+	`, before.UTC())
+	if err != nil {
+		return fmt.Errorf("prune anonymous sessions: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) GetAnonymousSession(ctx context.Context, id string) (AnonymousSession, error) {
 	var out AnonymousSession
 	var agentID sql.NullString

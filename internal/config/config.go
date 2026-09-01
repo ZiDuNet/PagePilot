@@ -4,8 +4,32 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
+
+const (
+	DefaultCooldownSeconds = 10
+	MaxCooldownSeconds     = 3600
+)
+
+// IsValidCooldownSeconds keeps every configuration source within the same
+// documented bounds. In particular, it prevents a duration multiplication
+// from overflowing and silently disabling throttling.
+func IsValidCooldownSeconds(value int) bool {
+	return value >= 0 && value <= MaxCooldownSeconds
+}
+
+// CooldownDuration converts a validated cooldown value to a duration. Callers
+// that receive a manually constructed Config get a safe default instead of an
+// overflowed or negative duration.
+func CooldownDuration(value int) time.Duration {
+	if !IsValidCooldownSeconds(value) {
+		value = DefaultCooldownSeconds
+	}
+	return time.Duration(value) * time.Second
+}
 
 // Config is the hostctl-server runtime configuration.
 type Config struct {
@@ -75,7 +99,7 @@ func Default() Config {
 		MaxSingleFileBytes:   1 << 20,
 		MaxSiteTotalBytes:    10 << 20,
 		MaxFilesPerSite:      100,
-		CooldownSeconds:      10,
+		CooldownSeconds:      DefaultCooldownSeconds,
 		AnonymousDeployLimit: 5,
 		AllowRegistration:    true,
 		StorageBackend:       "local",
@@ -135,9 +159,7 @@ func Default() Config {
 		}
 	}
 	if v := os.Getenv("HOSTCTL_COOLDOWN_SECONDS"); v != "" {
-		var n int
-		_, _ = fmt.Sscanf(v, "%d", &n)
-		if n >= 0 {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && IsValidCooldownSeconds(n) {
 			c.CooldownSeconds = n
 		}
 	}
@@ -246,9 +268,7 @@ func Default() Config {
 		}
 	}
 	if v := os.Getenv("COOLDOWN_SECONDS"); v != "" {
-		var n int
-		_, _ = fmt.Sscanf(v, "%d", &n)
-		if n >= 0 {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && IsValidCooldownSeconds(n) {
 			c.CooldownSeconds = n
 		}
 	}
@@ -321,7 +341,7 @@ func Default() Config {
 	c.StorageBackend = normalizeStorageBackend(c.StorageBackend)
 	c.SMTPSecure = strings.ToLower(strings.TrimSpace(c.SMTPSecure))
 
-	if os.Getenv("HOSTCTL_DEV") == "1" {
+	if parseBoolEnv(os.Getenv("HOSTCTL_DEV")) {
 		if c.HostedDir == "/var/www/hosted" {
 			c.HostedDir = filepath.Join("data", "hosted")
 		}
@@ -331,7 +351,7 @@ func Default() Config {
 		if os.Getenv("HOSTCTL_APP_URL_SCHEME") == "" && os.Getenv("APP_URL_SCHEME") == "" {
 			c.AppURLScheme = "http"
 		}
-		if os.Getenv("HOSTCTL_COOLDOWN_SECONDS") == "" {
+		if os.Getenv("HOSTCTL_COOLDOWN_SECONDS") == "" && os.Getenv("COOLDOWN_SECONDS") == "" {
 			c.CooldownSeconds = 1
 		}
 	}
@@ -374,8 +394,8 @@ func (c Config) Validate() error {
 	if c.MaxFilesPerSite <= 0 {
 		return fmt.Errorf("MaxFilesPerSite must be positive")
 	}
-	if c.CooldownSeconds < 0 {
-		return fmt.Errorf("CooldownSeconds must be non-negative")
+	if !IsValidCooldownSeconds(c.CooldownSeconds) {
+		return fmt.Errorf("CooldownSeconds must be between 0 and %d", MaxCooldownSeconds)
 	}
 	if c.AnonymousDeployLimit < -1 {
 		return fmt.Errorf("AnonymousDeployLimit must be -1 or greater")

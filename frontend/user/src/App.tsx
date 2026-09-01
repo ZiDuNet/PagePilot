@@ -19,6 +19,7 @@ import {
   FileCode2,
   FileText,
   FileUp,
+  FolderOpen,
   Heart,
   KeyRound,
   Layers,
@@ -39,6 +40,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { APIError, api, authHeaders } from "./api";
+import { inspectDeployInput } from "./deployPreflight";
 import type {
   DeployFilePayload,
   DeployResponse,
@@ -72,11 +74,19 @@ const marketPreviewQueue: MarketPreviewQueueItem[] = [];
 let activeMarketPreviewJobs = 0;
 
 interface EditableDeployFile {
+  id: string;
   path: string;
   content: string;
   contentBase64?: string;
   isText?: boolean;
   size?: number;
+}
+
+let deployFileSequence = 0;
+
+function nextDeployFileId(): string {
+  deployFileSequence += 1;
+  return `deploy-file-${deployFileSequence}`;
 }
 
 interface MarketplaceResponse {
@@ -445,6 +455,33 @@ function normalizeUploadedFilePath(path: string, fallbackStem: string): string {
     normalizeUploadedPathSegment(part, index === rawParts.length - 1 ? fallbackStem : "folder")
   );
   return parts.join("/") || fallbackStem;
+}
+
+function uploadedFilePath(file: File): string {
+  return (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+}
+
+function commonUploadRoot(paths: string[]): string {
+  const normalized = paths.map((path) => path.replace(/\\/g, "/").replace(/^\/+/, ""));
+  const segments = normalized.map((path) => path.split("/").filter(Boolean));
+  if (!segments.length || !segments.every((parts) => parts.length > 1)) return "";
+  const root = segments[0][0];
+  return root && segments.every((parts) => parts[0] === root) ? root : "";
+}
+
+function stripCommonUploadRoot(paths: string[]): string[] {
+  const normalized = paths.map((path) => path.replace(/\\/g, "/").replace(/^\/+/, ""));
+  const root = commonUploadRoot(normalized);
+  if (!root) return normalized;
+  return normalized.map((path) => path.split("/").filter(Boolean).slice(1).join("/"));
+}
+
+function stripUploadRootFromFilename(filename: string, paths: string[]): string {
+  const value = filename.trim();
+  const root = commonUploadRoot(paths);
+  if (!value || !root) return filename;
+  const prefix = `${root}/`;
+  return value.toLowerCase().startsWith(prefix.toLowerCase()) ? value.slice(prefix.length) : filename;
 }
 
 function normalizeUploadedPathSegment(name: string, fallbackStem: string): string {
@@ -2267,6 +2304,9 @@ function UseCard({ icon, title, text, children }: { icon: React.ReactNode; title
 
 function DeployPage({ config, session }: { config: RuntimeConfig | null; session: SessionInfo | null }) {
   const [mode, setMode] = useState<"single" | "multi">("single");
+  const filePickerRef = useRef<HTMLInputElement>(null);
+  const directoryPickerRef = useRef<HTMLInputElement>(null);
+  const uploadRequestRef = useRef(0);
   const [filename, setFilename] = useState("");
   const [content, setContent] = useState("<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>PagePilot App</title>\n</head>\n<body>\n  <h1>Hello PagePilot</h1>\n</body>\n</html>");
   const [files, setFiles] = useState<EditableDeployFile[]>([]);
@@ -2284,6 +2324,8 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
   const [loadingUpdatableSites, setLoadingUpdatableSites] = useState(false);
   const [updatableSitesError, setUpdatableSitesError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadIssue, setUploadIssue] = useState<{ code: string; detail: string; hint: string } | null>(null);
   const [error, setError] = useState("");
   const [errorDetail, setErrorDetail] = useState<StructuredAPIErrorPayload | null>(null);
   const [fieldError, setFieldError] = useState<Record<string, string>>({});
@@ -2293,11 +2335,31 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
   const showFieldError = (field: string, msg: string) => setFieldError((prev) => ({ ...prev, [field]: msg }));
   const clearFieldError = (field: string) => setFieldError((prev) => { const next = { ...prev }; delete next[field]; return next; });
   const clearAllErrors = () => { setError(""); setErrorDetail(null); setFieldError({}); };
+  const showUploadIssue = (code: string, detail: string, hint: string) => {
+    setUploadIssue({ code, detail, hint });
+    setError(detail);
+    setErrorDetail({ errorCode: code, stage: "validate", detail, hint });
+  };
 
   const totalSize = mode === "single" ? fileTextSize(content) : files.reduce((sum, file) => sum + (file.size ?? fileTextSize(file.content)), 0);
   const ready = mode === "single"
-    ? content.trim()
-    : files.length > 0 && files.every((file) => file.path.trim() && (file.contentBase64 || file.content.trim()));
+    ? Boolean(content.trim())
+    : files.length > 0 && files.every((file) => file.path.trim());
+  const inputPreflight = useMemo(() => inspectDeployInput({
+    mode,
+    content,
+    filename,
+    files,
+    limits: config?.limits
+  }), [mode, content, filename, files, config?.limits?.maxSingleFileBytes, config?.limits?.maxSiteTotalBytes, config?.limits?.maxFilesPerSite]);
+  const preflight = useMemo(() => {
+    if (!uploadIssue) return inputPreflight;
+    return {
+      ...inputPreflight,
+      success: false,
+      errors: [uploadIssue, ...inputPreflight.errors]
+    };
+  }, [inputPreflight, uploadIssue]);
   const selectedUpdatableSite = createVersion
     ? updatableSites.find((site) => site.code === customCode.trim())
     : undefined;
@@ -2353,33 +2415,121 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
     };
   }, [createVersion]);
 
-  const readUploaded = async (list: FileList | null) => {
-    if (!list?.length) return;
+  const readUploaded = async (list: FileList | File[] | null) => {
+    const requestId = uploadRequestRef.current + 1;
+    uploadRequestRef.current = requestId;
+    const selectedFiles = list ? Array.from(list) : [];
+    if (!selectedFiles.length) return;
+    const maxSingle = preflight.limits.maxSingleFileBytes;
+    const maxTotal = preflight.limits.maxSiteTotalBytes;
+    const maxFiles = preflight.limits.maxFilesPerSite;
+
     if (mode === "single") {
-      const file = list[0];
+      const file = selectedFiles[0];
+      if (file.size > maxSingle) {
+        showUploadIssue("CONTENT_TOO_LARGE", `文件 ${file.name} 为 ${formatSize(file.size)}，超过单文件上限 ${formatSize(maxSingle)}。`, "请压缩文件或让管理员调整上传上限。");
+        return;
+      }
+      if (file.size > maxTotal) {
+        showUploadIssue("ZIP_TOTAL_TOO_LARGE", `文件 ${file.name} 超过整站大小上限 ${formatSize(maxTotal)}。`, "请压缩文件或让管理员调整整站大小上限。");
+        return;
+      }
+      if (file.size === 0) {
+        showUploadIssue("INVALID_INPUT", `文件 ${file.name} 为空。`, "选择有内容的 HTML、Markdown 或 ZIP 文件后再继续。");
+        return;
+      }
+      setError("");
+      setErrorDetail(null);
+      setUploadIssue(null);
       if (isZipUpload(file.name)) {
+        const buffer = await file.arrayBuffer();
+        if (requestId !== uploadRequestRef.current) return;
         setMode("multi");
         setFilename("");
-        setFiles([{ path: normalizeUploadedZipPath(file.name), content: "", contentBase64: arrayBufferToBase64(await file.arrayBuffer()), isText: false, size: file.size }]);
+        setFiles([{ id: nextDeployFileId(), path: normalizeUploadedZipPath(file.name), content: "", contentBase64: arrayBufferToBase64(buffer), isText: false, size: file.size }]);
         return;
       }
       setFilename(normalizeUploadedFilePath(file.name, "upload"));
-      setContent(await file.text());
+      const text = await file.text();
+      if (requestId !== uploadRequestRef.current) return;
+      setContent(text);
       return;
     }
 
+    if (selectedFiles.length > maxFiles) {
+      showUploadIssue("ZIP_TOO_MANY_FILES", `已选择 ${selectedFiles.length} 个文件，超过上限 ${maxFiles} 个。`, "删除构建产物或分批整理目录后再上传。");
+      return;
+    }
+    const selectedBytes = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+    if (selectedBytes > maxTotal) {
+      showUploadIssue("ZIP_TOTAL_TOO_LARGE", `已选择文件总大小为 ${formatSize(selectedBytes)}，超过整站上限 ${formatSize(maxTotal)}。`, "删除无关资源或让管理员调整整站大小上限。");
+      return;
+    }
+    const oversized = selectedFiles.find((file) => file.size > maxSingle);
+    if (oversized) {
+      showUploadIssue("ZIP_FILE_TOO_LARGE", `文件 ${oversized.name} 为 ${formatSize(oversized.size)}，超过单文件上限 ${formatSize(maxSingle)}。`, "压缩或拆分大资源后再上传。");
+      return;
+    }
+    setError("");
+    setErrorDetail(null);
+    setUploadIssue(null);
+    const rawPaths = selectedFiles.map(uploadedFilePath);
+    const uploadPaths = stripCommonUploadRoot(rawPaths);
+    const normalizedFilename = stripUploadRootFromFilename(filename, rawPaths);
+    if (normalizedFilename !== filename) setFilename(normalizedFilename);
     const next: EditableDeployFile[] = [];
-    for (const file of Array.from(list)) {
-      const rawPath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-      const path = normalizeUploadedFilePath(rawPath, "asset");
+    for (let index = 0; index < selectedFiles.length; index += 1) {
+      const file = selectedFiles[index];
+      const path = normalizeUploadedFilePath(uploadPaths[index], "asset");
       if (isTextUpload(file.name)) {
         const text = await file.text();
-        next.push({ path, content: text, isText: true, size: fileTextSize(text) });
+        if (requestId !== uploadRequestRef.current) return;
+        next.push({ id: nextDeployFileId(), path, content: text, isText: true, size: fileTextSize(text) });
       } else {
-        next.push({ path, content: "", contentBase64: arrayBufferToBase64(await file.arrayBuffer()), isText: false, size: file.size });
+        const buffer = await file.arrayBuffer();
+        if (requestId !== uploadRequestRef.current) return;
+        next.push({ id: nextDeployFileId(), path, content: "", contentBase64: arrayBufferToBase64(buffer), isText: false, size: file.size });
       }
     }
     if (next.length) setFiles(next);
+  };
+
+  const handleUploadFailure = (err: unknown) => {
+    const detail = err instanceof Error && err.message ? err.message : "读取文件失败。";
+    showUploadIssue("UPLOAD_READ_FAILED", detail, "请检查文件权限和大小后重新选择。");
+  };
+
+  const loadUploaded = (list: FileList | File[] | null) => {
+    const requestId = uploadRequestRef.current + 1;
+    setUploading(true);
+    void readUploaded(list).catch((err) => {
+      if (requestId === uploadRequestRef.current) handleUploadFailure(err);
+    }).finally(() => {
+      if (requestId === uploadRequestRef.current) setUploading(false);
+    });
+  };
+
+  const handlePickerChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
+    loadUploaded(selected);
+    // Allow selecting the same file again after correcting its contents.
+    event.currentTarget.value = "";
+  };
+
+  const changeMode = (nextMode: "single" | "multi") => {
+    uploadRequestRef.current += 1;
+    setUploading(false);
+    setMode(nextMode);
+    setUploadIssue(null);
+    clearAllErrors();
+  };
+
+  const clearUploadedFiles = () => {
+    uploadRequestRef.current += 1;
+    setUploading(false);
+    setUploadIssue(null);
+    setFiles([]);
+    clearAllErrors();
   };
 
   const submit = async () => {
@@ -2387,6 +2537,16 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
     clearAllErrors();
     setResult(null);
     try {
+      if (!preflight.success) {
+        const issue = preflight.errors[0];
+        throw new APIError(issue?.detail || "上传内容未通过本地预检。", 0, {
+          success: false,
+          errorCode: issue?.code || "INVALID_INPUT",
+          stage: "validate",
+          detail: issue?.detail || "上传内容未通过本地预检。",
+          hint: issue?.hint || "请根据预检提示调整上传内容后重试。"
+        });
+      }
       if (createVersion && !customCode.trim()) {
         showFieldError("code", "选择要更新的发布");
         throw new Error("请从可更新发布列表中选择一个作品。");
@@ -2463,20 +2623,34 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
         {/* 左侧：预览 / 上传区 */}
         <div className="deploy-stage">
           <div className="deploy-mode-bar">
-            <button className={mode === "single" ? "active" : ""} type="button" onClick={() => setMode("single")}><FileCode2 size={15} />单文件</button>
-            <button className={mode === "multi" ? "active" : ""} type="button" onClick={() => setMode("multi")}><FileArchive size={15} />多文件</button>
+            <button className={mode === "single" ? "active" : ""} type="button" aria-pressed={mode === "single"} onClick={() => changeMode("single")}><FileCode2 size={15} />单文件</button>
+            <button className={mode === "multi" ? "active" : ""} type="button" aria-pressed={mode === "multi"} onClick={() => changeMode("multi")}><FileArchive size={15} />多文件</button>
           </div>
+
+          <details className="entry-field-toggle">
+            <summary>高级：指定入口文件（可选）</summary>
+            <label className="field">
+              <span>入口文件名</span>
+              <input
+                value={filename}
+                onChange={(event) => setFilename(event.target.value)}
+                placeholder={mode === "single" ? "自动识别为 index.html 或 README.md" : "例如 dist/index.html"}
+                spellCheck={false}
+              />
+              <small className="field-help">留空会自动识别；多文件模式支持填写相对路径。</small>
+            </label>
+          </details>
 
           {mode === "single" ? (
             <>
-              <label className="deploy-upload-zone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); void readUploaded(e.dataTransfer.files); }}>
-                <input type="file" accept=".html,.htm,.md,.markdown,.zip" onChange={(e) => void readUploaded(e.target.files)} />
+              <label className="deploy-upload-zone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); loadUploaded(e.dataTransfer.files); }}>
+                <input type="file" accept=".html,.htm,.md,.markdown,.zip" onChange={handlePickerChange} />
                 <FileUp size={28} />
                 <strong>上传 HTML / Markdown / ZIP</strong>
                 <span>或直接粘贴源码到下方编辑器</span>
               </label>
               <div className="deploy-editor-wrap">
-                <textarea className="deploy-editor" value={content} onChange={(e) => setContent(e.target.value)} placeholder="粘贴 HTML 或 Markdown 源码，服务端会自动识别格式" spellCheck={false} />
+                <textarea className="deploy-editor" value={content} onChange={(e) => { setContent(e.target.value); setUploadIssue(null); clearAllErrors(); }} placeholder="粘贴 HTML 或 Markdown 源码，服务端会自动识别格式" spellCheck={false} />
                 <div className="preview-box">
                   {content.trim() ? (
                     <iframe title="实时预览" srcDoc={content} sandbox={PREVIEW_IFRAME_SANDBOX} />
@@ -2488,20 +2662,28 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
             </>
           ) : (
             <div className="deploy-upload-area">
-              <label className="deploy-upload-zone large" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); void readUploaded(e.dataTransfer.files); }}>
-                <input type="file" accept=".html,.htm,.md,.markdown,.zip" multiple onChange={(e) => void readUploaded(e.target.files)} />
-                <input type="file" multiple webkitdirectory="" onChange={(e) => void readUploaded(e.target.files)} />
+              <div className="deploy-upload-zone large" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); loadUploaded(e.dataTransfer.files); }}>
+                <input ref={filePickerRef} className="deploy-upload-input" type="file" multiple onChange={handlePickerChange} />
+                <input ref={directoryPickerRef} className="deploy-upload-input" type="file" multiple webkitdirectory="" onChange={handlePickerChange} />
                 <FileUp size={36} />
-                <strong>选择文件或拖拽到此处</strong>
+                <strong>拖拽文件到此处；选择目录可保留目录结构</strong>
+                <div className="deploy-upload-actions">
+                  <button className="deploy-upload-action" type="button" onClick={() => filePickerRef.current?.click()}><FileUp size={15} />选择文件</button>
+                  <button className="deploy-upload-action" type="button" onClick={() => directoryPickerRef.current?.click()}><FolderOpen size={15} />选择目录</button>
+                </div>
                 <span>支持多文件、整个目录、或单 ZIP 包。自动识别入口文件。</span>
-              </label>
+              </div>
               {files.length > 0 && (
                 <div className="deploy-file-list">
+                  <div className="deploy-file-list-head">
+                    <strong>已选文件 <span>{files.length}</span></strong>
+                    <button className="text-button danger" type="button" onClick={clearUploadedFiles}><Trash2 size={13} />清空</button>
+                  </div>
                   {files.map((f) => (
-                    <div className="deploy-file-row" key={f.path}>
+                    <div className="deploy-file-row" key={f.id}>
                       <code>{f.path}</code>
                       <span>{f.isText ? "text" : "bin"} · {formatSize(f.size)}</span>
-                      <button className="icon-button danger compact" type="button" onClick={() => setFiles((prev) => prev.filter((x) => x.path !== f.path))}><Trash2 size={14} /></button>
+                      <button className="icon-button danger compact" type="button" aria-label={`删除 ${f.path}`} title={`删除 ${f.path}`} onClick={() => setFiles((prev) => prev.filter((x) => x.id !== f.id))}><Trash2 size={14} /></button>
                     </div>
                   ))}
                 </div>
@@ -2510,10 +2692,31 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
           )}
 
           {/* 部署按钮区 */}
+          <div className={`deploy-preflight ${preflight.success ? "is-ready" : "is-error"}`} role={preflight.success ? "status" : "alert"} aria-live={preflight.success ? "polite" : "assertive"}>
+            <div className="deploy-preflight-head">
+              <div className="deploy-preflight-title">
+                {preflight.success ? <ShieldCheck size={16} /> : <AlertTriangle size={16} />}
+                <strong>{preflight.success ? "本地预检通过" : "完成预检后才能发布"}</strong>
+              </div>
+              <span>{formatSize(preflight.bytes)} · {preflight.count} 个文件</span>
+            </div>
+            <p>{preflight.mainEntry ? `入口：${preflight.mainEntry}` : "等待可识别的 HTML 或 Markdown 入口"}</p>
+            {preflight.errors.length > 0 && (
+              <ul className="deploy-preflight-issues">
+                {preflight.errors.slice(0, 3).map((issue) => <li key={`${issue.code}-${issue.detail}`}><code>{issue.code}</code><div><span>{issue.detail}</span>{issue.hint && <small>{issue.hint}</small>}</div></li>)}
+              </ul>
+            )}
+            {preflight.warnings.length > 0 && (
+              <ul className="deploy-preflight-issues warnings">
+                {preflight.warnings.slice(0, 2).map((issue) => <li key={`${issue.code}-${issue.detail}`}><code>{issue.code}</code><div><span>{issue.detail}</span>{issue.hint && <small>{issue.hint}</small>}</div></li>)}
+              </ul>
+            )}
+            <small>上限：单文件 {formatSize(preflight.limits.maxSingleFileBytes)} · 整站 {formatSize(preflight.limits.maxSiteTotalBytes)} · {preflight.limits.maxFilesPerSite} 个文件</small>
+          </div>
           <div className="deploy-submit-bar">
             <span className="deploy-size-info">大小 {formatSize(totalSize)} · {mode === "multi" ? `${files.length} 个文件` : "单文件"}</span>
-            <button className="button primary large" type="button" disabled={busy || !ready} onClick={submit}>
-              <Upload size={18} />{busy ? "部署中..." : "立即部署"}
+            <button className="button primary large" type="button" disabled={busy || uploading || !ready || !preflight.success} onClick={submit} title={uploading ? "正在读取上传文件" : !preflight.success ? "请先根据预检提示调整内容" : undefined}>
+              <Upload size={18} />{busy ? "部署中..." : uploading ? "读取中..." : "立即部署"}
             </button>
           </div>
         </div>
@@ -2584,7 +2787,7 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
       </div>
 
       {error && !fieldError.description && !fieldError.code && (
-        <p className="field-error" style={{margin:"12px 28px",fontSize:"13px"}}>{error}</p>
+        <DeployErrorPanel message={error} error={errorDetail} />
       )}
 
       {result && <DeployResult result={result} onClose={() => setResult(null)} />}

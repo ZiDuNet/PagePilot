@@ -174,6 +174,72 @@ func TestAnalyzeZipBundleRejectsBatchWithoutSingleEntryRoot(t *testing.T) {
 	}
 }
 
+func TestIsSafePathMatchesDeployPathRules(t *testing.T) {
+	deep := strings.Repeat("a/", 16) + "index.html"
+	long := strings.Repeat("a", 256) + ".html"
+	for _, path := range []string{"assets/app?.js", "assets/name:.js", "assets/trailing.", "CON.txt", "CON.foo.bar", deep, long, "assets//app.js", `assets\\app.js`} {
+		if IsSafePath(path) {
+			t.Fatalf("IsSafePath(%q) = true, want false", path)
+		}
+	}
+	for _, path := range []string{"index.html", "assets/王关飞.css", "a-b_c.d/e.js", "assets/logo@2x.png", "fonts/Inter (1).woff2", "js/app+polyfills.js", "assets/a~b#c!.css"} {
+		if !IsSafePath(path) {
+			t.Fatalf("IsSafePath(%q) = false, want true", path)
+		}
+	}
+}
+
+func TestAnalyzeZipAcceptsCommonStaticFilenamePunctuation(t *testing.T) {
+	zipBytes := makeBundleTestZip(t, map[string]string{
+		"index.html":            "<!doctype html><html><body><main>ready</main></body></html>",
+		"assets/logo@2x.png":    "png",
+		"fonts/Inter (1).woff2": "font",
+		"js/app+polyfills.js":   "console.log('ready')",
+		"assets/a~b#c!.css":     "body{}",
+	})
+
+	result, err := AnalyzeZip(Input{
+		Name:   "static-assets.zip",
+		Data:   zipBytes,
+		Limits: Limits{MaxSingleFileBytes: 1 << 20, MaxSiteTotalBytes: 2 << 20, MaxFiles: 10},
+	})
+	if err != nil {
+		t.Fatalf("AnalyzeZip returned error: %v", err)
+	}
+	for _, path := range []string{"assets/logo@2x.png", "fonts/Inter (1).woff2", "js/app+polyfills.js", "assets/a~b#c!.css"} {
+		if !hasBundlePath(result.Files, path) {
+			t.Fatalf("result files do not contain %q: %#v", path, result.Files)
+		}
+	}
+}
+
+func TestAnalyzeZipRejectsTooManyEntriesBeforeReadingTheArchive(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := 0; i < 3; i++ {
+		writer, err := zw.Create("assets/" + strings.Repeat("a", i+1) + ".js")
+		if err != nil {
+			t.Fatalf("create ZIP entry: %v", err)
+		}
+		if _, err := writer.Write(nil); err != nil {
+			t.Fatalf("write ZIP entry: %v", err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close ZIP: %v", err)
+	}
+
+	_, err := AnalyzeZip(Input{
+		Name:   "too-many.zip",
+		Data:   buf.Bytes(),
+		Limits: Limits{MaxSingleFileBytes: 1 << 20, MaxSiteTotalBytes: 2 << 20, MaxFiles: 2},
+	})
+	var bundleErr *Error
+	if !errors.As(err, &bundleErr) || bundleErr.Code != ErrCodeTooManyFiles {
+		t.Fatalf("AnalyzeZip error = %v; want ZIP_TOO_MANY_FILES", err)
+	}
+}
+
 func makeBundleTestZip(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer

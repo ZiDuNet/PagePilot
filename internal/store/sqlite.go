@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1524,7 +1525,7 @@ func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sor
 		ORDER BY ` + orderSQL + `
 		LIMIT ? OFFSET ?`
 	listArgs := append([]any{favoriteOwnerID, favoriteOwnerID}, args...)
-	listArgs = append(listArgs, pageSize, (page-1)*pageSize)
+	listArgs = append(listArgs, pageSize, marketplacePageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, listSQL, listArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list marketplace: %w", err)
@@ -1540,6 +1541,21 @@ func (s *SQLiteStore) ListMarketplaceDeploys(ctx context.Context, q, status, sor
 		out = append(out, d)
 	}
 	return out, total, rows.Err()
+}
+
+// marketplacePageOffset computes the SQL OFFSET in int64 space and saturates
+// on overflow. External page values can be close to the host int limit; a
+// saturated offset safely yields an empty page instead of a negative offset.
+func marketplacePageOffset(page, pageSize int) int64 {
+	if page <= 1 || pageSize <= 0 {
+		return 0
+	}
+	p := uint64(page - 1)
+	size := uint64(pageSize)
+	if p > uint64(math.MaxInt64)/size {
+		return math.MaxInt64
+	}
+	return int64(p * size)
 }
 
 // GetMarketplaceDeploy 按 code 取单条 marketplace 数据。

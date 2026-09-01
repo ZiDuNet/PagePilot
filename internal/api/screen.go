@@ -63,9 +63,17 @@ func (s *Server) handleBindScreen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "pairingCode", "pairingCode is required"), reqID))
 		return
 	}
+	clientIP := clientIPFromRequest(r)
+	if retry := s.screenBindCheck(userID, clientIP, time.Now()); retry > 0 {
+		seconds := int(retry/time.Second) + 1
+		writeError(w, apiErrWithReqID(NewError(CodeRateLimited, "pairingCode",
+			"too many invalid pairing attempts; retry shortly").WithRetryAfter(seconds), reqID))
+		return
+	}
 	screen, err := s.deployer.BindScreenPairing(r.Context(), code, userID, strings.TrimSpace(req.Name))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			s.screenBindRecordFailure(userID, clientIP, time.Now())
 			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "pairingCode",
 				"配对码无效、已过期或已被使用，请在屏幕 APP 上重新生成配对码后再绑定").
 				WithHint("确认后台和屏幕 APP 配置的是同一个 PagePilot 服务器，配对码 5 分钟内有效且只能使用一次。"), reqID))
@@ -74,6 +82,7 @@ func (s *Server) handleBindScreen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "screen_pairing", err.Error()), reqID))
 		return
 	}
+	s.screenBindReset(userID, clientIP)
 	actorType, actorID, actorRole := auditActorFromOwner("user:"+userID, isAdmin)
 	s.recordAuditLog(r, actorType, actorID, actorRole, "screen.bind", "", "screen", screen.ID, map[string]any{
 		"name":       screen.Name,
@@ -299,6 +308,12 @@ func (s *Server) handleUnbindScreen(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDevicePairingStart(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	if ok, retry := s.allowPairingStart(clientIPFromRequest(r), time.Now()); !ok {
+		seconds := int(retry/time.Second) + 1
+		writeError(w, apiErrWithReqID(NewError(CodeRateLimited, "pairing_rate_limit",
+			"too many pairing requests; retry shortly").WithRetryAfter(seconds), reqID))
+		return
+	}
 	var req DevicePairingStartRequest
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
@@ -370,6 +385,12 @@ func (s *Server) screenActor(r *http.Request) (string, bool, *APIError) {
 
 func (s *Server) handleDevicePairingComplete(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	if ok, retry := s.allowPairingComplete(clientIPFromRequest(r), time.Now()); !ok {
+		seconds := int(retry/time.Second) + 1
+		writeError(w, apiErrWithReqID(NewError(CodeRateLimited, "pairing_rate_limit",
+			"too many pairing completion attempts; retry shortly").WithRetryAfter(seconds), reqID))
+		return
+	}
 	var req DevicePairingCompleteRequest
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
@@ -422,7 +443,7 @@ func (s *Server) handleDeviceManifest(w http.ResponseWriter, r *http.Request) {
 			Path:     resp.AccessCookie.Path,
 			MaxAge:   resp.AccessCookie.MaxAgeSeconds,
 			Expires:  resp.AccessCookie.ExpiresAt,
-			Secure:   s.cfg.AppURLScheme == "https",
+			Secure:   s.configSnapshot().AppURLScheme == "https",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
@@ -453,13 +474,19 @@ func (s *Server) authenticateDevice(r *http.Request) (store.Screen, *APIError) {
 	header := strings.TrimSpace(r.Header.Get("Authorization"))
 	const prefix = "Device "
 	token := ""
-	if strings.HasPrefix(header, prefix) {
+	if header != "" {
+		if !strings.HasPrefix(header, prefix) {
+			return store.Screen{}, NewError(CodeUnauthorized, "device", "Authorization must use Device <deviceToken>")
+		}
 		token = strings.TrimSpace(strings.TrimPrefix(header, prefix))
 	}
-	if token == "" {
+	// Some reverse proxies drop Authorization during a WebSocket Upgrade. Keep
+	// the compatibility fallback scoped to that one route so long-lived device
+	// tokens never appear in ordinary HTTP URLs, logs, or referrers.
+	if token == "" && r.URL != nil && r.URL.Path == "/api/device/ws" {
 		token = strings.TrimSpace(r.URL.Query().Get("deviceToken"))
 	}
-	if token == "" {
+	if token == "" && r.URL != nil && r.URL.Path == "/api/device/ws" {
 		token = strings.TrimSpace(r.URL.Query().Get("token"))
 	}
 	if token == "" {

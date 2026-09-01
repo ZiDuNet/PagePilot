@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,9 +13,18 @@ import (
 	"github.com/yourorg/hostctl/internal/store"
 )
 
+var errFileTooLarge = errors.New("file exceeds read limit")
+
 // ReadAppFile returns one deployed file from the active or requested version.
 // Keeping this behind Deployer lets local disk and future OSS storage share one serving path.
 func (d *Deployer) ReadAppFile(ctx context.Context, code string, versionPtr *int64, path string) ([]byte, time.Time, *api.APIError) {
+	return d.readAppFileLimited(ctx, code, versionPtr, path, -1)
+}
+
+// readAppFileLimited is used by download streaming to keep a corrupted or
+// replaced storage object from being fully materialized before size checks.
+// maxBytes < 0 preserves the unrestricted page-serving behavior.
+func (d *Deployer) readAppFileLimited(ctx context.Context, code string, versionPtr *int64, path string, maxBytes int64) ([]byte, time.Time, *api.APIError) {
 	if !zipPathSafe(path) {
 		return nil, time.Time{}, api.NewError(api.CodeNotFound, "file_path", "file not found")
 	}
@@ -40,10 +50,13 @@ func (d *Deployer) ReadAppFile(ctx context.Context, code string, versionPtr *int
 		}
 		return nil, time.Time{}, api.NewError(api.CodeInternal, "load_version", err.Error())
 	}
-	data, modTime, err := d.readVersionFile(ctx, v, path)
+	data, modTime, err := d.readVersionFileLimited(ctx, v, path, maxBytes)
 	if err != nil {
 		if errors.Is(err, errFileNotFound) {
 			return nil, time.Time{}, api.NewError(api.CodeNotFound, "read_file", "file not found")
+		}
+		if errors.Is(err, errFileTooLarge) {
+			return nil, time.Time{}, api.NewError(api.CodeContentTooLarge, "read_file", "file exceeds the download size limit")
 		}
 		return nil, time.Time{}, api.NewError(api.CodeInternal, "read_file", err.Error())
 	}
@@ -53,29 +66,33 @@ func (d *Deployer) ReadAppFile(ctx context.Context, code string, versionPtr *int
 // readVersionFile 统一读取版本文件。OSS 模式只在对象不存在时回退本地旧目录，
 // 这样从本地存储平滑切到 OSS 时，历史发布不会立刻 404。
 func (d *Deployer) readVersionFile(ctx context.Context, v store.Version, path string) ([]byte, time.Time, error) {
+	return d.readVersionFileLimited(ctx, v, path, -1)
+}
+
+func (d *Deployer) readVersionFileLimited(ctx context.Context, v store.Version, path string, maxBytes int64) ([]byte, time.Time, error) {
 	storage := d.versionStorage(v)
 	if storage.Backend == "oss" {
-		oss := newOSSStorage(d.cfg)
-		data, modTime, err := oss.get(ctx, storage.ossObjectKey(path))
+		oss := newOSSStorage(d.configSnapshot())
+		data, modTime, err := oss.getLimited(ctx, storage.ossObjectKey(path), maxBytes)
 		if err == nil {
 			return data, modTime, nil
 		}
 		if !errors.Is(err, errFileNotFound) {
 			return nil, time.Time{}, err
 		}
-		return d.readDefaultLocalVersionFile(v, path)
+		return d.readDefaultLocalVersionFile(v, path, maxBytes)
 	}
-	return d.readLocalVersionFile(v, path)
+	return d.readLocalVersionFile(v, path, maxBytes)
 }
 
-func (d *Deployer) readDefaultLocalVersionFile(v store.Version, path string) ([]byte, time.Time, error) {
+func (d *Deployer) readDefaultLocalVersionFile(v store.Version, path string, maxBytes int64) ([]byte, time.Time, error) {
 	localVersion := v
 	localVersion.StorageBackend = "local"
 	localVersion.StoragePrefix = ""
-	return d.readLocalVersionFile(localVersion, path)
+	return d.readLocalVersionFile(localVersion, path, maxBytes)
 }
 
-func (d *Deployer) readLocalVersionFile(v store.Version, path string) ([]byte, time.Time, error) {
+func (d *Deployer) readLocalVersionFile(v store.Version, path string, maxBytes int64) ([]byte, time.Time, error) {
 	versionDir, err := d.localVersionDir(d.versionStorage(v), v.SiteCode, v.VersionNumber)
 	if err != nil {
 		return nil, time.Time{}, err
@@ -84,11 +101,33 @@ func (d *Deployer) readLocalVersionFile(v store.Version, path string) ([]byte, t
 	if err := ensureWithin(versionDir, full); err != nil {
 		return nil, time.Time{}, err
 	}
-	data, err := os.ReadFile(full)
+	file, err := os.Open(full)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, time.Time{}, errFileNotFound
 		}
+		return nil, time.Time{}, err
+	}
+	defer file.Close()
+	if maxBytes >= 0 {
+		if st, statErr := file.Stat(); statErr == nil && st.Size() > maxBytes {
+			return nil, time.Time{}, errFileTooLarge
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, maxBytes+1))
+		if readErr != nil {
+			return nil, time.Time{}, readErr
+		}
+		if int64(len(data)) > maxBytes {
+			return nil, time.Time{}, errFileTooLarge
+		}
+		modTime := time.Time{}
+		if st, statErr := file.Stat(); statErr == nil {
+			modTime = st.ModTime()
+		}
+		return data, modTime, nil
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
 		return nil, time.Time{}, err
 	}
 	modTime := time.Time{}

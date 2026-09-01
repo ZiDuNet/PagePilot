@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { captchaAnswer } from "./captcha-qa.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -78,7 +80,7 @@ function yamlString(value) {
   return JSON.stringify(String(value));
 }
 
-async function writeComposeOverride(file, dirs, port, projectName, adminPassword) {
+async function writeComposeOverride(file, dirs, port, projectName, adminPassword, masterKey) {
   const content = `services:
   hostctl:
     container_name: ${projectName}
@@ -91,6 +93,7 @@ async function writeComposeOverride(file, dirs, port, projectName, adminPassword
       HOSTCTL_COOLDOWN_SECONDS: "0"
       HOSTCTL_ANONYMOUS_DEPLOY_LIMIT: "10"
       REQUIRE_AUTH: "true"
+      HOSTCTL_MASTER_KEY: ${yamlString(masterKey)}
       HOSTCTL_ADMIN_USERNAME: "admin"
       HOSTCTL_ADMIN_PASSWORD: ${yamlString(adminPassword)}
     volumes:
@@ -174,18 +177,6 @@ async function request(baseURL, pathOrURL, options = {}) {
     return { response, body: raw };
   }
   return { response, body: raw ? JSON.parse(raw) : null };
-}
-
-function captchaAnswer(captcha) {
-  const image = String(captcha.image || "");
-  const match = image.match(/^data:image\/svg\+xml(;base64)?,(.+)$/);
-  assert(match, "captcha image is not an SVG data URL");
-  const svg = match[1]
-    ? Buffer.from(match[2], "base64").toString("utf8")
-    : decodeURIComponent(match[2]);
-  const answer = svg.match(/>(\d{4})</)?.[1] || svg.match(/\b(\d{4})\b/)?.[1];
-  assert(answer, "could not read captcha answer from SVG");
-  return answer;
 }
 
 async function waitForServer(baseURL, composeFiles, projectName) {
@@ -298,7 +289,7 @@ async function verifyHTTP(baseURL, adminPassword) {
   assert(unlockedPage.includes("legacy secret ok"), "legacy-secret password access did not unlock page");
   await request(baseURL, "/api/deploy/content?code=legacy-secret&download=1", {
     jar: publicJar,
-    expect: 403,
+    expect: 401,
   });
 
   const { body: screens } = await request(baseURL, "/api/screens", { jar: adminJar });
@@ -334,6 +325,10 @@ async function main() {
   const projectName = `pagepilot-docker-upgrade-qa-${Date.now().toString(36)}`.toLowerCase();
   const baseURL = `http://127.0.0.1:${port}`;
   const adminPassword = "legacy_admin_Pass123!";
+  const masterKey = randomBytes(32).toString("base64");
+  // The base compose file intentionally requires an explicit key. Keep the
+  // migration rehearsal self-contained while still exercising that contract.
+  process.env.HOSTCTL_MASTER_KEY = masterKey;
   const dirs = {
     hostctl: path.join(tmp, "data", "docker", "hostctl"),
     sql: path.join(tmp, "data", "docker", "sql"),
@@ -358,7 +353,7 @@ async function main() {
       "--secret-password", "legacy-secret",
     ], "seed legacy database failed");
 
-    await writeComposeOverride(composeOverride, dirs, port, projectName, adminPassword);
+    await writeComposeOverride(composeOverride, dirs, port, projectName, adminPassword, masterKey);
 
     // Runs: docker compose -f docker-compose.yml -f <override> -p <project> up -d --build
     runCompose(composeFiles, projectName, ["up", "-d", "--build"], "docker compose up -d --build failed");

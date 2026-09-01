@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,6 +153,7 @@ func TestListMarketplaceMarksOwnedWithoutLeakingOwnerTokenID(t *testing.T) {
 func TestDeployRejectsClaimedAnonymousSession(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
+	srv.requireAuth = false
 	stub := &claimedAnonymousDeployStub{}
 	srv.deployer = stub
 
@@ -175,9 +177,38 @@ func TestDeployRejectsClaimedAnonymousSession(t *testing.T) {
 	}
 }
 
+func TestRequireAuthRejectsAnonymousDeploy(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.requireAuth = true
+	stub := newTrackingAnonymousDeployStub()
+	srv.deployer = stub
+
+	body, _ := json.Marshal(DeployRequest{
+		Filename:    "index.html",
+		Description: "anonymous production deploy must be rejected",
+		Content:     "<!doctype html><title>blocked</title>",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusUnauthorized)
+	}
+	if stub.deployCalled || len(stub.sessions) != 0 {
+		t.Fatalf("anonymous request reached deploy/session creation: called=%v sessions=%#v", stub.deployCalled, stub.sessions)
+	}
+	if !strings.Contains(rr.Body.String(), "registered user or admin session required") {
+		t.Fatalf("body = %s; want require-auth diagnostic", rr.Body.String())
+	}
+}
+
 func TestAnonymousDeployWithoutExistingSessionIsTracked(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
+	srv.requireAuth = false
 	stub := newTrackingAnonymousDeployStub()
 	srv.deployer = stub
 	admin, err := authSvc.CreateUser(context.Background(), "admin", "password123", true, 20)
@@ -258,6 +289,7 @@ func TestAnonymousDeployWithoutExistingSessionIsTracked(t *testing.T) {
 func TestAnonymousVersionDeployDoesNotConsumeSiteQuota(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
+	srv.requireAuth = false
 	srv.cfg.AnonymousDeployLimit = 1
 	stub := newTrackingAnonymousDeployStub()
 	stub.siteExists = true
@@ -296,6 +328,103 @@ func TestAnonymousVersionDeployDoesNotConsumeSiteQuota(t *testing.T) {
 	}
 	if got := stub.sessions["anon-existing"].DeployCount; got != 1 {
 		t.Fatalf("deploy count = %d, want unchanged 1", got)
+	}
+}
+
+func TestAnonymousSessionAuthorizesOwnedSiteWrites(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.requireAuth = false
+	stub := newTrackingAnonymousDeployStub()
+	stub.siteExists = true
+	stub.siteOwnerTokenID = "anon:anon-existing"
+	stub.sessions["anon-existing"] = store.AnonymousSession{ID: "anon-existing"}
+	srv.deployer = stub
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/deploys/anon-owned/current", bytes.NewBufferString(`{"versionNumber":1}`))
+	req.Header.Set("X-Hostctl-Session", "anon-existing")
+
+	if apiErr := srv.authorizeSiteWrite(req, "anon-owned"); apiErr != nil {
+		t.Fatalf("authorizeSiteWrite returned %v for the owning anonymous session", apiErr)
+	}
+	actor, isAdmin, apiErr := srv.authenticateActor(req)
+	if apiErr != nil {
+		t.Fatalf("authenticateActor returned %v", apiErr)
+	}
+	if actor != "anon:anon-existing" || isAdmin {
+		t.Fatalf("actor = %q, isAdmin = %v; want anonymous owner and non-admin", actor, isAdmin)
+	}
+}
+
+func TestAnonymousSessionRoutesAuthorizeOwnedSiteWrites(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.requireAuth = false
+	stub := newTrackingAnonymousDeployStub()
+	stub.siteExists = true
+	stub.siteOwnerTokenID = "anon:anon-existing"
+	stub.sessions["anon-existing"] = store.AnonymousSession{ID: "anon-existing"}
+	srv.deployer = stub
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		action string
+	}{
+		{name: "set current", method: http.MethodPatch, path: "/api/deploys/anon-owned/current", body: `{"versionNumber":1}`, action: "current"},
+		{name: "lock version", method: http.MethodPost, path: "/api/deploys/anon-owned/versions/1/lock", body: `{"locked":true}`, action: "lock"},
+		{name: "delete version", method: http.MethodDelete, path: "/api/deploys/anon-owned/versions/1", action: "delete"},
+		{name: "set access password", method: http.MethodPost, path: "/api/deploys/anon-owned/access/set", body: `{"password":"secret123"}`, action: "access"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("X-Hostctl-Session", "anon-existing")
+			if tc.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rr := httptest.NewRecorder()
+			srv.mux.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+			}
+		})
+	}
+	if got := strings.Join(stub.siteWriteActions, ","); got != "current,lock,delete,access" {
+		t.Fatalf("site write actions = %q", got)
+	}
+}
+
+func TestAnonymousSessionCannotManageRegisteredTokens(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	srv.requireAuth = false
+	stub := newTrackingAnonymousDeployStub()
+	stub.sessions["anon-token-test"] = store.AnonymousSession{ID: "anon-token-test"}
+	srv.deployer = stub
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "list", method: http.MethodGet, path: "/api/tokens"},
+		{name: "revoke", method: http.MethodDelete, path: "/api/tokens/token-id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("X-Hostctl-Session", "anon-token-test")
+			rr := httptest.NewRecorder()
+			srv.mux.ServeHTTP(rr, req)
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusForbidden)
+			}
+			if !strings.Contains(rr.Body.String(), "registered user account required") {
+				t.Fatalf("body = %s; want registered-user restriction", rr.Body.String())
+			}
+		})
 	}
 }
 
@@ -393,6 +522,147 @@ func TestCreateVersionForMissingSiteStillConsumesSiteQuota(t *testing.T) {
 	}
 }
 
+func TestUserDeployQuotaRollsBackWhenDeploymentFails(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	user, err := authSvc.CreateUser(ctx, "quota-failure", "password123", false, 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	session, err := authSvc.LoginAdmin(ctx, "quota-failure", "password123", time.Hour)
+	if err != nil {
+		t.Fatalf("login user: %v", err)
+	}
+	srv.deployer = quotaFailureDeployStub{}
+
+	body, _ := json.Marshal(DeployRequest{
+		Filename: "index.html",
+		Title:    "quota rollback",
+		Content:  "<!doctype html><title>quota rollback</title>",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "hostctl_admin_session", Value: session.Plaintext})
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("deploy status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusInternalServerError)
+	}
+	got, err := authSvc.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.DeployCount != 0 {
+		t.Fatalf("user deploy count = %d after failed deployment, want 0", got.DeployCount)
+	}
+}
+
+func TestUserDeployQuotaRollsBackWhenConcurrentCreateBecomesVersion(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	user, err := authSvc.CreateUser(ctx, "quota-version", "password123", false, 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	session, err := authSvc.LoginAdmin(ctx, "quota-version", "password123", time.Hour)
+	if err != nil {
+		t.Fatalf("login user: %v", err)
+	}
+	// SiteExists reports false during the preflight check, but Deploy reports
+	// an update. This is the shape of a concurrent creator winning the race.
+	stub := newTrackingAnonymousDeployStub()
+	stub.created = false
+	srv.deployer = stub
+
+	body, _ := json.Marshal(DeployRequest{
+		Filename: "index.html",
+		Title:    "quota version rollback",
+		Content:  "<!doctype html><title>quota version rollback</title>",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "hostctl_admin_session", Value: session.Plaintext})
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("deploy status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+	}
+	got, err := authSvc.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.DeployCount != 0 {
+		t.Fatalf("user deploy count = %d after version response, want 0", got.DeployCount)
+	}
+}
+
+func TestUserDeployQuotaAllowsOnlyConfiguredConcurrentCreates(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	user, err := authSvc.CreateUser(ctx, "quota-concurrent", "password123", false, 3)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	session, err := authSvc.LoginAdmin(ctx, "quota-concurrent", "password123", time.Hour)
+	if err != nil {
+		t.Fatalf("login user: %v", err)
+	}
+	srv.deployer = quotaSuccessDeployStub{}
+
+	const attempts = 12
+	statuses := make(chan int, attempts)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			body, _ := json.Marshal(DeployRequest{
+				Filename: "index.html",
+				Title:    "concurrent quota",
+				Content:  "<!doctype html><title>concurrent quota</title>",
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.AddCookie(&http.Cookie{Name: "hostctl_admin_session", Value: session.Plaintext})
+			rr := httptest.NewRecorder()
+			srv.mux.ServeHTTP(rr, req)
+			statuses <- rr.Code
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(statuses)
+
+	var success, limited int
+	for status := range statuses {
+		switch status {
+		case http.StatusOK:
+			success++
+		case http.StatusUnauthorized:
+			limited++
+		default:
+			t.Fatalf("concurrent deploy status = %d; want 200 or 401", status)
+		}
+	}
+	if success != 3 || limited != attempts-success {
+		t.Fatalf("concurrent deploy results: success=%d limited=%d; want 3/%d", success, limited, attempts-3)
+	}
+	got, err := authSvc.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.DeployCount != 3 {
+		t.Fatalf("user deploy count = %d, want exactly 3", got.DeployCount)
+	}
+}
+
 func TestLegacyContentPatchDoesNotConsumeSiteQuota(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
@@ -442,9 +712,52 @@ func TestLegacyContentPatchDoesNotConsumeSiteQuota(t *testing.T) {
 	}
 }
 
+func TestLegacyContentPatchPassesAdminToDeployAs(t *testing.T) {
+	srv, authSvc, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	admin, err := authSvc.CreateUser(ctx, "patch-admin", "password123", true, -1)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	session, err := authSvc.LoginAdmin(ctx, "patch-admin", "password123", time.Hour)
+	if err != nil {
+		t.Fatalf("login admin: %v", err)
+	}
+	if !admin.IsAdmin {
+		t.Fatal("created patch user is not an admin")
+	}
+	base := newTrackingAnonymousDeployStub()
+	base.siteExists = true
+	base.created = false
+	base.siteOwnerTokenID = "user:someone-else"
+	stub := &adminAwareDeployStub{trackingAnonymousDeployStub: base}
+	srv.deployer = stub
+
+	body, _ := json.Marshal(ContentPatchRequest{
+		Code:        "admin-patch-test",
+		Title:       "管理员追加版本",
+		Description: "管理员可以更新其他用户的站点",
+		Content:     "<!doctype html><title>admin</title>",
+	})
+	req := httptest.NewRequest(http.MethodPatch, "/api/deploy/content", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "hostctl_admin_session", Value: session.Plaintext})
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+	}
+	if !stub.deployAsCalled || !stub.deployAsAdmin {
+		t.Fatalf("DeployAs called=%v admin=%v; want admin-aware dispatch", stub.deployAsCalled, stub.deployAsAdmin)
+	}
+}
+
 func TestDeployAcceptsMultipartFileUpload(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
+	srv.requireAuth = false
 	stub := newTrackingAnonymousDeployStub()
 	srv.deployer = stub
 
@@ -567,6 +880,52 @@ type trackingAnonymousDeployStub struct {
 	siteOwnerTokenID string
 	created          bool
 	deployCalled     bool
+	siteWriteActions []string
+}
+
+type quotaFailureDeployStub struct {
+	DeployerPort
+}
+
+func (quotaFailureDeployStub) Deploy(context.Context, DeployRequest, string, string) (*DeployResponse, *APIError) {
+	return nil, NewError(CodeInternal, "deploy", "forced deployment failure")
+}
+
+type quotaSuccessDeployStub struct {
+	DeployerPort
+}
+
+func (quotaSuccessDeployStub) Deploy(context.Context, DeployRequest, string, string) (*DeployResponse, *APIError) {
+	return &DeployResponse{
+		Success:                true,
+		Code:                   "quota-concurrent-test",
+		URL:                    "http://example.test/agent/quota-concurrent-test/",
+		DetailURL:              "http://example.test/agent/quota-concurrent-test/",
+		VersionURL:             "http://example.test/agent/quota-concurrent-test/versions/1/",
+		VersionID:              "quota-version-1",
+		CurrentVersionID:       "quota-version-1",
+		VersionNumber:          1,
+		PrimaryVersionStrategy: StrategyLatest,
+		Visibility:             "unlisted",
+		Created:                true,
+	}, nil
+}
+
+type adminAwareDeployStub struct {
+	*trackingAnonymousDeployStub
+	deployAsCalled bool
+	deployAsAdmin  bool
+}
+
+func (s *adminAwareDeployStub) DeployAs(
+	ctx context.Context,
+	req DeployRequest,
+	ownerTokenID, clientIP string,
+	isAdmin bool,
+) (*DeployResponse, *APIError) {
+	s.deployAsCalled = true
+	s.deployAsAdmin = isAdmin
+	return s.trackingAnonymousDeployStub.Deploy(ctx, req, ownerTokenID, clientIP)
 }
 
 func newTrackingAnonymousDeployStub() *trackingAnonymousDeployStub {
@@ -675,6 +1034,26 @@ func (s *trackingAnonymousDeployStub) GetSite(
 	}, nil
 }
 
+func (s *trackingAnonymousDeployStub) SwitchCurrent(_ context.Context, code string, version int64) (*SetCurrentResponse, *APIError) {
+	s.siteWriteActions = append(s.siteWriteActions, "current")
+	return &SetCurrentResponse{Success: true, Code: code, CurrentVersion: version}, nil
+}
+
+func (s *trackingAnonymousDeployStub) LockVersion(_ context.Context, code string, version int64, locked bool) (*LockResponse, *APIError) {
+	s.siteWriteActions = append(s.siteWriteActions, "lock")
+	return &LockResponse{Success: true, Code: code, VersionNumber: version, IsLocked: locked}, nil
+}
+
+func (s *trackingAnonymousDeployStub) DeleteVersion(_ context.Context, code string, version int64) (*SetCurrentResponse, *APIError) {
+	s.siteWriteActions = append(s.siteWriteActions, "delete")
+	return &SetCurrentResponse{Success: true, Code: code, CurrentVersion: version}, nil
+}
+
+func (s *trackingAnonymousDeployStub) SetSiteAccessPassword(context.Context, string, string) error {
+	s.siteWriteActions = append(s.siteWriteActions, "access")
+	return nil
+}
+
 func (s *trackingAnonymousDeployStub) Deploy(
 	_ context.Context,
 	req DeployRequest,
@@ -720,7 +1099,9 @@ func newTokenTestServer(t *testing.T) (*Server, *auth.Service, func()) {
 	cfg.CooldownSeconds = 0
 	cfg.AnonymousDeployLimit = 50
 	authSvc := auth.New(st)
-	srv := New(cfg, nil, authSvc, true, log.New(bytes.NewBuffer(nil), "", 0)).
+	// Most token tests exercise the development-mode anonymous workflow; the
+	// production require-auth boundary is covered separately.
+	srv := New(cfg, nil, authSvc, false, log.New(bytes.NewBuffer(nil), "", 0)).
 		WithVersion("test")
 	return srv, authSvc, func() {
 		if err := st.Close(); err != nil {

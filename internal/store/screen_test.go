@@ -136,6 +136,40 @@ func TestAssignScreenOwnerAllowsDeviceToCompletePairing(t *testing.T) {
 	}
 }
 
+func TestCompleteScreenPairingConsumesDeviceSecretOnce(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := store.CreateScreenPairing(ctx, ScreenPairing{
+		ID:                "pair-once",
+		Code:              "221133",
+		PairingSecretHash: "pair-once-secret",
+		ScreenID:          "screen-once",
+		DeviceName:        "one-time screen",
+		ExpiresAt:         now.Add(5 * time.Minute),
+		CreatedAt:         now,
+	}); err != nil {
+		t.Fatalf("create pairing: %v", err)
+	}
+	if _, err := store.BindScreenPairing(ctx, "221133", "user-1", ""); err != nil {
+		t.Fatalf("bind pairing: %v", err)
+	}
+
+	if err := store.CompleteScreenPairing(ctx, "pair-once", "pair-once-secret", "first-device-token"); err != nil {
+		t.Fatalf("first completion: %v", err)
+	}
+	if err := store.CompleteScreenPairing(ctx, "pair-once", "pair-once-secret", "replayed-device-token"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("replayed completion err = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetScreenByDeviceTokenHash(ctx, "first-device-token"); err != nil {
+		t.Fatalf("first device token should remain valid: %v", err)
+	}
+	if _, err := store.GetScreenByDeviceTokenHash(ctx, "replayed-device-token"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("replayed device token lookup err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestPublishScreenRejectsWrongOwner(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()

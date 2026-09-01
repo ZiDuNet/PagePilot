@@ -16,6 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"io/fs"
 	"log"
@@ -145,22 +148,76 @@ type bundleMetadataReader interface {
 	GetVersionBundle(ctx context.Context, code string, version int64) (store.VersionBundle, error)
 }
 
+type anonymousSessionPruner interface {
+	PruneAnonymousSessions(ctx context.Context, before time.Time) error
+}
+
 type Server struct {
-	cfg              config.Config
-	deployer         DeployerPort
-	auth             *auth.Service
-	requireAuth      bool
-	mux              *http.ServeMux
-	logger           *log.Logger
-	version          string
-	captchaMu        sync.Mutex
-	captchas         map[string]captchaChallenge
-	emailMu          sync.Mutex
-	emailCodes       map[string]emailVerificationChallenge
-	screenHub        *screenHub
-	loginMu          sync.Mutex
-	loginFails       map[string]*loginFailCounter
-	loginCleanupOnce sync.Once
+	cfg                      config.Config
+	cfgMu                    sync.RWMutex
+	deployer                 DeployerPort
+	auth                     *auth.Service
+	requireAuth              bool
+	mux                      *http.ServeMux
+	logger                   *log.Logger
+	version                  string
+	captchaMu                sync.Mutex
+	captchas                 map[string]captchaChallenge
+	captchaStartMu           sync.Mutex
+	captchaStarts            map[string]pairingStartCounter
+	captchaWindowAt          time.Time
+	captchaTotal             int
+	emailMu                  sync.Mutex
+	emailCodes               map[string]emailVerificationChallenge
+	screenHub                *screenHub
+	loginMu                  sync.Mutex
+	loginFails               map[string]*loginFailCounter
+	loginCleanupAt           time.Time
+	loginCleanupOnce         sync.Once
+	pairingStartMu           sync.Mutex
+	pairingStarts            map[string]pairingStartCounter
+	pairingWindowAt          time.Time
+	pairingTotal             int
+	pairingCompleteMu        sync.Mutex
+	pairingCompleteStarts    map[string]pairingStartCounter
+	pairingCompleteWindowAt  time.Time
+	pairingCompleteTotal     int
+	registrationMu           sync.Mutex
+	registrationStarts       map[string]pairingStartCounter
+	registrationWindowAt     time.Time
+	registrationTotal        int
+	cspReportMu              sync.Mutex
+	cspReportStarts          map[string]pairingStartCounter
+	cspReportWindowAt        time.Time
+	cspReportTotal           int
+	anonymousSessionMu       sync.Mutex
+	anonymousSessionStarts   map[string]pairingStartCounter
+	anonymousSessionWindowAt time.Time
+	anonymousSessionTotal    int
+	anonymousQuotaMu         sync.Mutex
+	// siteMutationMu serializes site quota preflight with the actual HTTP
+	// create/update/delete mutation so a delete cannot turn an update into an
+	// uncounted site creation between those steps.
+	siteMutationMu     sync.Mutex
+	anonymousCleanupMu sync.Mutex
+	anonymousCleanupAt time.Time
+	screenBindMu       sync.Mutex
+	screenBindFails    map[string]screenBindFailCounter
+}
+
+// configSnapshot returns a coherent runtime configuration copy. The admin
+// configuration endpoint can update selected fields while requests are being
+// served, so readers must not access the struct concurrently with writers.
+func (s *Server) configSnapshot() config.Config {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg
+}
+
+func (s *Server) updateConfig(fn func(*config.Config)) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	fn(&s.cfg)
 }
 
 // loginFailCounter 记录某主键（用户名/ip）的失败次数。
@@ -172,13 +229,378 @@ type loginFailCounter struct {
 }
 
 const (
-	loginFailWindow      = 5 * time.Minute
-	loginFailThreshold   = 5
-	loginLockoutDuration = 15 * time.Minute
+	loginFailWindow           = 5 * time.Minute
+	loginFailThreshold        = 5
+	loginLockoutDuration      = 15 * time.Minute
+	pairingStartWindow        = time.Minute
+	pairingStartPerIP         = 5
+	pairingStartGlobal        = 30
+	pairingCompleteWindow     = time.Minute
+	pairingCompletePerIP      = 30
+	pairingCompleteGlobal     = 300
+	registrationWindow        = time.Minute
+	registrationPerIP         = 10
+	registrationGlobal        = 100
+	captchaStartWindow        = time.Minute
+	captchaStartPerIP         = 30
+	captchaStartGlobal        = 300
+	anonymousSessionWindow    = time.Minute
+	anonymousSessionPerIP     = 20
+	anonymousSessionGlobal    = 200
+	anonymousSessionTTL       = 24 * time.Hour
+	anonymousCleanupInterval  = 5 * time.Minute
+	screenBindFailWindow      = 5 * time.Minute
+	screenBindFailThreshold   = 5
+	screenBindLockoutDuration = 15 * time.Minute
+	loginMaxEntries           = 10000
+	loginCleanupInterval      = 30 * time.Second
+	cspReportWindow           = time.Minute
+	cspReportPerIP            = 60
+	cspReportGlobal           = 1000
 )
 
+type pairingStartCounter struct {
+	count int
+	first time.Time
+}
+
+type screenBindFailCounter struct {
+	count       int
+	lastFail    time.Time
+	lockedUntil time.Time
+}
+
+// allowPairingStart keeps unauthenticated display enrollment useful while
+// bounding database writes from a single source or a distributed burst.
+func (s *Server) allowPairingStart(ip string, now time.Time) (bool, time.Duration) {
+	if ip == "" {
+		ip = "unknown"
+	}
+	s.pairingStartMu.Lock()
+	defer s.pairingStartMu.Unlock()
+	if s.pairingStarts == nil {
+		s.pairingStarts = make(map[string]pairingStartCounter)
+	}
+	if s.pairingWindowAt.IsZero() || now.Sub(s.pairingWindowAt) >= pairingStartWindow {
+		clear(s.pairingStarts)
+		s.pairingWindowAt = now
+		s.pairingTotal = 0
+	}
+	entry := s.pairingStarts[ip]
+	if entry.first.IsZero() {
+		entry.first = now
+	}
+	if s.pairingTotal >= pairingStartGlobal || entry.count >= pairingStartPerIP {
+		retry := pairingStartWindow - now.Sub(s.pairingWindowAt)
+		if retry <= 0 {
+			retry = time.Second
+		}
+		return false, retry
+	}
+	entry.count++
+	s.pairingStarts[ip] = entry
+	s.pairingTotal++
+	return true, 0
+}
+
+// allowPairingComplete bounds secret verification and database transactions
+// for the unauthenticated pairing-complete endpoint. Invalid attempts consume
+// the same budget so attackers cannot use malformed payloads to bypass it.
+func (s *Server) allowPairingComplete(ip string, now time.Time) (bool, time.Duration) {
+	if ip == "" {
+		ip = "unknown"
+	}
+	s.pairingCompleteMu.Lock()
+	defer s.pairingCompleteMu.Unlock()
+	if s.pairingCompleteStarts == nil {
+		s.pairingCompleteStarts = make(map[string]pairingStartCounter)
+	}
+	if s.pairingCompleteWindowAt.IsZero() || now.Sub(s.pairingCompleteWindowAt) >= pairingCompleteWindow {
+		clear(s.pairingCompleteStarts)
+		s.pairingCompleteWindowAt = now
+		s.pairingCompleteTotal = 0
+	}
+	entry := s.pairingCompleteStarts[ip]
+	if entry.first.IsZero() {
+		entry.first = now
+	}
+	if s.pairingCompleteTotal >= pairingCompleteGlobal || entry.count >= pairingCompletePerIP {
+		retry := pairingCompleteWindow - now.Sub(s.pairingCompleteWindowAt)
+		if retry <= 0 {
+			retry = time.Second
+		}
+		return false, retry
+	}
+	entry.count++
+	s.pairingCompleteStarts[ip] = entry
+	s.pairingCompleteTotal++
+	return true, 0
+}
+
+// allowAnonymousSessionStart bounds creation of new anonymous-session rows.
+// Existing sessions are refreshed without consuming this budget.
+func (s *Server) allowAnonymousSessionStart(ip string, now time.Time) (bool, time.Duration) {
+	if ip == "" {
+		ip = "unknown"
+	}
+	s.anonymousSessionMu.Lock()
+	defer s.anonymousSessionMu.Unlock()
+	if s.anonymousSessionStarts == nil {
+		s.anonymousSessionStarts = make(map[string]pairingStartCounter)
+	}
+	if s.anonymousSessionWindowAt.IsZero() || now.Sub(s.anonymousSessionWindowAt) >= anonymousSessionWindow {
+		clear(s.anonymousSessionStarts)
+		s.anonymousSessionWindowAt = now
+		s.anonymousSessionTotal = 0
+	}
+	entry := s.anonymousSessionStarts[ip]
+	if entry.first.IsZero() {
+		entry.first = now
+	}
+	if s.anonymousSessionTotal >= anonymousSessionGlobal || entry.count >= anonymousSessionPerIP {
+		retry := anonymousSessionWindow - now.Sub(s.anonymousSessionWindowAt)
+		if retry <= 0 {
+			retry = time.Second
+		}
+		return false, retry
+	}
+	entry.count++
+	s.anonymousSessionStarts[ip] = entry
+	s.anonymousSessionTotal++
+	return true, 0
+}
+
+// allowRegistration bounds public account creation before password hashing
+// and database writes. Both buckets are intentionally consumed for every
+// request, including invalid ones, so malformed submissions cannot be used to
+// turn registration into an unbounded PBKDF2 workload.
+func (s *Server) allowRegistration(ip string, now time.Time) (bool, time.Duration) {
+	if ip == "" {
+		ip = "unknown"
+	}
+	s.registrationMu.Lock()
+	defer s.registrationMu.Unlock()
+	if s.registrationStarts == nil {
+		s.registrationStarts = make(map[string]pairingStartCounter)
+	}
+	if s.registrationWindowAt.IsZero() || now.Sub(s.registrationWindowAt) >= registrationWindow {
+		clear(s.registrationStarts)
+		s.registrationWindowAt = now
+		s.registrationTotal = 0
+	}
+	entry := s.registrationStarts[ip]
+	if entry.first.IsZero() {
+		entry.first = now
+	}
+	if s.registrationTotal >= registrationGlobal || entry.count >= registrationPerIP {
+		retry := registrationWindow - now.Sub(s.registrationWindowAt)
+		if retry <= 0 {
+			retry = time.Second
+		}
+		return false, retry
+	}
+	entry.count++
+	s.registrationStarts[ip] = entry
+	s.registrationTotal++
+	return true, 0
+}
+
+// allowCaptchaStart bounds public CAPTCHA issuance before image rendering and
+// pending-challenge allocation. The counters are deliberately consumed for
+// every request, including challenges that are never verified.
+func (s *Server) allowCaptchaStart(ip string, now time.Time) (bool, time.Duration) {
+	if ip == "" {
+		ip = "unknown"
+	}
+	s.captchaStartMu.Lock()
+	defer s.captchaStartMu.Unlock()
+	if s.captchaStarts == nil {
+		s.captchaStarts = make(map[string]pairingStartCounter)
+	}
+	if s.captchaWindowAt.IsZero() || now.Sub(s.captchaWindowAt) >= captchaStartWindow {
+		clear(s.captchaStarts)
+		s.captchaWindowAt = now
+		s.captchaTotal = 0
+	}
+	entry := s.captchaStarts[ip]
+	if entry.first.IsZero() {
+		entry.first = now
+	}
+	if s.captchaTotal >= captchaStartGlobal || entry.count >= captchaStartPerIP {
+		retry := captchaStartWindow - now.Sub(s.captchaWindowAt)
+		if retry <= 0 {
+			retry = time.Second
+		}
+		return false, retry
+	}
+	entry.count++
+	s.captchaStarts[ip] = entry
+	s.captchaTotal++
+	return true, 0
+}
+
+func (s *Server) allowCSPReport(ip string, now time.Time) (bool, time.Duration) {
+	if ip == "" {
+		ip = "unknown"
+	}
+	s.cspReportMu.Lock()
+	defer s.cspReportMu.Unlock()
+	if s.cspReportStarts == nil {
+		s.cspReportStarts = make(map[string]pairingStartCounter)
+	}
+	if s.cspReportWindowAt.IsZero() || now.Sub(s.cspReportWindowAt) >= cspReportWindow {
+		clear(s.cspReportStarts)
+		s.cspReportWindowAt = now
+		s.cspReportTotal = 0
+	}
+	entry := s.cspReportStarts[ip]
+	if entry.first.IsZero() {
+		entry.first = now
+	}
+	if s.cspReportTotal >= cspReportGlobal || entry.count >= cspReportPerIP {
+		retry := cspReportWindow - now.Sub(s.cspReportWindowAt)
+		if retry <= 0 {
+			retry = time.Second
+		}
+		return false, retry
+	}
+	entry.count++
+	s.cspReportStarts[ip] = entry
+	s.cspReportTotal++
+	return true, 0
+}
+
+func screenBindKeys(userID, ip string) []string {
+	if strings.TrimSpace(ip) == "" {
+		ip = "unknown"
+	}
+	keys := []string{"ip:" + strings.TrimSpace(ip)}
+	if userID = strings.TrimSpace(userID); userID != "" {
+		keys = append(keys, "user:"+userID)
+	}
+	return keys
+}
+
+func (s *Server) screenBindCleanupLocked(now time.Time) {
+	if s.screenBindFails == nil {
+		s.screenBindFails = make(map[string]screenBindFailCounter)
+		return
+	}
+	for key, entry := range s.screenBindFails {
+		if (entry.lockedUntil.IsZero() || !now.Before(entry.lockedUntil)) &&
+			(entry.lastFail.IsZero() || now.Sub(entry.lastFail) >= screenBindFailWindow) {
+			delete(s.screenBindFails, key)
+		}
+	}
+}
+
+func (s *Server) screenBindCheck(userID, ip string, now time.Time) time.Duration {
+	s.screenBindMu.Lock()
+	defer s.screenBindMu.Unlock()
+	s.screenBindCleanupLocked(now)
+	var retry time.Duration
+	for _, key := range screenBindKeys(userID, ip) {
+		entry, ok := s.screenBindFails[key]
+		if !ok || entry.lockedUntil.IsZero() || !now.Before(entry.lockedUntil) {
+			continue
+		}
+		if remain := entry.lockedUntil.Sub(now); remain > retry {
+			retry = remain
+		}
+	}
+	return retry
+}
+
+func (s *Server) screenBindRecordFailure(userID, ip string, now time.Time) {
+	s.screenBindMu.Lock()
+	defer s.screenBindMu.Unlock()
+	s.screenBindCleanupLocked(now)
+	for _, key := range screenBindKeys(userID, ip) {
+		entry := s.screenBindFails[key]
+		if entry.lastFail.IsZero() || now.Before(entry.lastFail) || now.Sub(entry.lastFail) >= screenBindFailWindow {
+			entry.count = 0
+			entry.lockedUntil = time.Time{}
+		}
+		entry.count++
+		entry.lastFail = now
+		if entry.count >= screenBindFailThreshold {
+			entry.lockedUntil = now.Add(screenBindLockoutDuration)
+		}
+		s.screenBindFails[key] = entry
+	}
+}
+
+func (s *Server) screenBindReset(userID, ip string) {
+	s.screenBindMu.Lock()
+	defer s.screenBindMu.Unlock()
+	for _, key := range screenBindKeys(userID, ip) {
+		delete(s.screenBindFails, key)
+	}
+}
+
+// pruneExpiredAnonymousSessions periodically removes abandoned session rows.
+// The optional interface keeps lightweight API test doubles and integrations
+// source-compatible while the real deployer provides the SQLite operation.
+func (s *Server) pruneExpiredAnonymousSessions(ctx context.Context, now time.Time) {
+	s.anonymousCleanupMu.Lock()
+	if !s.anonymousCleanupAt.IsZero() && now.Sub(s.anonymousCleanupAt) < anonymousCleanupInterval {
+		s.anonymousCleanupMu.Unlock()
+		return
+	}
+	s.anonymousCleanupAt = now
+	s.anonymousCleanupMu.Unlock()
+
+	pruner, ok := s.deployer.(anonymousSessionPruner)
+	if !ok || pruner == nil {
+		return
+	}
+	if err := pruner.PruneAnonymousSessions(ctx, now.Add(-anonymousSessionTTL)); err != nil && s.logger != nil {
+		s.logger.Printf("failed to prune anonymous sessions: %v", err)
+	}
+}
+
 func (s *Server) loginKey(username, ip string) string {
-	return strings.ToLower(strings.TrimSpace(username)) + "|" + ip
+	username = strings.ToLower(strings.TrimSpace(username))
+	if len(username) > 128 {
+		sum := sha256.Sum256([]byte(username))
+		username = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	return username + "|" + ip
+}
+
+// siteAccessLoginKeys returns a site-scoped and an IP-scoped key. Keeping a
+// second bucket per IP prevents an attacker from rotating site codes to avoid
+// the PBKDF2 verification limit.
+func siteAccessLoginKeys(code, ip string) (string, string) {
+	code = strings.ToLower(strings.TrimSpace(code))
+	if code == "" {
+		code = "unknown"
+	}
+	if ip == "" {
+		ip = "unknown"
+	}
+	return "site-access:" + code + "|" + ip, "__site-access-ip__|" + ip
+}
+
+func maxDuration(values ...time.Duration) time.Duration {
+	var max time.Duration
+	for _, value := range values {
+		if value > max {
+			max = value
+		}
+	}
+	return max
+}
+
+func retryAfterSeconds(remain time.Duration) int {
+	if remain <= 0 {
+		return 1
+	}
+	seconds := int((remain + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
 }
 
 // loginCheckLocked 查询是否在锁定窗口中。若已锁定返回 unlockRemain。
@@ -204,6 +626,9 @@ func (s *Server) loginRecordFail(key string) {
 	s.loginCleanup()
 	c, ok := s.loginFails[key]
 	if !ok {
+		if len(s.loginFails) >= loginMaxEntries {
+			s.evictOldestLoginFailLocked()
+		}
 		c = &loginFailCounter{}
 		s.loginFails[key] = c
 	}
@@ -227,16 +652,54 @@ func (s *Server) loginReset(key string) {
 }
 
 func (s *Server) loginCleanup() {
-	if s.loginFails == nil {
-		s.loginFails = make(map[string]*loginFailCounter)
+	now := time.Now()
+	if !s.loginCleanupAt.IsZero() && now.Sub(s.loginCleanupAt) < loginCleanupInterval {
 		return
 	}
-	now := time.Now()
+	if s.loginFails == nil {
+		s.loginFails = make(map[string]*loginFailCounter)
+		s.loginCleanupAt = now
+		return
+	}
 	for k, c := range s.loginFails {
 		if now.Sub(c.lastFail) > loginFailWindow && (c.lockedUntil.IsZero() || now.After(c.lockedUntil)) {
 			delete(s.loginFails, k)
 		}
 	}
+	s.loginCleanupAt = now
+}
+
+func (s *Server) evictOldestLoginFailLocked() {
+	if len(s.loginFails) == 0 {
+		return
+	}
+	now := time.Now()
+	oldestKey := ""
+	var oldest time.Time
+	for key, counter := range s.loginFails {
+		if counter == nil {
+			oldestKey = key
+			break
+		}
+		// Prefer entries that are no longer actively locking a client. If every
+		// entry is locked, evict the oldest one to keep the map bounded.
+		if now.Before(counter.lockedUntil) {
+			continue
+		}
+		if oldestKey == "" || counter.lastFail.Before(oldest) {
+			oldestKey = key
+			oldest = counter.lastFail
+		}
+	}
+	if oldestKey == "" {
+		for key, counter := range s.loginFails {
+			if oldestKey == "" || counter.lastFail.Before(oldest) {
+				oldestKey = key
+				oldest = counter.lastFail
+			}
+		}
+	}
+	delete(s.loginFails, oldestKey)
 }
 
 // startLoginCleanup 启动后台清理协程（幂等）。
@@ -268,25 +731,16 @@ var emailRe = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 var routeCodeRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{2,30}[a-z0-9])?$`)
 
 // validatePasswordStrength 校验用户密码强度：至少 8 字符、含字母和数字。
-// 返回 nil 或 *APIError。空密码（用作"清除"语义）不被拦截。
+// 账号密码不支持空值或纯空白值；站点访问密码的清除语义由其专用接口处理。
 func validatePasswordStrength(password string) *APIError {
 	p := strings.TrimSpace(password)
 	if p == "" {
-		return nil
+		return NewError(CodeInvalidInput, "password", "password is required")
 	}
 	if len(p) < 8 {
 		return NewError(CodeInvalidInput, "password", "password must be at least 8 characters")
 	}
-	hasLetter, hasDigit := false, false
-	for _, r := range p {
-		switch {
-		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
-			hasLetter = true
-		case r >= '0' && r <= '9':
-			hasDigit = true
-		}
-	}
-	if !hasLetter || !hasDigit {
+	if !auth.PasswordMeetsStrength(p) {
 		return NewError(CodeInvalidInput, "password", "password must contain both letters and digits")
 	}
 	return nil
@@ -299,17 +753,24 @@ func New(cfg config.Config, deployer DeployerPort, authSvc *auth.Service, requir
 		logger = log.Default()
 	}
 	s := &Server{
-		cfg:         cfg,
-		deployer:    deployer,
-		auth:        authSvc,
-		requireAuth: requireAuth,
-		mux:         http.NewServeMux(),
-		logger:      logger,
-		version:     "dev",
-		captchas:    map[string]captchaChallenge{},
-		emailCodes:  map[string]emailVerificationChallenge{},
-		loginFails:  make(map[string]*loginFailCounter),
-		screenHub:   newScreenHub(),
+		cfg:                    cfg,
+		deployer:               deployer,
+		auth:                   authSvc,
+		requireAuth:            requireAuth,
+		mux:                    http.NewServeMux(),
+		logger:                 logger,
+		version:                "dev",
+		captchas:               map[string]captchaChallenge{},
+		captchaStarts:          make(map[string]pairingStartCounter),
+		emailCodes:             map[string]emailVerificationChallenge{},
+		loginFails:             make(map[string]*loginFailCounter),
+		pairingStarts:          make(map[string]pairingStartCounter),
+		pairingCompleteStarts:  make(map[string]pairingStartCounter),
+		registrationStarts:     make(map[string]pairingStartCounter),
+		cspReportStarts:        make(map[string]pairingStartCounter),
+		anonymousSessionStarts: make(map[string]pairingStartCounter),
+		screenBindFails:        make(map[string]screenBindFailCounter),
+		screenHub:              newScreenHub(),
 	}
 	s.routes()
 	s.startLoginCleanup()
@@ -386,7 +847,7 @@ func (s *Server) appURLConfig() AppURLConfig {
 	if p, ok := s.deployer.(appURLConfigProvider); ok {
 		return p.AppURLConfig()
 	}
-	return NewAppURLConfig(s.cfg)
+	return NewAppURLConfig(s.configSnapshot())
 }
 
 func (s *Server) appURLConfigForRequest(r *http.Request) AppURLConfig {
@@ -584,9 +1045,10 @@ func (s *Server) routes() {
 
 // ListenAndServe 启动 HTTP 服务。
 func (s *Server) ListenAndServe() error {
-	s.logger.Printf("hostctl-server listening on %s", s.cfg.HTTPAddr)
+	cfg := s.configSnapshot()
+	s.logger.Printf("hostctl-server listening on %s", cfg.HTTPAddr)
 	srv := &http.Server{
-		Addr:              s.cfg.HTTPAddr,
+		Addr:              cfg.HTTPAddr,
 		Handler:           s.withMiddleware(s.mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
@@ -615,9 +1077,12 @@ func (s *Server) withMiddleware(h http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-
 		if s.tryServeDomainApp(w, r) {
 			s.logger.Printf("%s %s %s %dms", r.Method, r.URL.Path, reqID, time.Since(start).Milliseconds())
+			return
+		}
+		if apiErr := s.requireAuthenticatedWrite(r); apiErr != nil {
+			writeError(w, apiErrWithReqID(apiErr, reqID))
 			return
 		}
 
@@ -625,6 +1090,42 @@ func (s *Server) withMiddleware(h http.Handler) http.Handler {
 
 		s.logger.Printf("%s %s %s %dms", r.Method, r.URL.Path, reqID, time.Since(start).Milliseconds())
 	})
+}
+
+// requireAuthenticatedWrite blocks anonymous mutating API calls in production
+// while preserving intentionally public interactions such as likes, access
+// password login, registration, and CSP reports. A present Authorization
+// header is passed to the endpoint so it can return the precise token error.
+func (s *Server) requireAuthenticatedWrite(r *http.Request) *APIError {
+	if !s.requireAuth || r == nil || r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return nil
+	}
+	if !strings.HasPrefix(r.URL.Path, "/api/") || publicWriteWithoutAuth(r.Method, r.URL.Path) {
+		return nil
+	}
+	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		return nil
+	}
+	if _, ok := s.adminUserFromCookie(r); ok {
+		return nil
+	}
+	return NewError(CodeUnauthorized, "auth", "Bearer token or admin session required for write operations")
+}
+
+func publicWriteWithoutAuth(method, path string) bool {
+	switch {
+	case path == "/api/security/csp-report":
+	case path == "/api/auth/captcha", path == "/api/auth/email-code", path == "/api/auth/register":
+	case path == "/api/admin/login", path == "/api/admin/logout":
+	// A display has no user credential before pairing completes. These two
+	// endpoints intentionally use the short-lived pairing secret instead.
+	case path == "/api/device/pairing/start", path == "/api/device/pairing/complete":
+	case strings.HasSuffix(path, "/like"), strings.HasSuffix(path, "/favorite"):
+	case method == http.MethodPost && strings.HasSuffix(path, "/access") && strings.HasPrefix(path, "/api/deploys/"):
+	default:
+		return false
+	}
+	return true
 }
 
 func isCORSManagedPath(path string) bool {
@@ -665,7 +1166,7 @@ func (s *Server) tryServeDomainApp(w http.ResponseWriter, r *http.Request) bool 
 
 func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	allowed := config.NormalizeCORSAllowOrigins(s.cfg.CORSAllowOrigins)
+	allowed := config.NormalizeCORSAllowOrigins(s.configSnapshot().CORSAllowOrigins)
 	if allowed == "" {
 		return
 	}
@@ -698,12 +1199,20 @@ func originAllowed(origin, allowed string) bool {
 }
 
 func (s *Server) maxRequestBodyBytes() int64 {
-	limit := s.cfg.MaxSiteTotalBytes + (1 << 20)
-	if limit < 8<<20 {
-		return 8 << 20
+	const (
+		minRequestBytes = int64(8 << 20)
+		maxRequestBytes = int64(256 << 20)
+		overheadBytes   = int64(1 << 20)
+	)
+	total := s.configSnapshot().MaxSiteTotalBytes
+	// Clamp before adding the multipart/JSON overhead so an attacker-controlled
+	// or corrupted persisted setting cannot wrap the int64 calculation.
+	if total >= maxRequestBytes-overheadBytes {
+		return maxRequestBytes
 	}
-	if limit > 256<<20 {
-		return 256 << 20
+	limit := total + overheadBytes
+	if limit < minRequestBytes {
+		return minRequestBytes
 	}
 	return limit
 }
@@ -715,8 +1224,23 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	var ownerTokenID string
 	var anonymousSessionID string
 	var userID string
+	var userIsAdmin bool
 	actorIsAdmin := false
+	quotaReservationUserID := ""
+	quotaReservationActive := false
+	releaseQuotaReservation := func() {
+		if !quotaReservationActive || quotaReservationUserID == "" {
+			return
+		}
+		if err := s.auth.ReleaseUserDeployQuota(context.Background(), quotaReservationUserID); err != nil {
+			s.logger.Printf("failed to release user deploy quota %s: %v", quotaReservationUserID, err)
+		}
+		quotaReservationActive = false
+	}
 	writeDeployError := func(apiErr *APIError) {
+		// A user quota slot is reserved immediately before deployment. Return it
+		// on every failure path so invalid uploads do not consume quota.
+		releaseQuotaReservation()
 		actorType, actorID, actorRole := s.auditActorFromRequest(r)
 		if ownerTokenID != "" {
 			actorType, actorID, actorRole = auditActorFromOwner(ownerTokenID, actorIsAdmin)
@@ -747,6 +1271,10 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("invalid JSON body: %v", err)))
 			return
 		}
+		if err := ensureSingleJSONValue(dec); err != nil {
+			writeDeployError(NewError(CodeInvalidInput, "parse_json", err.Error()))
+			return
+		}
 	} else if strings.HasPrefix(ct, "multipart/form-data") {
 		parsed, apiErr := s.decodeDeployMultipart(r)
 		if apiErr != nil {
@@ -760,6 +1288,11 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keep quota preflight, authorization, deployment, and post-deploy
+	// accounting together with the delete endpoint. The deployer has its own
+	// mutation lock, but the API-level quota check happens before it.
+	s.siteMutationMu.Lock()
+	defer s.siteMutationMu.Unlock()
 	consumesSiteQuota := s.deployRequestConsumesSiteQuota(r.Context(), req)
 	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
 		tok, authErr := s.authenticateToken(r)
@@ -775,25 +1308,20 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				writeDeployError(NewError(CodeForbidden, "user", "token owner is inactive or missing"))
 				return
 			}
-			if consumesSiteQuota && !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
-				writeDeployError(NewError(CodeUnauthorized, "user_quota",
-					fmt.Sprintf("user deploy limit reached (%d/%d)", user.DeployCount, user.DeployLimit)).
-					WithHint("Ask an admin to raise your deploy quota."))
-				return
-			}
 			userID = user.ID
+			userIsAdmin = user.IsAdmin
 		}
 	} else if user, ok := s.adminUserFromCookie(r); ok {
 		userID = user.ID
 		actorIsAdmin = user.IsAdmin
+		userIsAdmin = user.IsAdmin
 		ownerTokenID = "user:" + user.ID
-		if consumesSiteQuota && !user.IsAdmin && user.DeployLimit >= 0 && user.DeployCount >= user.DeployLimit {
-			writeDeployError(NewError(CodeUnauthorized, "user_quota",
-				fmt.Sprintf("user deploy limit reached (%d/%d)", user.DeployCount, user.DeployLimit)).
-				WithHint("Ask an admin to raise your deploy quota."))
+	} else {
+		if s.requireAuth {
+			writeDeployError(NewError(CodeUnauthorized, "auth", "registered user or admin session required").
+				WithHint("生产模式已关闭匿名发布，请使用已绑定用户的 Bearer Token 或管理员登录会话。"))
 			return
 		}
-	} else {
 		sess, sessionErr := s.ensureAnonymousSession(w, r)
 		if sessionErr != nil {
 			writeDeployError(sessionErr)
@@ -801,9 +1329,27 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 		anonymousSessionID = sess.ID
 		ownerTokenID = "anon:" + sess.ID
-		if consumesSiteQuota && s.cfg.AnonymousDeployLimit >= 0 && sess.DeployCount >= s.cfg.AnonymousDeployLimit {
+		cfg := s.configSnapshot()
+		if consumesSiteQuota && cfg.AnonymousDeployLimit >= 0 {
+			// Quota is checked before Deploy and incremented after a successful
+			// create. Serialize this check/increment pair so concurrent requests
+			// sharing one anonymous session cannot all observe the same count.
+			s.anonymousQuotaMu.Lock()
+			defer s.anonymousQuotaMu.Unlock()
+			latest, refreshErr := s.deployer.GetAnonymousSession(r.Context(), sess.ID)
+			if refreshErr != nil {
+				writeDeployError(NewError(CodeInternal, "anonymous_session", refreshErr.Error()))
+				return
+			}
+			if strings.TrimSpace(latest.ClaimedByUserID) != "" {
+				writeDeployError(NewError(CodeUnauthorized, "anonymous_session", "anonymous session has been claimed"))
+				return
+			}
+			sess = latest
+		}
+		if consumesSiteQuota && cfg.AnonymousDeployLimit >= 0 && sess.DeployCount >= cfg.AnonymousDeployLimit {
 			writeDeployError(NewError(CodeUnauthorized, "anonymous_quota",
-				fmt.Sprintf("anonymous deploy limit reached (%d/%d)", sess.DeployCount, s.cfg.AnonymousDeployLimit)).
+				fmt.Sprintf("anonymous deploy limit reached (%d/%d)", sess.DeployCount, cfg.AnonymousDeployLimit)).
 				WithHint("Ask the user to register or sign in, create a user token, then claim this anonymous session."))
 			return
 		}
@@ -814,12 +1360,56 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if apiErr := s.authorizeTemplateSource(r, req, ownerTokenID, actorIsAdmin); apiErr != nil {
+		writeDeployError(apiErr)
+		return
+	}
+	if consumesSiteQuota && userID != "" && !userIsAdmin {
+		allowed, quotaErr := s.auth.TryConsumeUserDeployQuota(r.Context(), userID)
+		if quotaErr != nil {
+			writeDeployError(NewError(CodeInternal, "user_quota", quotaErr.Error()))
+			return
+		}
+		if !allowed {
+			current, lookupErr := s.auth.GetUser(r.Context(), userID)
+			if lookupErr != nil || !current.IsActive {
+				writeDeployError(NewError(CodeForbidden, "user", "token owner is inactive or missing"))
+				return
+			}
+			writeDeployError(NewError(CodeUnauthorized, "user_quota",
+				fmt.Sprintf("user deploy limit reached (%d/%d)", current.DeployCount, current.DeployLimit)).
+				WithHint("Ask an admin to raise your deploy quota."))
+			return
+		}
+		quotaReservationUserID = userID
+		quotaReservationActive = true
+	}
 	clientIP := clientIPFromRequest(r)
 
-	resp, apiErr := s.deployer.Deploy(r.Context(), req, ownerTokenID, clientIP)
+	var resp *DeployResponse
+	var apiErr *APIError
+	if adminAware, ok := s.deployer.(interface {
+		DeployAs(context.Context, DeployRequest, string, string, bool) (*DeployResponse, *APIError)
+	}); ok {
+		resp, apiErr = adminAware.DeployAs(r.Context(), req, ownerTokenID, clientIP, actorIsAdmin)
+	} else {
+		resp, apiErr = s.deployer.Deploy(r.Context(), req, ownerTokenID, clientIP)
+	}
 	if apiErr != nil {
 		writeDeployError(apiErr)
 		return
+	}
+	userQuotaCounted := false
+	if quotaReservationActive {
+		if resp.Created {
+			// The reservation now represents the successful new site.
+			quotaReservationActive = false
+			userQuotaCounted = true
+		} else {
+			// A concurrent create may have turned this request into a version
+			// update. Such a response must not consume a site slot.
+			releaseQuotaReservation()
+		}
 	}
 	if resp.Created && anonymousSessionID != "" {
 		_, err := s.deployer.IncrementAnonymousSessionDeployCount(r.Context(), anonymousSessionID)
@@ -827,7 +1417,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			s.logger.Printf("failed to increment anonymous session %s: %v", anonymousSessionID, err)
 		}
 	}
-	if resp.Created && userID != "" {
+	if resp.Created && userID != "" && !userQuotaCounted {
 		if _, err := s.auth.IncrementUserDeployCount(r.Context(), userID); err != nil {
 			s.logger.Printf("failed to increment user deploy count %s: %v", userID, err)
 		}
@@ -902,9 +1492,28 @@ func (s *Server) decodeDeployMultipart(r *http.Request) (DeployRequest, *APIErro
 	if req.TemplateSourceCode == "" {
 		req.TemplateSourceCode = firstMultipartValue(r.MultipartForm, "template_source_code")
 	}
-	req.TemplateSourceVersion = parseInt64Form(firstMultipartValue(r.MultipartForm, "templateSourceVersion"))
-	if req.TemplateSourceVersion <= 0 {
-		req.TemplateSourceVersion = parseInt64Form(firstMultipartValue(r.MultipartForm, "template_source_version"))
+	// Keep multipart numeric fields strict: silently turning an overflow or a
+	// typo into zero would unexpectedly select the current template version.
+	parseTemplateVersion := func(key string) (int64, *APIError) {
+		raw := firstMultipartValue(r.MultipartForm, key)
+		if raw == "" {
+			return 0, nil
+		}
+		value, err := parseInt64Form(raw)
+		if err != nil || value <= 0 {
+			return 0, NewError(CodeInvalidInput, "templateSourceVersion",
+				"templateSourceVersion must be a positive integer")
+		}
+		return value, nil
+	}
+	if value, apiErr := parseTemplateVersion("templateSourceVersion"); apiErr != nil {
+		return DeployRequest{}, apiErr
+	} else if value > 0 {
+		req.TemplateSourceVersion = value
+	} else if value, apiErr := parseTemplateVersion("template_source_version"); apiErr != nil {
+		return DeployRequest{}, apiErr
+	} else {
+		req.TemplateSourceVersion = value
 	}
 	if tags := firstMultipartValue(r.MultipartForm, "tags"); strings.TrimSpace(tags) != "" {
 		for _, tag := range strings.Split(tags, ",") {
@@ -942,16 +1551,12 @@ func parseBoolForm(value string) bool {
 	}
 }
 
-func parseInt64Form(value string) int64 {
+func parseInt64Form(value string) (int64, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return 0
+		return 0, nil
 	}
-	n, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return n
+	return parseInt64(value)
 }
 
 func deployFilesFromMultipart(form *multipart.Form) ([]DeployFile, *APIError) {
@@ -1008,6 +1613,12 @@ func sanitizeMultipartDeployPath(name, fallbackStem string) string {
 		return fallbackStem
 	}
 	return strings.Join(parts, "/")
+}
+
+// SanitizeMultipartDeployPath exposes the multipart filename normalization used
+// by deploy requests so local clients can report the same resulting entry path.
+func SanitizeMultipartDeployPath(name, fallbackStem string) string {
+	return sanitizeMultipartDeployPath(name, fallbackStem)
 }
 
 func sanitizeMultipartPathSegment(name, fallbackStem string) string {
@@ -1190,6 +1801,8 @@ func (s *Server) claimActorUserID(r *http.Request) (string, *APIError) {
 }
 
 func (s *Server) ensureAnonymousSession(w http.ResponseWriter, r *http.Request) (store.AnonymousSession, *APIError) {
+	now := time.Now()
+	s.pruneExpiredAnonymousSessions(r.Context(), now)
 	id := anonymousSessionIDFromRequest(r)
 	if id != "" {
 		sess, err := s.deployer.GetAnonymousSession(r.Context(), id)
@@ -1207,6 +1820,12 @@ func (s *Server) ensureAnonymousSession(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	if ok, retry := s.allowAnonymousSessionStart(clientIPFromRequest(r), now); !ok {
+		seconds := int(retry/time.Second) + 1
+		return store.AnonymousSession{}, NewError(CodeRateLimited, "anonymous_session",
+			"too many anonymous session creations; retry shortly").WithRetryAfter(seconds).
+			WithHint("Reuse the hostctl_anon_session cookie or retry after the rate-limit window.")
+	}
 	id = "anon_" + randomHex(16)
 	sess, err := s.deployer.CreateAnonymousSession(r.Context(), id)
 	if err != nil {
@@ -1241,7 +1860,7 @@ func (s *Server) updateAnonymousSessionMeta(r *http.Request, id string) {
 // 开发环境（AppURLScheme == http）下发 Secure 会导致浏览器在 http://localhost
 // 下保留 cookie 失败，因此开发模式不设置 Secure。
 func (s *Server) cookieSecure() bool {
-	return s.cfg.AppURLScheme == "https"
+	return s.configSnapshot().AppURLScheme == "https"
 }
 
 func (s *Server) cookieSecureForRequest(r *http.Request) bool {
@@ -1353,7 +1972,8 @@ func setAdminSessionCookie(w http.ResponseWriter, value string, maxAge int, secu
 }
 
 func (s *Server) toAnonymousSessionResponse(sess store.AnonymousSession) AnonymousSessionResponse {
-	remaining := s.cfg.AnonymousDeployLimit - sess.DeployCount
+	cfg := s.configSnapshot()
+	remaining := cfg.AnonymousDeployLimit - sess.DeployCount
 	if remaining < 0 {
 		remaining = 0
 	}
@@ -1363,7 +1983,7 @@ func (s *Server) toAnonymousSessionResponse(sess store.AnonymousSession) Anonymo
 		AgentID:     sess.AgentID,
 		AgentLabel:  sess.AgentLabel,
 		DeployCount: sess.DeployCount,
-		DeployLimit: s.cfg.AnonymousDeployLimit,
+		DeployLimit: cfg.AnonymousDeployLimit,
 		Remaining:   remaining,
 	}
 }
@@ -1453,6 +2073,12 @@ type marketplaceDeployResponse struct {
 
 var marketCategorySlugRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$`)
 
+const (
+	maxMarketCategories   = 64
+	maxCategoryLabelBytes = 128
+	maxCategoryNoteBytes  = 512
+)
+
 func DefaultMarketCategories() []MarketCategory {
 	return []MarketCategory{
 		{Slug: "landing", Label: "活动落地页", Note: "官网、活动、产品介绍"},
@@ -1465,6 +2091,9 @@ func DefaultMarketCategories() []MarketCategory {
 }
 
 func NormalizeMarketCategories(categories []MarketCategory) ([]MarketCategory, *APIError) {
+	if len(categories) > maxMarketCategories {
+		return nil, NewError(CodeInvalidInput, "market_categories", "at most 64 categories are allowed")
+	}
 	out := make([]MarketCategory, 0, len(categories))
 	seen := map[string]bool{}
 	for _, item := range categories {
@@ -1479,6 +2108,12 @@ func NormalizeMarketCategories(categories []MarketCategory) ([]MarketCategory, *
 		}
 		if label == "" {
 			return nil, NewError(CodeInvalidInput, "market_categories", "category label is required")
+		}
+		if len([]byte(label)) > maxCategoryLabelBytes {
+			return nil, NewError(CodeInvalidInput, "market_categories", "category label must be at most 128 bytes")
+		}
+		if len([]byte(note)) > maxCategoryNoteBytes {
+			return nil, NewError(CodeInvalidInput, "market_categories", "category note must be at most 512 bytes")
 		}
 		if seen[slug] {
 			return nil, NewError(CodeInvalidInput, "market_categories", "category slug must be unique")
@@ -1509,8 +2144,7 @@ func (s *Server) handleAdminPutMarketCategories(w http.ResponseWriter, r *http.R
 		return
 	}
 	var req MarketCategoriesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "market_categories", "invalid JSON body"), reqID))
+	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
 	actorType, actorID, actorRole := auditActorFromToken(tok)
@@ -1543,6 +2177,12 @@ func (s *Server) handleListMarketplace(w http.ResponseWriter, r *http.Request) {
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	page := parseIntDefault(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntDefault(r.URL.Query().Get("pageSize"), 24)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 24
+	}
 	if kind == "" {
 		switch category {
 		case "html", "md", "markdown", "protected", "featured", "mine", "favorites":
@@ -2052,9 +2692,12 @@ func (s *Server) reuseDetailForContent(r *http.Request, code, title string, cont
 
 func reusePolicy(policy detailReusePolicy) (allowDownload, allowReuse bool, note string) {
 	if policy.CanManage {
+		if !policy.Authenticated {
+			return false, false, "当前匿名会话可以管理发布；源码下载和模板复用需要先登录。"
+		}
 		return true, true, "你是站点所有者或管理员，可以下载源码并复用为新发布。"
 	}
-	if strings.TrimSpace(policy.Status) != "" && policy.Status != "active" {
+	if status := strings.ToLower(strings.TrimSpace(policy.Status)); status != "" && status != "active" {
 		return false, false, "站点当前未上架，源码下载和模板复用仅限所有者或管理员。"
 	}
 	if policy.AccessProtected {
@@ -2063,29 +2706,55 @@ func reusePolicy(policy detailReusePolicy) (allowDownload, allowReuse bool, note
 	if !policy.Authenticated {
 		return false, false, "源码下载和模板复用需要先登录；已登录用户或用户 Token 可按站点策略下载。"
 	}
-	sourcePolicy := normalizeReusePolicy(policy.SourceDownloadPolicy)
-	reusePolicyValue := normalizeReusePolicy(policy.ReusePolicy)
-	sourceAllowed := sourcePolicy == "allow" || (sourcePolicy == "auto" && policy.Visibility == "public" && !policy.AccessProtected)
-	reuseAllowed := reusePolicyValue == "allow" || (reusePolicyValue == "auto" && sourceAllowed)
-	if sourcePolicy == "deny" {
-		sourceAllowed = false
-	}
-	if reusePolicyValue == "deny" {
-		reuseAllowed = false
-	}
-	if sourceAllowed && reuseAllowed {
+	allowDownload, allowReuse = siteReuseDecision(policy.Status, policy.Visibility, policy.AccessProtected,
+		policy.ReusePolicy, policy.SourceDownloadPolicy)
+	if allowDownload && allowReuse {
+		sourcePolicy := normalizeReusePolicy(policy.SourceDownloadPolicy)
+		reusePolicyValue := normalizeReusePolicy(policy.ReusePolicy)
 		if sourcePolicy == "allow" || reusePolicyValue == "allow" {
 			return true, true, "站点策略已允许源码下载和模板复用。"
 		}
 		return true, true, "公开且未加密的作品可以下载源码并作为模板复用。"
 	}
-	if sourceAllowed {
+	if allowDownload {
 		return true, false, "站点策略允许源码下载，但未开放模板复用。"
 	}
-	if policy.Visibility != "public" {
+	if strings.ToLower(strings.TrimSpace(policy.Visibility)) != "public" {
 		return false, false, "不公开站点只允许通过链接浏览，源码下载和模板复用仅限所有者或管理员。"
 	}
 	return false, false, "站点策略未开放源码下载和模板复用。"
+}
+
+// SiteReuseDecision is the single source of truth for ordinary authenticated
+// users. Owners and administrators are handled by the surrounding auth layer;
+// this function only evaluates the site's status, visibility, protection and
+// explicit source/reuse policy values. Keeping it exported lets the deploy
+// core enforce the same rule as the HTTP detail/download endpoints.
+func SiteReuseDecision(site store.Site) (allowDownload, allowReuse bool) {
+	return siteReuseDecision(site.Status, site.Visibility, strings.TrimSpace(site.AccessPasswordHash) != "",
+		site.ReusePolicy, site.SourceDownloadPolicy)
+}
+
+func siteReuseDecision(status, visibility string, accessProtected bool, reusePolicy, sourceDownloadPolicy string) (allowDownload, allowReuse bool) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status != "" && status != "active" {
+		return false, false
+	}
+	if accessProtected {
+		return false, false
+	}
+	visibility = strings.ToLower(strings.TrimSpace(visibility))
+	sourcePolicy := normalizeReusePolicy(sourceDownloadPolicy)
+	reusePolicyValue := normalizeReusePolicy(reusePolicy)
+	sourceAllowed := sourcePolicy == "allow" || (sourcePolicy == "auto" && visibility == "public")
+	if sourcePolicy == "deny" {
+		sourceAllowed = false
+	}
+	reuseAllowed := reusePolicyValue == "allow" || (reusePolicyValue == "auto" && sourceAllowed)
+	if reusePolicyValue == "deny" {
+		reuseAllowed = false
+	}
+	return sourceAllowed, sourceAllowed && reuseAllowed
 }
 
 func authenticatedUserActor(actor string) bool {
@@ -2187,7 +2856,10 @@ func (s *Server) handleQRCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	// The QR payload includes the request-derived public origin. Never let a
+	// shared cache reuse one tenant's origin for another request.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Vary", "X-Hostctl-Current-Origin, X-Forwarded-Host, X-Forwarded-Proto")
 	_, _ = w.Write(png)
 }
 
@@ -2218,6 +2890,14 @@ func (s *Server) handleSiteAccessLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"success": true})
 		return
 	}
+	accessKey, accessIPKey := siteAccessLoginKeys(code, clientIPFromRequest(r))
+	if remain := maxDuration(s.loginCheckLocked(accessKey), s.loginCheckLocked(accessIPKey)); remain > 0 {
+		retryAfter := retryAfterSeconds(remain)
+		writeError(w, apiErrWithReqID(NewError(CodeRateLimited, "rate_limit",
+			fmt.Sprintf("too many site access attempts; retry in %d seconds", retryAfter)).
+			WithRetryAfter(retryAfter), reqID))
+		return
+	}
 	versionNumber, apiErr := siteAccessLoginVersion(r, site)
 	if apiErr != nil {
 		s.recordSiteAccessLoginAudit(r, code, 0, "failed", apiErr.Stage)
@@ -2225,11 +2905,15 @@ func (s *Server) handleSiteAccessLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if auth.VerifyPassword(req.Password, site.AccessPasswordHash) {
+		s.loginReset(accessKey)
+		s.loginReset(accessIPKey)
 		setSiteAccessCookie(w, code, site.AccessPasswordHash, versionNumber, s.cookieSecureForRequest(r))
 		s.recordSiteAccessLoginAudit(r, code, versionNumber, "success", "")
 		writeJSON(w, http.StatusOK, map[string]any{"success": true})
 		return
 	}
+	s.loginRecordFail(accessKey)
+	s.loginRecordFail(accessIPKey)
 	s.recordSiteAccessLoginAudit(r, code, versionNumber, "failed", "incorrect_password")
 	writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "access_password", "password is incorrect"), reqID))
 }
@@ -2512,6 +3196,20 @@ func parseIntDefault(s string, def int) int {
 	return n
 }
 
+// pageOffset returns a non-negative offset without allowing attacker-provided
+// page values to overflow the host int. A saturated offset simply produces an
+// empty page in the database.
+func pageOffset(page, pageSize int) int {
+	if page <= 1 || pageSize <= 0 {
+		return 0
+	}
+	maxInt := int(^uint(0) >> 1)
+	if page-1 > maxInt/pageSize {
+		return maxInt
+	}
+	return (page - 1) * pageSize
+}
+
 func parseOptionalRFC3339(value string) (time.Time, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -2650,9 +3348,14 @@ func (s *Server) handlePatchVersion(w http.ResponseWriter, r *http.Request) {
 	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if strings.HasPrefix(ct, "application/json") {
 		var raw map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		dec := json.NewDecoder(r.Body)
+		if err := dec.Decode(&raw); err != nil {
 			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json",
 				fmt.Sprintf("invalid JSON body: %v", err)), reqID))
+			return
+		}
+		if err := ensureSingleJSONValue(dec); err != nil {
+			writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json", err.Error()), reqID))
 			return
 		}
 
@@ -2749,9 +3452,7 @@ func (s *Server) handleDeleteVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetContent 处理 GET /api/deploy/content?code=&version=&download=1。
-// download=1 时直接 stream 内容：
-//   - 单文件 site：直接 serve 主入口（HTML 文本）
-//   - 多文件 site：打包成 zip 下载
+// download=1 时始终将完整源码打包为 ZIP 流返回。
 func (s *Server) handleGetContent(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	q := r.URL.Query()
@@ -2771,7 +3472,11 @@ func (s *Server) handleGetContent(w http.ResponseWriter, r *http.Request) {
 		}
 		versionPtr = &v
 	}
-	download, _ := parseBoolParam(q.Get("download"))
+	download, downloadErr := parseBoolParam(q.Get("download"))
+	if downloadErr != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate", downloadErr.Error()), reqID))
+		return
+	}
 	downloadDetail := sourceDownloadAuditDetail(download, versionPtr)
 	actorType, actorID, actorRole := s.auditActorFromRequest(r)
 
@@ -2857,17 +3562,41 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, reqID strin
 			fmt.Sprintf("invalid JSON body: %v", err)), reqID))
 		return err
 	}
+	if err := ensureSingleJSONValue(dec); err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json", err.Error()), reqID))
+		return err
+	}
 	return nil
+}
+
+// ensureSingleJSONValue rejects a second JSON value or any non-whitespace
+// trailing bytes. Accepting only one value avoids silently ignoring malformed
+// or concatenated request bodies.
+func ensureSingleJSONValue(dec *json.Decoder) error {
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err == io.EOF {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("invalid trailing JSON: %v", err)
+	}
+	return errors.New("request body must contain exactly one JSON value")
 }
 
 // parseInt64 解析字符串为 int64。
 func parseInt64(s string) (int64, error) {
-	var n int64
+	if s == "" {
+		return 0, fmt.Errorf("integer is empty")
+	}
 	for _, c := range s {
 		if c < '0' || c > '9' {
 			return 0, fmt.Errorf("not a digit: %q", c)
 		}
-		n = n*10 + int64(c-'0')
+	}
+	// ParseInt performs the overflow check that a hand-rolled accumulator
+	// cannot provide for attacker-controlled version query/path values.
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, err
 	}
 	return n, nil
 }
@@ -2879,26 +3608,50 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// clientIPFromRequest 从 r.RemoteAddr / X-Forwarded-For 提取客户端 IP。
-// 仅取 XFF 第一个（最左边是原始客户端）；RemoteAddr 兜底。
-// 这是简化版，生产环境 Caddy 后会传 X-Forwarded-For。
+// clientIPFromRequest 从可信反向代理的转发头或 RemoteAddr 提取客户端 IP。
+// 只有连接来自本机/私有网段时才采信 X-Forwarded-For，避免直连部署被
+// 客户端轮换伪造的转发头绕过登录、配对和点赞限流。
 func clientIPFromRequest(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// 第一个就是客户端
-		if idx := strings.Index(xff, ","); idx >= 0 {
-			return strings.TrimSpace(xff[:idx])
+	remoteIP := remoteIPFromRequest(r)
+	if isTrustedProxyIP(remoteIP) {
+		if xff := forwardedIP(r.Header.Get("X-Forwarded-For")); xff != "" {
+			return xff
 		}
-		return strings.TrimSpace(xff)
+		if rfn := forwardedIP(r.Header.Get("X-Real-IP")); rfn != "" {
+			return rfn
+		}
 	}
-	if rfn := r.Header.Get("X-Real-IP"); rfn != "" {
-		return strings.TrimSpace(rfn)
+	return remoteIP
+}
+
+func forwardedIP(raw string) string {
+	if idx := strings.IndexByte(raw, ','); idx >= 0 {
+		raw = raw[:idx]
 	}
-	// RemoteAddr 形如 "1.2.3.4:5678"
-	host := r.RemoteAddr
-	if idx := strings.LastIndex(host, ":"); idx >= 0 {
-		host = host[:idx]
+	raw = strings.Trim(strings.TrimSpace(raw), "[]")
+	if net.ParseIP(raw) == nil {
+		return ""
 	}
-	return strings.Trim(host, "[]")
+	return raw
+}
+
+func remoteIPFromRequest(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	remote := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		return strings.Trim(host, "[]")
+	}
+	return strings.Trim(remote, "[]")
+}
+
+func isTrustedProxyIP(raw string) bool {
+	ip := net.ParseIP(strings.TrimSpace(raw))
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // ===== Token 管理处理程序（Day 5） =====
@@ -3024,6 +3777,12 @@ func parseTokenExpiresAt(req TokenCreateRequest) (*time.Time, error) {
 		if *req.TTLSeconds <= 0 {
 			return nil, fmt.Errorf("ttlSeconds must be positive")
 		}
+		// time.Duration is nanoseconds; reject values that would overflow when
+		// converting seconds before multiplying by time.Second.
+		const maxTTLSeconds = int64((1<<63 - 1) / int64(time.Second))
+		if *req.TTLSeconds > maxTTLSeconds {
+			return nil, fmt.Errorf("ttlSeconds is too large")
+		}
 		t := time.Now().UTC().Add(time.Duration(*req.TTLSeconds) * time.Second)
 		return &t, nil
 	}
@@ -3044,8 +3803,8 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "login or bearer token required"), reqID))
 		return
 	}
-	if !isAdmin && actorUserID == "" {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "user account required"), reqID))
+	if !isAdmin && !authenticatedUserActor(actor) {
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "registered user account required"), reqID))
 		return
 	}
 
@@ -3097,8 +3856,8 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "login or bearer token required"), reqID))
 		return
 	}
-	if !isAdmin && actorUserID == "" {
-		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "user account required"), reqID))
+	if !isAdmin && !authenticatedUserActor(actor) {
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "registered user account required"), reqID))
 		return
 	}
 	id := r.PathValue("id")
@@ -3307,6 +4066,10 @@ func (s *Server) authenticateActor(r *http.Request) (string, bool, *APIError) {
 		return "user:" + user.ID, user.IsAdmin, nil
 	}
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+		if s.requireAuth {
+			return "", false, NewError(CodeUnauthorized, "auth", "registered user or admin session required").
+				WithHint("生产模式下此操作需要 Bearer Token 或管理员登录会话。")
+		}
 		actor, ok, err := s.anonymousActor(r)
 		if err != nil {
 			return "", false, err
@@ -3475,7 +4238,7 @@ func (s *Server) recordAuditLogWithResult(r *http.Request, actorType, actorID, a
 		TargetType: targetType,
 		TargetID:   targetID,
 		IP:         clientIPFromRequest(r),
-		UserAgent:  strings.TrimSpace(r.UserAgent()),
+		UserAgent:  auditText(r.UserAgent(), 512),
 		DetailJSON: detailJSON,
 		CreatedAt:  time.Now().UTC(),
 	}); err != nil {
@@ -3595,6 +4358,11 @@ type reportingAPICSPReport struct {
 }
 
 func (s *Server) handleCSPReport(w http.ResponseWriter, r *http.Request) {
+	if ok, retry := s.allowCSPReport(clientIPFromRequest(r), time.Now()); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retry)))
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, cspReportMaxBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -3776,8 +4544,9 @@ func (s *Server) anonymousActor(r *http.Request) (string, bool, *APIError) {
 	if strings.TrimSpace(sess.ClaimedByUserID) != "" {
 		return "", false, NewError(CodeUnauthorized, "anonymous_session", "anonymous session has been claimed")
 	}
-	// 匿名 actor 永远不是管理员（SEC-06：避免匿名用户被误标 admin 绕过下游权限检查）
-	return "anon:" + id, false, nil
+	// The second return value means "actor present" to authenticateActor and
+	// optionalActor; anonymous actors are still never administrators.
+	return "anon:" + id, true, nil
 }
 
 func (s *Server) authorizeSiteWrite(r *http.Request, code string) *APIError {
@@ -3821,7 +4590,59 @@ func (s *Server) authorizeDeployCustomCode(r *http.Request, code, owner string) 
 	return nil
 }
 
-// ===== Day 7：管理 UI + 配置 =====
+// authorizeTemplateSource keeps provenance metadata tied to the same source
+// reuse policy used by source downloads and the marketplace detail UI. Without
+// this check a caller could point at a private or denied site merely to alter
+// its reuse counter and the new deployment's attribution.
+func (s *Server) authorizeTemplateSource(r *http.Request, req DeployRequest, owner string, isAdmin bool) *APIError {
+	code := strings.TrimSpace(req.TemplateSourceCode)
+	version := req.TemplateSourceVersion
+	if code == "" {
+		if version != 0 {
+			return NewError(CodeInvalidInput, "template_source",
+				"templateSourceVersion requires templateSourceCode")
+		}
+		return nil
+	}
+	if version < 0 {
+		return NewError(CodeInvalidInput, "template_source",
+			"templateSourceVersion must be a positive integer when provided")
+	}
+	site, err := s.deployer.GetSite(r.Context(), code)
+	if errors.Is(err, store.ErrNotFound) {
+		return NewError(CodeInvalidInput, "template_source", "template source site not found")
+	}
+	if err != nil {
+		return NewError(CodeInternal, "template_source", err.Error())
+	}
+	authenticated := isAdmin || authenticatedUserActor(owner)
+	isOwner := authenticated && strings.TrimSpace(site.OwnerTokenID) != "" && site.OwnerTokenID == owner
+	if isOwner || isAdmin {
+		return nil
+	}
+	if !authenticated {
+		return NewError(CodeForbidden, "template_source",
+			"registered user account required to reuse a template source").
+			WithHint("登录后再复用创作市场作品；匿名会话不能提交模板来源。")
+	}
+	_, allowReuse, note := reusePolicy(detailReusePolicy{
+		Authenticated:        true,
+		AccessProtected:      strings.TrimSpace(site.AccessPasswordHash) != "",
+		Visibility:           site.Visibility,
+		Status:               site.Status,
+		ReusePolicy:          site.ReusePolicy,
+		SourceDownloadPolicy: site.SourceDownloadPolicy,
+		SecurityMode:         site.SecurityMode,
+	})
+	if !allowReuse {
+		if strings.TrimSpace(note) == "" {
+			note = "template source reuse is disabled by site policy"
+		}
+		return NewError(CodeForbidden, "template_source", note).
+			WithHint("请在作品详情确认 reuse.allowReuse=true，或联系站点所有者/管理员调整复用策略。")
+	}
+	return nil
+}
 
 // handleAdminUI 返回单页 admin HTML（embed 进二进制）。
 // 不强制鉴权——UI 内部用 token 调 API；token 错就显示提示。
@@ -4083,7 +4904,7 @@ func (s *Server) managedSkillZipPath() string {
 	if v := strings.TrimSpace(os.Getenv("HOSTCTL_SKILL_ZIP")); v != "" {
 		return v
 	}
-	base := filepath.Dir(s.cfg.DBPath)
+	base := filepath.Dir(s.configSnapshot().DBPath)
 	if base == "." || base == "" {
 		base = filepath.Join("data")
 	}
@@ -4203,14 +5024,20 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 const captchaMaxEntries = 5000
 
 func (s *Server) handleCaptcha(w http.ResponseWriter, r *http.Request) {
+	if ok, retry := s.allowCaptchaStart(clientIPFromRequest(r), time.Now()); !ok {
+		writeError(w, apiErrWithReqID(NewError(CodeRateLimited, "rate_limit",
+			fmt.Sprintf("too many captcha requests; retry in %d seconds", retryAfterSeconds(retry))).
+			WithRetryAfter(retryAfterSeconds(retry)), requestIDFromContext(r.Context())))
+		return
+	}
 	id := "cap_" + randomHex(12)
 	answer := fmt.Sprintf("%04d", randomIntRange(0, 9999))
 	s.captchaMu.Lock()
 	now := time.Now()
-	for key, item := range s.captchas {
-		if now.After(item.ExpiresAt) {
-			delete(s.captchas, key)
-		}
+	// Expired entries are normally removed by the background janitor. Only
+	// scan on the capacity boundary, keeping the common request path O(1).
+	if len(s.captchas) >= captchaMaxEntries {
+		s.pruneExpiredCaptchasLocked(now)
 	}
 	// SEC-05：限制 captcha map 大小，防止 OOM DoS
 	if len(s.captchas) >= captchaMaxEntries {
@@ -4223,12 +5050,21 @@ func (s *Server) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: now.Add(5 * time.Minute),
 	}
 	s.captchaMu.Unlock()
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, CaptchaResponse{
 		Success: true,
 		ID:      id,
 		Prompt:  "输入图片中的 4 位数字",
-		Image:   captchaSVGDataURL(answer),
+		Image:   captchaPNGDataURL(answer),
 	})
+}
+
+func (s *Server) pruneExpiredCaptchasLocked(now time.Time) {
+	for key, item := range s.captchas {
+		if now.After(item.ExpiresAt) {
+			delete(s.captchas, key)
+		}
+	}
 }
 
 // startCaptchaCleanup 启动后台清理协程（5 分钟一次）。
@@ -4238,29 +5074,93 @@ func (s *Server) startCaptchaCleanup() {
 		defer ticker.Stop()
 		for range ticker.C {
 			s.captchaMu.Lock()
-			now := time.Now()
-			for k, item := range s.captchas {
-				if now.After(item.ExpiresAt) {
-					delete(s.captchas, k)
-				}
-			}
+			s.pruneExpiredCaptchasLocked(time.Now())
 			s.captchaMu.Unlock()
 		}
 	}()
 }
 
-func captchaSVGDataURL(answer string) string {
-	// Lightweight SVG captcha: enough to stop casual automated form posts
-	// without adding image dependencies to the server binary.
-	escaped := html.EscapeString(answer)
-	svg := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="132" height="46" viewBox="0 0 132 46">
-<rect width="132" height="46" rx="12" fill="#ecfeff"/>
-<path d="M4 34 C32 12, 52 52, 82 18 S112 28, 128 12" fill="none" stroke="#38bdf8" stroke-width="3" opacity=".55"/>
-<path d="M8 15 H124 M12 28 H120" stroke="#0f172a" stroke-width="1" opacity=".08"/>
-<text x="66" y="31" text-anchor="middle" font-family="ui-monospace,Consolas,monospace" font-size="25" font-weight="900" letter-spacing="7" fill="#0f172a" transform="rotate(-3 66 23)">%s</text>
-<circle cx="24" cy="12" r="2" fill="#f472b6"/><circle cx="106" cy="35" r="2.5" fill="#22c55e"/><circle cx="118" cy="14" r="1.8" fill="#f59e0b"/>
-</svg>`, escaped)
-	return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg))
+var captchaDigitGlyphs = [10][5]uint8{
+	{0b111, 0b101, 0b101, 0b101, 0b111},
+	{0b010, 0b110, 0b010, 0b010, 0b111},
+	{0b111, 0b001, 0b111, 0b100, 0b111},
+	{0b111, 0b001, 0b111, 0b001, 0b111},
+	{0b101, 0b101, 0b111, 0b001, 0b001},
+	{0b111, 0b100, 0b111, 0b001, 0b111},
+	{0b111, 0b100, 0b111, 0b101, 0b111},
+	{0b111, 0b001, 0b010, 0b010, 0b010},
+	{0b111, 0b101, 0b111, 0b101, 0b111},
+	{0b111, 0b101, 0b111, 0b001, 0b111},
+}
+
+// captchaPNGDataURL renders the challenge as a raster image. SVG is not
+// suitable because its source exposes the answer as ordinary text. The
+// captcha remains a rate-limit companion, never an authorization factor.
+func captchaPNGDataURL(answer string) string {
+	const (
+		width  = 144
+		height = 52
+		scale  = 6
+	)
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	background := color.RGBA{R: 236, G: 254, B: 255, A: 255}
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.SetRGBA(x, y, background)
+		}
+	}
+	for i := 0; i < 18; i++ {
+		x := randomIntRange(0, width-1)
+		y := randomIntRange(0, height-1)
+		radius := randomIntRange(1, 3)
+		c := color.RGBA{R: uint8(randomIntRange(120, 230)), G: uint8(randomIntRange(140, 245)), B: uint8(randomIntRange(150, 250)), A: 150}
+		for dy := -radius; dy <= radius; dy++ {
+			for dx := -radius; dx <= radius; dx++ {
+				if dx*dx+dy*dy <= radius*radius {
+					setCaptchaPixel(img, x+dx, y+dy, c)
+				}
+			}
+		}
+	}
+	for i := 0; i < 4 && i < len(answer); i++ {
+		digit := answer[i]
+		if digit < '0' || digit > '9' {
+			continue
+		}
+		x := 13 + i*33 + randomIntRange(-2, 2)
+		y := 11 + randomIntRange(-2, 2)
+		c := color.RGBA{R: uint8(randomIntRange(8, 35)), G: uint8(randomIntRange(48, 92)), B: uint8(randomIntRange(84, 135)), A: 255}
+		drawCaptchaDigit(img, int(digit-'0'), x, y, scale, c)
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return ""
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+func drawCaptchaDigit(img *image.RGBA, digit, x, y, scale int, c color.RGBA) {
+	if digit < 0 || digit >= len(captchaDigitGlyphs) {
+		return
+	}
+	for row, bits := range captchaDigitGlyphs[digit] {
+		for col := 0; col < 3; col++ {
+			if bits&(1<<uint(2-col)) == 0 {
+				continue
+			}
+			for dy := 0; dy < scale; dy++ {
+				for dx := 0; dx < scale; dx++ {
+					setCaptchaPixel(img, x+col*scale+dx, y+row*scale+dy, c)
+				}
+			}
+		}
+	}
+}
+
+func setCaptchaPixel(img *image.RGBA, x, y int, c color.RGBA) {
+	if image.Pt(x, y).In(img.Bounds()) {
+		img.SetRGBA(x, y, c)
+	}
 }
 
 func randomIntRange(min, max int) int {
@@ -4299,11 +5199,12 @@ func subtleConstantTimeString(a, b string) bool {
 
 func (s *Server) handleEmailVerificationCode(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if !s.cfg.AllowRegistration {
+	cfg := s.configSnapshot()
+	if !cfg.AllowRegistration {
 		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "register", "user registration is disabled"), reqID))
 		return
 	}
-	if !s.cfg.EmailVerificationEnabled {
+	if !cfg.EmailVerificationEnabled {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "email", "email verification is not enabled"), reqID))
 		return
 	}
@@ -4324,6 +5225,20 @@ func (s *Server) handleEmailVerificationCode(w http.ResponseWriter, r *http.Requ
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "email", "please enter a valid email address"), reqID))
 		return
 	}
+	clientIP := clientIPFromRequest(r)
+	emailKey := "email-code:" + email + "|" + clientIP
+	emailIPKey := "email-code-ip:" + clientIP
+	if remain := maxDuration(s.loginCheckLocked(emailKey), s.loginCheckLocked(emailIPKey)); remain > 0 {
+		retryAfter := retryAfterSeconds(remain)
+		writeError(w, apiErrWithReqID(NewError(CodeRateLimited, "rate_limit",
+			fmt.Sprintf("too many verification emails; retry in %d seconds", retryAfter)).
+			WithRetryAfter(retryAfter), reqID))
+		return
+	}
+	// Count each accepted send request. The counters intentionally are not
+	// reset on success: otherwise a valid CAPTCHA could be used to spam SMTP.
+	s.loginRecordFail(emailKey)
+	s.loginRecordFail(emailIPKey)
 	code := fmt.Sprintf("%06d", randomIntRange(0, 999999))
 	expiresAt := time.Now().Add(10 * time.Minute)
 	if err := s.sendEmailVerificationCode(email, code); err != nil {
@@ -4374,12 +5289,13 @@ func (s *Server) pruneExpiredEmailCodesLocked(now time.Time) {
 }
 
 func (s *Server) sendEmailVerificationCode(email, code string) error {
-	host := strings.TrimSpace(s.cfg.SMTPHost)
-	from := strings.TrimSpace(s.cfg.SMTPFrom)
+	cfg := s.configSnapshot()
+	host := strings.TrimSpace(cfg.SMTPHost)
+	from := strings.TrimSpace(cfg.SMTPFrom)
 	if host == "" || from == "" {
 		return fmt.Errorf("SMTP host and from are required")
 	}
-	port := strings.TrimSpace(s.cfg.SMTPPort)
+	port := strings.TrimSpace(cfg.SMTPPort)
 	if port == "" {
 		port = "587"
 	}
@@ -4396,10 +5312,10 @@ func (s *Server) sendEmailVerificationCode(email, code string) error {
 		"验证码 10 分钟内有效。如果不是你本人操作，可以忽略这封邮件。",
 	}, "\r\n")
 	var auth smtp.Auth
-	if s.cfg.SMTPUsername != "" || s.cfg.SMTPPassword != "" {
-		auth = smtp.PlainAuth("", s.cfg.SMTPUsername, s.cfg.SMTPPassword, host)
+	if cfg.SMTPUsername != "" || cfg.SMTPPassword != "" {
+		auth = smtp.PlainAuth("", cfg.SMTPUsername, cfg.SMTPPassword, host)
 	}
-	switch strings.ToLower(strings.TrimSpace(s.cfg.SMTPSecure)) {
+	switch strings.ToLower(strings.TrimSpace(cfg.SMTPSecure)) {
 	case "ssl", "tls", "true", "465":
 		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
 		if err != nil {
@@ -4441,8 +5357,16 @@ func (s *Server) sendEmailVerificationCode(email, code string) error {
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if !s.cfg.AllowRegistration {
+	cfg := s.configSnapshot()
+	if !cfg.AllowRegistration {
 		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "register", "user registration is disabled"), reqID))
+		return
+	}
+	if ok, retry := s.allowRegistration(clientIPFromRequest(r), time.Now()); !ok {
+		seconds := retryAfterSeconds(retry)
+		writeError(w, apiErrWithReqID(NewError(CodeRateLimited, "rate_limit",
+			fmt.Sprintf("too many registration attempts; retry in %d seconds", seconds)).
+			WithRetryAfter(seconds), reqID))
 		return
 	}
 	var req RegisterRequest
@@ -4467,7 +5391,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	email := normalizeEmail(req.Email)
 	emailVerified := false
-	if s.cfg.EmailVerificationEnabled {
+	if cfg.EmailVerificationEnabled {
 		if email == "" {
 			writeRegisterError(NewError(CodeInvalidInput, "email", "email is required when email verification is enabled"), email, false)
 			return
@@ -4504,9 +5428,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	user, ok := s.adminUserFromCookie(r)
-	if !ok {
-		writeError(w, apiErrWithReqID(NewError(CodeUnauthorized, "auth", "login required"), reqID))
+	user, authErr := s.accountUser(r)
+	if authErr != nil {
+		writeError(w, apiErrWithReqID(authErr, reqID))
 		return
 	}
 	actorType, actorID, actorRole := auditActorFromOwner("user:"+user.ID, user.IsAdmin)
@@ -4532,7 +5456,37 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordAuditLog(r, actorType, actorID, actorRole, "account.password", "", "user", user.ID, auditDetail)
+	if _, err := r.Cookie("hostctl_admin_session"); err == nil {
+		setAdminSessionCookie(w, "", -1, s.cookieSecureForRequest(r))
+	}
 	writeJSON(w, http.StatusOK, AccountPasswordResponse{Success: true})
+}
+
+// accountUser accepts either the browser's admin session cookie or a bearer
+// token owned by the account. Password changes are account-scoped, so both
+// authentication forms must resolve to the same active user record.
+func (s *Server) accountUser(r *http.Request) (store.AdminUser, *APIError) {
+	if user, ok := s.adminUserFromCookie(r); ok {
+		return user, nil
+	}
+	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+		return store.AdminUser{}, NewError(CodeUnauthorized, "auth", "login or bearer token required")
+	}
+	tok, authErr := s.authenticateToken(r)
+	if authErr != nil {
+		return store.AdminUser{}, authErr
+	}
+	user, err := s.auth.GetUser(r.Context(), tok.OwnerUserID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return store.AdminUser{}, NewError(CodeForbidden, "auth", "token owner is missing")
+		}
+		return store.AdminUser{}, NewError(CodeInternal, "auth", err.Error())
+	}
+	if !user.IsActive {
+		return store.AdminUser{}, NewError(CodeForbidden, "auth", "user is inactive")
+	}
+	return user, nil
 }
 
 func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
@@ -4552,24 +5506,29 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	clientIP := clientIPFromRequest(r)
 	loginKey := s.loginKey(req.Username, clientIP)
-	if remain := s.loginCheckLocked(loginKey); remain > 0 {
-		apiErr := NewError(CodeRateLimited, "rate_limit", fmt.Sprintf("too many failed attempts; retry in %d seconds", int(remain.Seconds()))).
-			WithRetryAfter(int(remain.Seconds()))
+	loginIPKey := "__ip__|" + clientIP
+	if remain := maxDuration(s.loginCheckLocked(loginKey), s.loginCheckLocked(loginIPKey)); remain > 0 {
+		retryAfter := retryAfterSeconds(remain)
+		apiErr := NewError(CodeRateLimited, "rate_limit", fmt.Sprintf("too many failed attempts; retry in %d seconds", retryAfter)).
+			WithRetryAfter(retryAfter)
 		writeLoginError(apiErr)
 		return
 	}
 	if !s.verifyCaptcha(req.CaptchaID, req.Captcha) {
 		s.loginRecordFail(loginKey)
+		s.loginRecordFail(loginIPKey)
 		writeLoginError(NewError(CodeInvalidInput, "captcha", "captcha is incorrect or expired"))
 		return
 	}
 	res, err := s.auth.LoginAdmin(r.Context(), req.Username, req.Password, 7*24*time.Hour)
 	if err != nil {
 		s.loginRecordFail(loginKey)
+		s.loginRecordFail(loginIPKey)
 		writeLoginError(NewError(CodeUnauthorized, "auth", "username or password is incorrect"))
 		return
 	}
 	s.loginReset(loginKey)
+	s.loginReset(loginIPKey)
 	anonymousClaimed := s.claimCurrentAnonymousSession(r, res.User.ID, res.User.IsAdmin, "login")
 	if anonymousClaimed {
 		clearAnonymousSessionCookie(w, s.cookieSecureForRequest(r))
@@ -4646,6 +5605,11 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminSetup(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	if s.requireAuth {
+		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "setup",
+			"production setup is disabled; configure HOSTCTL_ADMIN_USERNAME and HOSTCTL_ADMIN_PASSWORD before startup"), reqID))
+		return
+	}
 	hasAdmin, err := s.auth.HasAdminUser(r.Context())
 	if err != nil {
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "auth", err.Error()), reqID))
@@ -4659,27 +5623,51 @@ func (s *Server) handleAdminSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(NewError(CodeForbidden, "auth", "admin account already exists"), reqID))
 		return
 	}
+	setupKey := s.loginKey("__setup__", clientIPFromRequest(r))
+	if remain := s.loginCheckLocked(setupKey); remain > 0 {
+		retryAfter := retryAfterSeconds(remain)
+		writeError(w, apiErrWithReqID(NewError(CodeRateLimited, "rate_limit",
+			fmt.Sprintf("too many failed setup attempts; retry in %d seconds", retryAfter)).
+			WithRetryAfter(retryAfter), reqID))
+		return
+	}
 	var req AdminSetupRequest
 	if err := decodeJSONBody(w, r, &req, reqID); err != nil {
 		return
 	}
 	if !s.verifyCaptcha(req.CaptchaID, req.Captcha) {
+		s.loginRecordFail(setupKey)
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "captcha", "captcha is incorrect or expired"), reqID))
+		return
+	}
+	if apiErr := validatePasswordStrength(req.Password); apiErr != nil {
+		s.loginRecordFail(setupKey)
+		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
 	user, err := s.auth.CreateFirstAdmin(r.Context(), req.Username, req.Password)
 	if err != nil {
+		s.loginRecordFail(setupKey)
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "auth", err.Error()), reqID))
 		return
 	}
+	s.loginReset(setupKey)
 	writeJSON(w, http.StatusOK, AdminSetupResponse{Success: true, UserID: user.ID, Username: user.Username})
 }
 
 // handleGetConfig 返回当前生效的配置。
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	cfg := s.configSnapshot()
+	isAdmin := s.configRequestIsAdmin(r)
 	mode := "prod"
 	if !s.requireAuth {
 		mode = "dev"
+	}
+	corsAllowOrigins := ""
+	embedAllowOrigins := ""
+	if isAdmin {
+		corsAllowOrigins = cfg.CORSAllowOrigins
+		embedAllowOrigins = cfg.EmbedAllowOrigins
 	}
 	currentBase := s.requestBaseURL(r)
 	writeJSON(w, http.StatusOK, ConfigResponse{
@@ -4687,22 +5675,22 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		CurrentBaseURL:    currentBase,
 		AppURL:            s.appURLConfigForRequest(r),
 		Mode:              mode,
-		CORSAllowOrigins:  s.cfg.CORSAllowOrigins,
-		EmbedPolicy:       config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy),
-		EmbedAllowOrigins: s.cfg.EmbedAllowOrigins,
-		ContentInjection:  s.contentInjectionForConfigResponse(r),
-		CooldownSeconds:   s.cfg.CooldownSeconds,
+		CORSAllowOrigins:  corsAllowOrigins,
+		EmbedPolicy:       config.NormalizeEmbedPolicy(cfg.EmbedPolicy),
+		EmbedAllowOrigins: embedAllowOrigins,
+		ContentInjection:  s.contentInjectionForConfigResponse(isAdmin),
+		CooldownSeconds:   cfg.CooldownSeconds,
 		Limits: Limits{
-			MaxSingleFileBytes: s.cfg.MaxSingleFileBytes,
-			MaxSiteTotalBytes:  s.cfg.MaxSiteTotalBytes,
-			MaxFilesPerSite:    s.cfg.MaxFilesPerSite,
+			MaxSingleFileBytes: cfg.MaxSingleFileBytes,
+			MaxSiteTotalBytes:  cfg.MaxSiteTotalBytes,
+			MaxFilesPerSite:    cfg.MaxFilesPerSite,
 		},
 		AnonymousPolicy: AnonymousPolicy{
-			DeployLimit: s.cfg.AnonymousDeployLimit,
+			DeployLimit: cfg.AnonymousDeployLimit,
 		},
-		RegistrationAllowed: s.cfg.AllowRegistration,
-		Email:               s.emailConfig(),
-		Storage:             s.storageConfig(),
+		RegistrationAllowed: cfg.AllowRegistration,
+		Email:               s.emailConfigForRole(isAdmin),
+		Storage:             s.storageConfigForRole(isAdmin),
 		Version:             s.version,
 	})
 }
@@ -4719,9 +5707,10 @@ func (s *Server) handleAdminAnonymousSessions(w http.ResponseWriter, r *http.Req
 		writeError(w, apiErrWithReqID(NewError(CodeInternal, "anonymous_sessions", err.Error()), reqID))
 		return
 	}
+	cfg := s.configSnapshot()
 	items := make([]AnonymousSessionListItem, 0, len(sessions))
 	for _, sess := range sessions {
-		remaining := s.cfg.AnonymousDeployLimit - sess.DeployCount
+		remaining := cfg.AnonymousDeployLimit - sess.DeployCount
 		if remaining < 0 {
 			remaining = 0
 		}
@@ -4741,7 +5730,7 @@ func (s *Server) handleAdminAnonymousSessions(w http.ResponseWriter, r *http.Req
 	}
 	writeJSON(w, http.StatusOK, AnonymousSessionListResponse{
 		Success:     true,
-		DeployLimit: s.cfg.AnonymousDeployLimit,
+		DeployLimit: cfg.AnonymousDeployLimit,
 		Sessions:    items,
 	})
 }
@@ -4779,7 +5768,7 @@ func (s *Server) handleAdminAuditLogs(w http.ResponseWriter, r *http.Request) {
 		TargetID:   strings.TrimSpace(r.URL.Query().Get("targetId")),
 		Query:      strings.TrimSpace(r.URL.Query().Get("q")),
 		Limit:      pageSize,
-		Offset:     (page - 1) * pageSize,
+		Offset:     pageOffset(page, pageSize),
 	}
 	if rawSince := strings.TrimSpace(r.URL.Query().Get("since")); rawSince != "" {
 		since, err := time.Parse(time.RFC3339, rawSince)
@@ -4906,10 +5895,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("failed to persist app URL config: %v", err)))
 			return
 		}
-		s.cfg.AppURLMode = next.AppURLMode
-		s.cfg.AppDomainSuffix = next.AppDomainSuffix
-		s.cfg.AppURLScheme = next.AppURLScheme
-		s.cfg.AppURLPort = next.AppURLPort
+		s.updateConfig(func(cfg *config.Config) {
+			cfg.AppURLMode = next.AppURLMode
+			cfg.AppDomainSuffix = next.AppDomainSuffix
+			cfg.AppURLScheme = next.AppURLScheme
+			cfg.AppURLPort = next.AppURLPort
+		})
 	}
 	if req.AnonymousDeployLimit != nil {
 		if *req.AnonymousDeployLimit < -1 {
@@ -4922,12 +5913,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("failed to persist anonymous limit: %v", err)))
 			return
 		}
-		s.cfg.AnonymousDeployLimit = *req.AnonymousDeployLimit
+		s.updateConfig(func(cfg *config.Config) { cfg.AnonymousDeployLimit = *req.AnonymousDeployLimit })
 	}
 	if req.CooldownSeconds != nil {
-		if *req.CooldownSeconds < 0 || *req.CooldownSeconds > 3600 {
+		if !config.IsValidCooldownSeconds(*req.CooldownSeconds) {
 			writeConfigError(NewError(CodeInvalidInput, "validate",
-				"cooldownSeconds must be between 0 and 3600"))
+				fmt.Sprintf("cooldownSeconds must be between 0 and %d", config.MaxCooldownSeconds)))
 			return
 		}
 		if err := s.deployer.SetCooldownSeconds(r.Context(), *req.CooldownSeconds); err != nil {
@@ -4935,12 +5926,13 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("failed to persist cooldown: %v", err)))
 			return
 		}
-		s.cfg.CooldownSeconds = *req.CooldownSeconds
+		s.updateConfig(func(cfg *config.Config) { cfg.CooldownSeconds = *req.CooldownSeconds })
 	}
 	if req.MaxSingleFileBytes != nil || req.MaxSiteTotalBytes != nil || req.MaxFilesPerSite != nil {
-		single := s.cfg.MaxSingleFileBytes
-		total := s.cfg.MaxSiteTotalBytes
-		files := s.cfg.MaxFilesPerSite
+		current := s.configSnapshot()
+		single := current.MaxSingleFileBytes
+		total := current.MaxSiteTotalBytes
+		files := current.MaxFilesPerSite
 		if req.MaxSingleFileBytes != nil {
 			single = *req.MaxSingleFileBytes
 		}
@@ -4965,9 +5957,11 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("failed to persist upload limits: %v", err)))
 			return
 		}
-		s.cfg.MaxSingleFileBytes = single
-		s.cfg.MaxSiteTotalBytes = total
-		s.cfg.MaxFilesPerSite = files
+		s.updateConfig(func(cfg *config.Config) {
+			cfg.MaxSingleFileBytes = single
+			cfg.MaxSiteTotalBytes = total
+			cfg.MaxFilesPerSite = files
+		})
 	}
 	if req.CORSAllowOrigins != nil {
 		origins := strings.TrimSpace(*req.CORSAllowOrigins)
@@ -4987,11 +5981,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("failed to persist CORS origins: %v", err)))
 			return
 		}
-		s.cfg.CORSAllowOrigins = origins
+		s.updateConfig(func(cfg *config.Config) { cfg.CORSAllowOrigins = origins })
 	}
 	if req.EmbedPolicy != nil || req.EmbedAllowOrigins != nil {
-		policy := config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy)
-		origins := s.cfg.EmbedAllowOrigins
+		current := s.configSnapshot()
+		policy := config.NormalizeEmbedPolicy(current.EmbedPolicy)
+		origins := current.EmbedAllowOrigins
 		if req.EmbedPolicy != nil {
 			policy = config.NormalizeEmbedPolicy(*req.EmbedPolicy)
 		}
@@ -5013,8 +6008,10 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("failed to persist embed policy: %v", err)))
 			return
 		}
-		s.cfg.EmbedPolicy = policy
-		s.cfg.EmbedAllowOrigins = origins
+		s.updateConfig(func(cfg *config.Config) {
+			cfg.EmbedPolicy = policy
+			cfg.EmbedAllowOrigins = origins
+		})
 	}
 	if req.ContentInjection != nil {
 		next := config.NormalizeContentInjection(*req.ContentInjection)
@@ -5027,28 +6024,29 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("failed to persist content injection: %v", err)))
 			return
 		}
-		s.cfg.ContentInjection = next
+		s.updateConfig(func(cfg *config.Config) { cfg.ContentInjection = next })
 	}
 	s.recordAuditLog(r, actorType, actorID, actorRole, "config.update", "", "config", "runtime", configUpdateAuditDetail())
 	currentBase := s.requestBaseURL(r)
+	cfg := s.configSnapshot()
 	writeJSON(w, http.StatusOK, ConfigUpdateResponse{
 		Success:           true,
 		CurrentBaseURL:    currentBase,
 		AppURL:            s.appURLConfigForRequest(r),
-		CORSAllowOrigins:  s.cfg.CORSAllowOrigins,
-		EmbedPolicy:       config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy),
-		EmbedAllowOrigins: s.cfg.EmbedAllowOrigins,
-		ContentInjection:  config.NormalizeContentInjection(s.cfg.ContentInjection),
-		CooldownSeconds:   s.cfg.CooldownSeconds,
+		CORSAllowOrigins:  cfg.CORSAllowOrigins,
+		EmbedPolicy:       config.NormalizeEmbedPolicy(cfg.EmbedPolicy),
+		EmbedAllowOrigins: cfg.EmbedAllowOrigins,
+		ContentInjection:  config.NormalizeContentInjection(cfg.ContentInjection),
+		CooldownSeconds:   cfg.CooldownSeconds,
 		Limits: Limits{
-			MaxSingleFileBytes: s.cfg.MaxSingleFileBytes,
-			MaxSiteTotalBytes:  s.cfg.MaxSiteTotalBytes,
-			MaxFilesPerSite:    s.cfg.MaxFilesPerSite,
+			MaxSingleFileBytes: cfg.MaxSingleFileBytes,
+			MaxSiteTotalBytes:  cfg.MaxSiteTotalBytes,
+			MaxFilesPerSite:    cfg.MaxFilesPerSite,
 		},
 		AnonymousPolicy: AnonymousPolicy{
-			DeployLimit: s.cfg.AnonymousDeployLimit,
+			DeployLimit: cfg.AnonymousDeployLimit,
 		},
-		RegistrationAllowed: s.cfg.AllowRegistration,
+		RegistrationAllowed: cfg.AllowRegistration,
 		Email:               s.emailConfig(),
 		Storage:             s.storageConfig(),
 	})
@@ -5101,9 +6099,17 @@ func contentInjectionAuditSummary(cfg config.ContentInjectionConfig) map[string]
 	}
 }
 
-func (s *Server) contentInjectionForConfigResponse(r *http.Request) config.ContentInjectionConfig {
-	cfg := config.NormalizeContentInjection(s.cfg.ContentInjection)
-	if _, authErr := s.authenticateAdmin(r); authErr == nil {
+func (s *Server) configRequestIsAdmin(r *http.Request) bool {
+	if s == nil || s.auth == nil || r == nil {
+		return false
+	}
+	_, authErr := s.authenticateAdmin(r)
+	return authErr == nil
+}
+
+func (s *Server) contentInjectionForConfigResponse(isAdmin bool) config.ContentInjectionConfig {
+	cfg := config.NormalizeContentInjection(s.configSnapshot().ContentInjection)
+	if isAdmin {
 		return cfg
 	}
 	return config.ContentInjectionConfig{
@@ -5113,26 +6119,41 @@ func (s *Server) contentInjectionForConfigResponse(r *http.Request) config.Conte
 }
 
 func (s *Server) emailConfig() EmailConfig {
-	return EmailConfig{
-		VerificationEnabled: s.cfg.EmailVerificationEnabled,
-		SMTPConfigured:      s.cfg.SMTPHost != "" && s.cfg.SMTPFrom != "",
-		SMTPHost:            s.cfg.SMTPHost,
-		SMTPFrom:            s.cfg.SMTPFrom,
-		SMTPSecure:          s.cfg.SMTPSecure,
+	return s.emailConfigForRole(true)
+}
+
+func (s *Server) emailConfigForRole(isAdmin bool) EmailConfig {
+	cfg := s.configSnapshot()
+	result := EmailConfig{
+		VerificationEnabled: cfg.EmailVerificationEnabled,
+		SMTPConfigured:      cfg.SMTPHost != "" && cfg.SMTPFrom != "",
 	}
+	if isAdmin {
+		result.SMTPHost = cfg.SMTPHost
+		result.SMTPFrom = cfg.SMTPFrom
+		result.SMTPSecure = cfg.SMTPSecure
+	}
+	return result
 }
 
 func (s *Server) storageConfig() StorageConfig {
-	return StorageConfig{
-		Backend:          s.cfg.StorageBackend,
-		HostedDir:        s.cfg.HostedDir,
-		OSSProvider:      s.cfg.OSSProvider,
-		OSSEndpoint:      s.cfg.OSSEndpoint,
-		OSSBucket:        s.cfg.OSSBucket,
-		OSSPrefix:        s.cfg.OSSPrefix,
-		OSSPublicBaseURL: s.cfg.OSSPublicBaseURL,
-		OSSConfigured:    s.cfg.OSSEndpoint != "" && s.cfg.OSSBucket != "" && s.cfg.OSSAccessKeyID != "" && s.cfg.OSSAccessKeySecret != "",
+	return s.storageConfigForRole(true)
+}
+
+func (s *Server) storageConfigForRole(isAdmin bool) StorageConfig {
+	cfg := s.configSnapshot()
+	result := StorageConfig{}
+	if isAdmin {
+		result.Backend = cfg.StorageBackend
+		result.HostedDir = cfg.HostedDir
+		result.OSSProvider = cfg.OSSProvider
+		result.OSSEndpoint = cfg.OSSEndpoint
+		result.OSSBucket = cfg.OSSBucket
+		result.OSSPrefix = cfg.OSSPrefix
+		result.OSSPublicBaseURL = cfg.OSSPublicBaseURL
+		result.OSSConfigured = cfg.OSSEndpoint != "" && cfg.OSSBucket != "" && cfg.OSSAccessKeyID != "" && cfg.OSSAccessKeySecret != ""
 	}
+	return result
 }
 
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
@@ -5502,6 +6523,7 @@ func (s *Server) handleAdminGetSiteDetail(w http.ResponseWriter, r *http.Request
 	}
 	bundle, files, reuse, apiErr := s.deployDetailExtras(r, code, code, site.CurrentVersion, detailReusePolicy{
 		CanManage:            true,
+		Authenticated:        isAdmin || authenticatedUserActor(actor),
 		AccessProtected:      strings.TrimSpace(site.AccessPasswordHash) != "",
 		Visibility:           site.Visibility,
 		Status:               site.Status,
@@ -5845,6 +6867,10 @@ func (s *Server) handleAdminDeleteSite(w http.ResponseWriter, r *http.Request) {
 			"missing code in path"), reqID))
 		return
 	}
+	// Serialize deletion with every HTTP path that can create a site or append
+	// a version. This closes the quota-preflight/delete TOCTOU window.
+	s.siteMutationMu.Lock()
+	defer s.siteMutationMu.Unlock()
 	if apiErr := s.authorizeSiteWrite(r, code); apiErr != nil {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
@@ -5957,6 +6983,10 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 			fmt.Sprintf("invalid JSON body: %v", err)), reqID))
 		return
 	}
+	if err := ensureSingleJSONValue(dec); err != nil {
+		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "parse_json", err.Error()), reqID))
+		return
+	}
 
 	// 从 code 或 url 提取 code
 	code := strings.TrimSpace(req.Code)
@@ -5968,6 +6998,11 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 			"either 'code' or 'url' is required"), reqID))
 		return
 	}
+	// Keep authorization and the compatibility deployment in the same critical
+	// section as site deletion; otherwise a deleted site could be recreated by
+	// this legacy endpoint without passing the normal quota preflight.
+	s.siteMutationMu.Lock()
+	defer s.siteMutationMu.Unlock()
 	actor, actorIsAdmin, actorErr := s.authenticateActor(r)
 	if actorErr != nil {
 		writeError(w, apiErrWithReqID(actorErr, reqID))
@@ -6018,7 +7053,15 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 		CreateVersion:    true,
 	}
 
-	resp, apiErr := s.deployer.Deploy(r.Context(), deployReq, ownerTokenID, clientIP)
+	var resp *DeployResponse
+	var apiErr *APIError
+	if adminAware, ok := s.deployer.(interface {
+		DeployAs(context.Context, DeployRequest, string, string, bool) (*DeployResponse, *APIError)
+	}); ok {
+		resp, apiErr = adminAware.DeployAs(r.Context(), deployReq, ownerTokenID, clientIP, actorIsAdmin)
+	} else {
+		resp, apiErr = s.deployer.Deploy(r.Context(), deployReq, ownerTokenID, clientIP)
+	}
 	if apiErr != nil {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
@@ -6212,7 +7255,8 @@ func (s *Server) serveHostedFile(w http.ResponseWriter, r *http.Request, code st
 	if strings.HasSuffix(lowerSub, ".md") || strings.HasSuffix(lowerSub, ".markdown") {
 		nonce := markdownCSPNonce()
 		theme := render.NormalizeMarkdownTheme(r.URL.Query().Get("theme"))
-		s.setHostedMarkdownSecurityHeaders(w, nonce, injectAppSnippets && injectionTargetHasContent(s.cfg.ContentInjection.App))
+		cfg := s.configSnapshot()
+		s.setHostedMarkdownSecurityHeaders(w, nonce, injectAppSnippets && injectionTargetHasContent(cfg.ContentInjection.App))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		rendered := s.renderHostedMarkdown(r.Context(), code, versionPtr, sub, body, theme)
@@ -6397,13 +7441,14 @@ func markdownCSPNonce() string {
 }
 
 func (s *Server) frameAncestorsDirective() string {
-	switch config.NormalizeEmbedPolicy(s.cfg.EmbedPolicy) {
+	cfg := s.configSnapshot()
+	switch config.NormalizeEmbedPolicy(cfg.EmbedPolicy) {
 	case "deny":
 		return "frame-ancestors 'none'"
 	case "self":
 		return "frame-ancestors 'self'"
 	case "allowlist":
-		origins := strings.FieldsFunc(s.cfg.EmbedAllowOrigins, func(r rune) bool {
+		origins := strings.FieldsFunc(cfg.EmbedAllowOrigins, func(r rune) bool {
 			return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
 		})
 		items := []string{"'self'"}
@@ -6493,11 +7538,11 @@ type htmlInjectionSnippets struct {
 }
 
 func (s *Server) mainHTMLInjectionSnippets(nonce string) htmlInjectionSnippets {
-	return htmlInjectionSnippetsFromTarget(s.cfg.ContentInjection.Main, nonce)
+	return htmlInjectionSnippetsFromTarget(s.configSnapshot().ContentInjection.Main, nonce)
 }
 
 func (s *Server) appHTMLInjectionSnippets(nonce string) htmlInjectionSnippets {
-	return htmlInjectionSnippetsFromTarget(s.cfg.ContentInjection.App, nonce)
+	return htmlInjectionSnippetsFromTarget(s.configSnapshot().ContentInjection.App, nonce)
 }
 
 func htmlInjectionSnippetsFromTarget(target config.InjectionTargetConfig, nonce string) htmlInjectionSnippets {

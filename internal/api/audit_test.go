@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourorg/hostctl/internal/auth"
 	"github.com/yourorg/hostctl/internal/store"
 )
 
@@ -117,11 +118,11 @@ func TestAdminAuditLogsRejectInvalidTimeFilter(t *testing.T) {
 func TestAdminAuditLogsRequireAdmin(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	user, err := authSvc.CreateUser(t.Context(), "alice", "password123", false, 20)
+	user, err := authSvc.CreateUser(context.Background(), "alice", "password123", false, 20)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "alice-token", false, user.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "alice-token", false, user.ID, nil)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
@@ -248,6 +249,31 @@ func TestCSPReportingAPIRecordsSecurityAuditLog(t *testing.T) {
 		if !strings.Contains(log.DetailJSON, want) {
 			t.Fatalf("detail = %s; want %s", log.DetailJSON, want)
 		}
+	}
+}
+
+func TestCSPReportRateLimitAndAuditUserAgentBound(t *testing.T) {
+	srv, _, cleanup := newTokenTestServer(t)
+	defer cleanup()
+	stub := &auditCSPReportStub{}
+	srv.deployer = stub
+	body := `{"csp-report":{"document-uri":"https://pagepilot.example.com/agent/demo/","effective-directive":"script-src"}}`
+	for i := 0; i < cspReportPerIP+1; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/security/csp-report", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/csp-report")
+		req.Header.Set("User-Agent", strings.Repeat("u", 1024))
+		req.RemoteAddr = "198.51.100.31:1234"
+		rr := httptest.NewRecorder()
+		srv.mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("attempt %d status = %d; want %d", i+1, rr.Code, http.StatusNoContent)
+		}
+	}
+	if len(stub.auditLogs) != cspReportPerIP {
+		t.Fatalf("audit log count = %d; want %d", len(stub.auditLogs), cspReportPerIP)
+	}
+	if got := len([]rune(stub.auditLogs[0].UserAgent)); got != 512 {
+		t.Fatalf("user agent length = %d; want 512", got)
 	}
 }
 
@@ -817,13 +843,21 @@ func TestAccountPasswordChangeRecordsAuditLog(t *testing.T) {
 	t.Run("success without plaintext", func(t *testing.T) {
 		srv, authSvc, cleanup := newTokenTestServer(t)
 		defer cleanup()
-		user, err := authSvc.CreateUser(t.Context(), "alice", "old-password123", false, 20)
+		user, err := authSvc.CreateUser(context.Background(), "alice", "old-password123", false, 20)
 		if err != nil {
 			t.Fatalf("create user: %v", err)
 		}
-		session, err := authSvc.LoginAdmin(t.Context(), "alice", "old-password123", time.Hour)
+		session, err := authSvc.LoginAdmin(context.Background(), "alice", "old-password123", time.Hour)
 		if err != nil {
 			t.Fatalf("login user: %v", err)
+		}
+		bearer, err := authSvc.Generate(context.Background(), "alice-token", false, user.ID, nil)
+		if err != nil {
+			t.Fatalf("generate bearer token: %v", err)
+		}
+		otherSession, err := authSvc.LoginAdmin(context.Background(), "alice", "old-password123", time.Hour)
+		if err != nil {
+			t.Fatalf("login second session: %v", err)
 		}
 		stub := &auditUserFailureStub{}
 		srv.deployer = stub
@@ -856,16 +890,59 @@ func TestAccountPasswordChangeRecordsAuditLog(t *testing.T) {
 		if strings.Contains(log.DetailJSON, "old-password123") || strings.Contains(log.DetailJSON, "new-password456") {
 			t.Fatalf("detail = %s; must not include plaintext passwords", log.DetailJSON)
 		}
+		if _, err := authSvc.VerifyToken(context.Background(), "Bearer "+bearer.Plaintext); err != auth.ErrRevoked {
+			t.Fatalf("newly generated token was not revoked: %v", err)
+		}
+		if _, _, err := authSvc.VerifyAdminSession(context.Background(), otherSession.Plaintext); err != auth.ErrRevoked {
+			t.Fatalf("other admin session was not revoked: %v", err)
+		}
+		if _, err := authSvc.LoginAdmin(context.Background(), "alice", "old-password123", time.Hour); err != auth.ErrInvalid {
+			t.Fatalf("old password login error = %v; want ErrInvalid", err)
+		}
+		if _, err := authSvc.LoginAdmin(context.Background(), "alice", "new-password456", time.Hour); err != nil {
+			t.Fatalf("new password login failed: %v", err)
+		}
+	})
+
+	t.Run("success with bearer token", func(t *testing.T) {
+		srv, authSvc, cleanup := newTokenTestServer(t)
+		defer cleanup()
+		user, err := authSvc.CreateUser(context.Background(), "alice", "old-password123", false, 20)
+		if err != nil {
+			t.Fatalf("create user: %v", err)
+		}
+		token, err := authSvc.Generate(context.Background(), "alice-token", false, user.ID, nil)
+		if err != nil {
+			t.Fatalf("generate token: %v", err)
+		}
+		stub := &auditUserFailureStub{}
+		srv.deployer = stub
+
+		req := httptest.NewRequest(http.MethodPatch, "/api/account/password", strings.NewReader(`{
+			"oldPassword":"old-password123",
+			"newPassword":"new-password456"
+		}`))
+		req.Header.Set("Authorization", "Bearer "+token.Plaintext)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+
+		srv.mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusOK)
+		}
+		if _, err := authSvc.VerifyToken(context.Background(), "Bearer "+token.Plaintext); err != auth.ErrRevoked {
+			t.Fatalf("bearer token after password change = %v; want ErrRevoked", err)
+		}
 	})
 
 	t.Run("wrong old password", func(t *testing.T) {
 		srv, authSvc, cleanup := newTokenTestServer(t)
 		defer cleanup()
-		user, err := authSvc.CreateUser(t.Context(), "alice", "old-password123", false, 20)
+		user, err := authSvc.CreateUser(context.Background(), "alice", "old-password123", false, 20)
 		if err != nil {
 			t.Fatalf("create user: %v", err)
 		}
-		session, err := authSvc.LoginAdmin(t.Context(), "alice", "old-password123", time.Hour)
+		session, err := authSvc.LoginAdmin(context.Background(), "alice", "old-password123", time.Hour)
 		if err != nil {
 			t.Fatalf("login user: %v", err)
 		}
@@ -906,11 +983,11 @@ func TestAccountPasswordChangeRecordsAuditLog(t *testing.T) {
 	t.Run("short new password", func(t *testing.T) {
 		srv, authSvc, cleanup := newTokenTestServer(t)
 		defer cleanup()
-		user, err := authSvc.CreateUser(t.Context(), "alice", "old-password123", false, 20)
+		user, err := authSvc.CreateUser(context.Background(), "alice", "old-password123", false, 20)
 		if err != nil {
 			t.Fatalf("create user: %v", err)
 		}
-		session, err := authSvc.LoginAdmin(t.Context(), "alice", "old-password123", time.Hour)
+		session, err := authSvc.LoginAdmin(context.Background(), "alice", "old-password123", time.Hour)
 		if err != nil {
 			t.Fatalf("login user: %v", err)
 		}
@@ -953,7 +1030,7 @@ func TestAuthLoginRecordsAuditLog(t *testing.T) {
 	t.Run("success without plaintext", func(t *testing.T) {
 		srv, authSvc, cleanup := newTokenTestServer(t)
 		defer cleanup()
-		user, err := authSvc.CreateUser(t.Context(), "alice", "password123", false, 20)
+		user, err := authSvc.CreateUser(context.Background(), "alice", "password123", false, 20)
 		if err != nil {
 			t.Fatalf("create user: %v", err)
 		}
@@ -995,7 +1072,7 @@ func TestAuthLoginRecordsAuditLog(t *testing.T) {
 	t.Run("wrong password", func(t *testing.T) {
 		srv, authSvc, cleanup := newTokenTestServer(t)
 		defer cleanup()
-		if _, err := authSvc.CreateUser(t.Context(), "alice", "password123", false, 20); err != nil {
+		if _, err := authSvc.CreateUser(context.Background(), "alice", "password123", false, 20); err != nil {
 			t.Fatalf("create user: %v", err)
 		}
 		srv.captchas["captcha-login"] = captchaChallenge{Answer: "1234", ExpiresAt: time.Now().Add(time.Minute)}
@@ -1081,7 +1158,7 @@ func TestAuthRegisterRecordsAuditLog(t *testing.T) {
 		srv, authSvc, cleanup := newTokenTestServer(t)
 		defer cleanup()
 		srv.cfg.AllowRegistration = true
-		if _, err := authSvc.CreateUser(t.Context(), "alice", "password123", false, 20); err != nil {
+		if _, err := authSvc.CreateUser(context.Background(), "alice", "password123", false, 20); err != nil {
 			t.Fatalf("create user: %v", err)
 		}
 		srv.captchas["captcha-register"] = captchaChallenge{Answer: "1234", ExpiresAt: time.Now().Add(time.Minute)}
@@ -1124,11 +1201,11 @@ func TestAuthRegisterRecordsAuditLog(t *testing.T) {
 func TestAuthLogoutRecordsAuditLog(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	user, err := authSvc.CreateUser(t.Context(), "alice", "password123", false, 20)
+	user, err := authSvc.CreateUser(context.Background(), "alice", "password123", false, 20)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	session, err := authSvc.LoginAdmin(t.Context(), "alice", "password123", time.Hour)
+	session, err := authSvc.LoginAdmin(context.Background(), "alice", "password123", time.Hour)
 	if err != nil {
 		t.Fatalf("login user: %v", err)
 	}
@@ -1342,7 +1419,7 @@ func TestAutoAnonymousClaimOnLoginRecordsAuditLog(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		srv, authSvc, cleanup := newTokenTestServer(t)
 		defer cleanup()
-		user, err := authSvc.CreateUser(t.Context(), "alice", "password123", false, 20)
+		user, err := authSvc.CreateUser(context.Background(), "alice", "password123", false, 20)
 		if err != nil {
 			t.Fatalf("create user: %v", err)
 		}
@@ -1398,7 +1475,7 @@ func TestAutoAnonymousClaimOnLoginRecordsAuditLog(t *testing.T) {
 	t.Run("failure does not block login", func(t *testing.T) {
 		srv, authSvc, cleanup := newTokenTestServer(t)
 		defer cleanup()
-		user, err := authSvc.CreateUser(t.Context(), "alice", "password123", false, 20)
+		user, err := authSvc.CreateUser(context.Background(), "alice", "password123", false, 20)
 		if err != nil {
 			t.Fatalf("create user: %v", err)
 		}

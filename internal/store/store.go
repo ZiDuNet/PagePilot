@@ -298,8 +298,15 @@ type SiteWithMeta struct {
 	LastVersionAt         *time.Time
 }
 
-// ErrNotFound 表示记录不存在。
-var ErrNotFound = errors.New("not found")
+var (
+	// ErrNotFound 表示记录不存在。
+	ErrNotFound = errors.New("not found")
+	// ErrAlreadyExists 表示创建操作因唯一业务约束未执行。
+	ErrAlreadyExists = errors.New("already exists")
+	// ErrLastActiveAdmin prevents an account update from removing the final
+	// active administrator and permanently locking the instance.
+	ErrLastActiveAdmin = errors.New("cannot remove the last active admin")
+)
 
 // Store 定义元数据访问接口。
 type Store interface {
@@ -371,6 +378,7 @@ type Store interface {
 	TouchTokenLastUsed(ctx context.Context, id string) error
 
 	CreateAnonymousSession(ctx context.Context, session AnonymousSession) error
+	PruneAnonymousSessions(ctx context.Context, before time.Time) error
 	GetAnonymousSession(ctx context.Context, id string) (AnonymousSession, error)
 	UpdateAnonymousSessionMeta(ctx context.Context, id, agentID, agentLabel, deviceIP, userAgent string) error
 	IncrementAnonymousSessionDeployCount(ctx context.Context, id string) (AnonymousSession, error)
@@ -379,6 +387,7 @@ type Store interface {
 
 	CountAdminUsers(ctx context.Context) (int, error)
 	CreateAdminUser(ctx context.Context, user AdminUser) error
+	CreateFirstAdmin(ctx context.Context, user AdminUser) error
 	UpdateAdminUser(ctx context.Context, user AdminUser) error
 	UpdateAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	DeleteAdminUser(ctx context.Context, id string) error
@@ -387,6 +396,11 @@ type Store interface {
 	ListAdminUsers(ctx context.Context) ([]AdminUser, error)
 	TouchAdminUserLastLogin(ctx context.Context, id string) error
 	IncrementAdminUserDeployCount(ctx context.Context, id string) (AdminUser, error)
+	// TryConsumeAdminUserDeployQuota atomically reserves one site deployment
+	// slot. It returns false when the user is missing, inactive, or at quota.
+	TryConsumeAdminUserDeployQuota(ctx context.Context, id string) (bool, error)
+	// ReleaseAdminUserDeployQuota rolls back one previously reserved slot.
+	ReleaseAdminUserDeployQuota(ctx context.Context, id string) error
 	CreateAdminSession(ctx context.Context, session AdminSession) error
 	GetAdminSessionByHash(ctx context.Context, hash string) (AdminSession, error)
 	TouchAdminSessionLastUsed(ctx context.Context, id string) error

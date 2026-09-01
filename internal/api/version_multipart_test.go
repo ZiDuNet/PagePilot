@@ -67,6 +67,26 @@ func TestPatchVersionAcceptsMultipartOverwrite(t *testing.T) {
 	}
 }
 
+func TestPatchVersionRejectsTrailingJSON(t *testing.T) {
+	srv, token, cleanup := newDevAuthTestServer(t)
+	defer cleanup()
+	stub := &versionMultipartOverwriteStub{}
+	srv.deployer = stub
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/deploys/demo/versions/3", strings.NewReader(`{"title":"valid"} {"ignored":true}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusBadRequest)
+	}
+	if stub.called {
+		t.Fatal("OverwriteVersion was called for a body with trailing JSON")
+	}
+}
 
 type versionMultipartOverwriteStub struct {
 	DeployerPort

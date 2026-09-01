@@ -3,11 +3,55 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yourorg/hostctl/internal/client"
+	appversion "github.com/yourorg/hostctl/internal/version"
 )
+
+func TestInitializeReportsSharedReleaseVersion(t *testing.T) {
+	response := dispatch(context.Background(), nil, &rpcReq{Method: "initialize"})
+	result, ok := response.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("initialize result = %#v; want object", response.Result)
+	}
+	serverInfo, ok := result["serverInfo"].(map[string]any)
+	if !ok {
+		t.Fatalf("serverInfo = %#v; want object", result["serverInfo"])
+	}
+	if got, want := serverInfo["version"], appversion.Current; got != want {
+		t.Fatalf("serverInfo.version = %#v; want %q", got, want)
+	}
+}
+
+func TestIsNotificationOnlyTreatsMissingIDAsNotification(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{name: "missing", want: true},
+		{name: "null", id: "null", want: false},
+		{name: "zero", id: "0", want: false},
+		{name: "false", id: "false", want: false},
+		{name: "empty string", id: `""`, want: false},
+		{name: "string", id: `"request-1"`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := rpcReq{}
+			if tt.id != "" {
+				req.ID = json.RawMessage(tt.id)
+			}
+			if got := isNotification(req); got != tt.want {
+				t.Fatalf("isNotification(%q) = %v, want %v", tt.id, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestToolListIncludesAdminRuntimeTools(t *testing.T) {
 	tools := map[string]toolDef{}
@@ -79,6 +123,43 @@ func TestToolCallRejectsInvalidPolicyArgumentsBeforeNetwork(t *testing.T) {
 		},
 	}))
 	assertToolError(t, securityResp, "security_mode must be auto, strict, compatible, or trusted")
+}
+
+func TestLocalSourceRejectsSymlinksAndUnsafePaths(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "site")
+	if err := os.Mkdir(source, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("<html><body><main>ok</main></body></html>"), 0o644); err != nil {
+		t.Fatalf("write entry: %v", err)
+	}
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	linked := filepath.Join(source, "linked.txt")
+	if err := os.Symlink(outside, linked); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if _, err := readSourceDir(source); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("readSourceDir() error = %v, want symbolic-link rejection", err)
+	}
+	if _, err := prepareMultipartSource(source); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("prepareMultipartSource() error = %v, want symbolic-link rejection", err)
+	}
+
+	unsafeDir := filepath.Join(root, "unsafe")
+	if err := os.Mkdir(unsafeDir, 0o755); err != nil {
+		t.Fatalf("mkdir unsafe source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(unsafeDir, "bad?.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatalf("write unsafe filename: %v", err)
+	}
+	if _, err := prepareMultipartSource(unsafeDir); err == nil || !strings.Contains(err.Error(), "unsafe path") {
+		t.Fatalf("prepareMultipartSource() error = %v, want unsafe-path rejection", err)
+	}
 }
 
 func assertRequired(t *testing.T, tool toolDef, names ...string) {

@@ -285,7 +285,7 @@ func (s *Server) storeScreenScreenshot(screenID string, data []byte, mimeType st
 }
 
 func (s *Server) screenScreenshotDir() string {
-	return filepath.Join(filepath.Dir(s.cfg.DBPath), "screenshots")
+	return filepath.Join(filepath.Dir(s.configSnapshot().DBPath), "screenshots")
 }
 
 func (s *Server) screenScreenshotAt(screenID string) *time.Time {

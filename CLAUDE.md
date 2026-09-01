@@ -176,13 +176,13 @@ PagePilot 服务器
 | `HOSTCTL_APP_URL_PORT` | — | URL 端口 |
 | `HOSTCTL_STORAGE_BACKEND` | `local` | 存储后端 (`local`/`oss`) |
 | `HOSTCTL_COOLDOWN_SECONDS` | `10` | 部署冷却时间(秒) |
-| `REQUIRE_AUTH` | `false` | 生产模式：写操作要求认证 |
-| `HOSTCTL_ADMIN_USERNAME` | `admin` | 首个管理员用户名 |
-| `HOSTCTL_ADMIN_PASSWORD` | `123456` | 首个管理员密码(首次登录后修改) |
+| `REQUIRE_AUTH` | 开发模式默认 `false`，生产模式强制 `true` | 写操作认证开关；生产模式不可关闭 |
+| `HOSTCTL_ADMIN_USERNAME` | — | 数据库没有可用管理员时的首个管理员用户名（生产环境需显式设置） |
+| `HOSTCTL_ADMIN_PASSWORD` | — | 数据库没有可用管理员时的首个管理员密码（生产环境需显式设置） |
 
 OSS 存储相关: `HOSTCTL_OSS_ENDPOINT`, `HOSTCTL_OSS_BUCKET`, `HOSTCTL_OSS_ACCESS_KEY_ID`, `HOSTCTL_OSS_ACCESS_KEY_SECRET`, `HOSTCTL_OSS_PREFIX`, `HOSTCTL_OSS_PUBLIC_BASE_URL`
 
-| `HOSTCTL_MASTER_KEY` | (dev 模式自动生成) | AES-256 主密钥，用于加密站点访问密码明文。生产环境必须 base64 编码 32 字节 |
+| `HOSTCTL_MASTER_KEY` | — | AES-256 主密钥，用于加密站点访问密码明文。生产环境必须显式配置 32 字节值 |
 
 ## 限制与安全
 

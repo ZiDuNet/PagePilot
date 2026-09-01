@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yourorg/hostctl/internal/api"
@@ -47,9 +48,11 @@ var (
 
 // Deployer 持有部署所需的依赖。
 type Deployer struct {
-	cfg      config.Config
-	store    store.Store
-	cooldown *Cooldown
+	cfg        config.Config
+	cfgMu      sync.RWMutex
+	store      store.Store
+	cooldown   *Cooldown
+	mutationMu sync.Mutex
 }
 
 // New 构造一个 Deployer。
@@ -57,8 +60,14 @@ func New(cfg config.Config, s store.Store) *Deployer {
 	return &Deployer{
 		cfg:      cfg,
 		store:    s,
-		cooldown: NewCooldown(time.Duration(cfg.CooldownSeconds) * time.Second),
+		cooldown: NewCooldown(config.CooldownDuration(cfg.CooldownSeconds)),
 	}
+}
+
+func (d *Deployer) configSnapshot() config.Config {
+	d.cfgMu.RLock()
+	defer d.cfgMu.RUnlock()
+	return d.cfg
 }
 
 // resolvedFile 是经过校验 + 解码的文件。
@@ -84,15 +93,29 @@ type resolvedContent struct {
 //   - 多文件：req.Files（自动识别 HTML/Markdown 入口；单 ZIP 会解压并剥离外层目录）
 //
 // ownerTokenID 用于按 token 维度限流；clientIP 用于按 IP 维度限流。
+// Deploy executes a deployment as a non-admin actor. The server uses
+// DeployAs when it has already authenticated an administrator; keeping this
+// wrapper preserves the small public interface used by clients and tests.
 func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerTokenID, clientIP string) (*api.DeployResponse, *api.APIError) {
-	// 0. 冷却检查（必须最先；任何字段错误都不应该消耗冷却）
-	if ok, retry := d.cooldown.Check(ownerTokenID, clientIP); !ok {
-		secs := int(retry/time.Second) + 1
-		return nil, api.NewError(api.CodeRateLimited, "cooldown",
-			fmt.Sprintf("global deploy cooldown active; retry in ~%ds", secs)).
-			WithRetryAfter(secs).
-			WithHint("Slow down. Use createVersion=true to iterate on an existing code instead of creating new ones.")
-	}
+	return d.deploy(ctx, req, ownerTokenID, clientIP, false)
+}
+
+// DeployAs executes a deployment with the authenticated admin bit supplied by
+// the HTTP layer. The flag is never decoded from user JSON.
+func (d *Deployer) DeployAs(ctx context.Context, req api.DeployRequest, ownerTokenID, clientIP string, isAdmin bool) (*api.DeployResponse, *api.APIError) {
+	return d.deploy(ctx, req, ownerTokenID, clientIP, isAdmin)
+}
+
+func (d *Deployer) deploy(ctx context.Context, req api.DeployRequest, ownerTokenID, clientIP string, isAdmin bool) (*api.DeployResponse, *api.APIError) {
+	// 0. 先完成纯校验和来源授权，再原子预留冷却槽。无效的大请求不会
+	// 暂时阻断其他部署；预留从决定 code/version 开始覆盖整个写入流程。
+	var reservation *CooldownReservation
+	committed := false
+	defer func() {
+		if reservation != nil && !committed {
+			reservation.Cancel()
+		}
+	}()
 
 	// 1. filename 作为入口提示；多文件/ZIP 可留空，由后端自动识别。
 	filenameHint := strings.TrimSpace(req.Filename)
@@ -133,7 +156,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	if apiErr := validateEntrypoint(rfiles, mainEntry); apiErr != nil {
 		return nil, apiErr
 	}
-	templateSourceCode, templateSourceVersion, apiErr := d.resolveTemplateSource(ctx, req)
+	templateSourceCode, templateSourceVersion, apiErr := d.resolveTemplateSource(ctx, req, ownerTokenID, isAdmin)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -143,6 +166,19 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	if apiErr != nil {
 		return nil, apiErr
 	}
+	reservation, ok, retry := d.cooldown.Reserve(ownerTokenID, clientIP)
+	if !ok {
+		secs := int(retry/time.Second) + 1
+		return nil, api.NewError(api.CodeRateLimited, "cooldown",
+			fmt.Sprintf("global deploy cooldown active; retry in ~%ds", secs)).
+			WithRetryAfter(secs).
+			WithHint("Slow down. Use createVersion=true to iterate on an existing code instead of creating new ones.")
+	}
+	// The cooldown can intentionally be disabled. Keep metadata, version
+	// allocation, and filesystem publication mutually exclusive regardless so
+	// concurrent createVersion requests cannot reuse a version directory.
+	d.mutationMu.Lock()
+	defer d.mutationMu.Unlock()
 
 	// 5. 决定 version_number + 是否新建 site
 	isNewSite, versionNumber, apiErr := d.decideVersion(ctx, code, isCustom, req.CreateVersion)
@@ -157,7 +193,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 			return nil, api.NewError(api.CodeInternal, "site_owner",
 				fmt.Sprintf("failed to check site owner: %v", gerr))
 		}
-		if ownerTokenID != "" && ownerTokenID != "dev-owner" && !strings.HasPrefix(ownerTokenID, "admin:") && site.OwnerTokenID != ownerTokenID {
+		if !isAdmin && ownerTokenID != "" && ownerTokenID != "dev-owner" && !strings.HasPrefix(ownerTokenID, "admin:") && site.OwnerTokenID != ownerTokenID {
 			return nil, api.NewError(api.CodeForbidden, "owner",
 				"you can only append versions to sites you own").
 				WithHint("Use the same account, token, or anonymous session that created this site.")
@@ -287,12 +323,14 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	}
 
 	// 10. 部署成功，消耗冷却
-	retryAfter := d.cooldown.Consume(ownerTokenID, clientIP)
+	retryAfter := reservation.Commit()
+	committed = true
 
 	// 11. 拼响应（OpenAPI 全字段）
 	site, _ := d.store.GetSite(ctx, code)
 	allVersions, _ := d.store.ListVersions(ctx, code)
 	appURLs := d.AppURLConfig()
+	cfg := d.configSnapshot()
 	publicURL := appURLs.PrimaryAppURL(code, nil)
 	strategy := api.StrategyLikes
 	if site.PrimaryVersionStrategy == string(api.StrategyLatest) {
@@ -324,7 +362,7 @@ func (d *Deployer) Deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		ReuseCount:             site.ReuseCount,
 		TemplateSourceCode:     site.TemplateSourceCode,
 		TemplateSourceVersion:  int64Value(site.TemplateSourceVersion),
-		CooldownSeconds:        d.cfg.CooldownSeconds,
+		CooldownSeconds:        cfg.CooldownSeconds,
 		NextAvailableAt:        time.Now().UTC().Add(retryAfter),
 		VersionCount:           len(allVersions),
 		Created:                isNewSite,
@@ -344,6 +382,7 @@ func (d *Deployer) resolveContent(req api.DeployRequest, filenameHint string) ([
 }
 
 func (d *Deployer) resolveContentWithBundle(req api.DeployRequest, filenameHint string) (resolvedContent, *api.APIError) {
+	cfg := d.configSnapshot()
 	hasContent := req.Content != ""
 	hasFiles := len(req.Files) > 0
 
@@ -359,9 +398,9 @@ func (d *Deployer) resolveContentWithBundle(req api.DeployRequest, filenameHint 
 	// 单文件模式：包成单个 file
 	if hasContent {
 		mainEntry := inferSingleContentMainEntry(filenameHint, req.Content)
-		if int64(len(req.Content)) > d.cfg.MaxSingleFileBytes {
+		if int64(len(req.Content)) > cfg.MaxSingleFileBytes {
 			return resolvedContent{}, api.NewError(api.CodeContentTooLarge, "validate",
-				fmt.Sprintf("content exceeds max single-file size (%d bytes)", d.cfg.MaxSingleFileBytes))
+				fmt.Sprintf("content exceeds max single-file size (%d bytes)", cfg.MaxSingleFileBytes))
 		}
 		// 校验 mainEntry 合法
 		if apiErr := validateFilePath(mainEntry); apiErr != nil {
@@ -379,9 +418,9 @@ func (d *Deployer) resolveContentWithBundle(req api.DeployRequest, filenameHint 
 	}
 
 	// 多文件模式
-	if len(req.Files) > d.cfg.MaxFilesPerSite {
+	if len(req.Files) > cfg.MaxFilesPerSite {
 		return resolvedContent{}, api.NewError(api.CodeContentTooLarge, "validate",
-			fmt.Sprintf("too many files (%d); max %d per site", len(req.Files), d.cfg.MaxFilesPerSite))
+			fmt.Sprintf("too many files (%d); max %d per site", len(req.Files), cfg.MaxFilesPerSite))
 	}
 
 	// 路径必须唯一
@@ -408,15 +447,15 @@ func (d *Deployer) resolveContentWithBundle(req api.DeployRequest, filenameHint 
 		}
 
 		// 单文件大小校验
-		if int64(len(bytes)) > d.cfg.MaxSingleFileBytes {
+		if int64(len(bytes)) > cfg.MaxSingleFileBytes {
 			return resolvedContent{}, api.NewError(api.CodeContentTooLarge, "validate",
-				fmt.Sprintf("file %s exceeds max single-file size (%d bytes)", f.Path, d.cfg.MaxSingleFileBytes))
+				fmt.Sprintf("file %s exceeds max single-file size (%d bytes)", f.Path, cfg.MaxSingleFileBytes))
 		}
 
 		totalSize += int64(len(bytes))
-		if totalSize > d.cfg.MaxSiteTotalBytes {
+		if totalSize > cfg.MaxSiteTotalBytes {
 			return resolvedContent{}, api.NewError(api.CodeContentTooLarge, "validate",
-				fmt.Sprintf("total size exceeds site limit (%d bytes)", d.cfg.MaxSiteTotalBytes))
+				fmt.Sprintf("total size exceeds site limit (%d bytes)", cfg.MaxSiteTotalBytes))
 		}
 
 		out = append(out, resolvedFile{
@@ -437,9 +476,17 @@ func (d *Deployer) resolveContentWithBundle(req api.DeployRequest, filenameHint 
 	return resolvedContentForFiles(out, mainEntry, "", ""), nil
 }
 
-func (d *Deployer) resolveTemplateSource(ctx context.Context, req api.DeployRequest) (string, int64, *api.APIError) {
+func (d *Deployer) resolveTemplateSource(ctx context.Context, req api.DeployRequest, ownerTokenID string, isAdmin bool) (string, int64, *api.APIError) {
+	if req.TemplateSourceVersion < 0 {
+		return "", 0, api.NewError(api.CodeInvalidInput, "template_source",
+			"templateSourceVersion must be a positive integer when provided")
+	}
 	code := strings.TrimSpace(req.TemplateSourceCode)
 	if code == "" {
+		if req.TemplateSourceVersion != 0 {
+			return "", 0, api.NewError(api.CodeInvalidInput, "template_source",
+				"templateSourceVersion requires templateSourceCode")
+		}
 		return "", 0, nil
 	}
 	if !customCodeRe.MatchString(code) {
@@ -453,6 +500,11 @@ func (d *Deployer) resolveTemplateSource(ctx context.Context, req api.DeployRequ
 				"template source site not found")
 		}
 		return "", 0, api.NewError(api.CodeInternal, "template_source", err.Error())
+	}
+	if !templateSourceReuseAllowed(site, ownerTokenID, isAdmin) {
+		return "", 0, api.NewError(api.CodeForbidden, "template_source",
+			"template source reuse is not allowed for this actor or site policy").
+			WithHint("登录并确认来源作品允许模板复用；加密、不公开、下架或禁用复用的作品仅限其所有者或管理员。")
 	}
 	version := req.TemplateSourceVersion
 	if version <= 0 {
@@ -478,6 +530,23 @@ func (d *Deployer) resolveTemplateSource(ctx context.Context, req api.DeployRequ
 		return "", 0, api.NewError(api.CodeInternal, "template_source", err.Error())
 	}
 	return code, version, nil
+}
+
+func templateSourceReuseAllowed(site store.Site, ownerTokenID string, isAdmin bool) bool {
+	ownerTokenID = strings.TrimSpace(ownerTokenID)
+	if isAdmin {
+		return true
+	}
+	// Anonymous sessions and legacy unbound tokens cannot use source metadata,
+	// even when they happen to own the source site.
+	if strings.HasPrefix(ownerTokenID, "user:") && ownerTokenID != "user:" && ownerTokenID == strings.TrimSpace(site.OwnerTokenID) {
+		return true
+	}
+	if !strings.HasPrefix(ownerTokenID, "user:") || ownerTokenID == "user:" {
+		return false
+	}
+	_, allowReuse := api.SiteReuseDecision(site)
+	return allowReuse
 }
 
 func int64PtrIfPositive(value int64) *int64 {
@@ -767,14 +836,15 @@ func (d *Deployer) expandZipContent(file resolvedFile, filenameHint string) ([]r
 }
 
 func (d *Deployer) expandZipContentWithBundle(file resolvedFile, filenameHint string) (resolvedContent, *api.APIError) {
+	cfg := d.configSnapshot()
 	result, err := bundle.AnalyzeZip(bundle.Input{
 		Name:      file.Path,
 		Data:      file.Bytes,
 		EntryHint: filenameHint,
 		Limits: bundle.Limits{
-			MaxSingleFileBytes: d.cfg.MaxSingleFileBytes,
-			MaxSiteTotalBytes:  d.cfg.MaxSiteTotalBytes,
-			MaxFiles:           d.cfg.MaxFilesPerSite,
+			MaxSingleFileBytes: cfg.MaxSingleFileBytes,
+			MaxSiteTotalBytes:  cfg.MaxSiteTotalBytes,
+			MaxFiles:           cfg.MaxFilesPerSite,
 		},
 	})
 	if err != nil {
@@ -902,7 +972,7 @@ func (d *Deployer) writeFiles(ctx context.Context, code string, version int64, f
 
 func (d *Deployer) writeFilesToStorage(ctx context.Context, code string, version int64, storage versionStorage, files []resolvedFile) error {
 	if storage.Backend == "oss" {
-		oss := newOSSStorage(d.cfg)
+		oss := newOSSStorage(d.configSnapshot())
 		for _, f := range files {
 			if !zipPathSafe(f.Path) {
 				return fmt.Errorf("unsafe path %s", f.Path)
@@ -940,6 +1010,7 @@ func (d *Deployer) writeFilesToStorage(ctx context.Context, code string, version
 			return fmt.Errorf("write tmp %s: %w", f.Path, err)
 		}
 		if err := tmp.Close(); err != nil {
+			_ = os.Remove(tmp.Name())
 			return fmt.Errorf("close tmp %s: %w", f.Path, err)
 		}
 		if err := os.Rename(tmp.Name(), full); err != nil {
@@ -1066,7 +1137,7 @@ func copyDir(srcDir, dstDir string) error {
 
 // 路径辅助方法
 func (d *Deployer) siteDir(code string) string {
-	return filepath.Join(d.cfg.HostedDir, code)
+	return filepath.Join(d.configSnapshot().HostedDir, code)
 }
 func (d *Deployer) versionDir(code string, version int64) string {
 	return filepath.Join(d.siteDir(code), "versions", fmt.Sprintf("%d", version))
@@ -1183,6 +1254,9 @@ func randomSuffix() string {
 // DeleteSite 删除整个 site：先清磁盘目录，再清数据库。
 // 任一步失败都返回 INTERNAL 错误，但已删除的步骤不会回滚。
 func (d *Deployer) DeleteSite(ctx context.Context, code string) *api.APIError {
+	d.mutationMu.Lock()
+	defer d.mutationMu.Unlock()
+
 	if !customCodeRe.MatchString(code) && !isValidAutoCode(code) {
 		return api.NewError(api.CodeInvalidInput, "validate",
 			fmt.Sprintf("invalid code %q", code))
@@ -1229,7 +1303,7 @@ func isValidAutoCode(code string) bool {
 }
 
 func (d *Deployer) AppURLConfig() api.AppURLConfig {
-	return api.NewAppURLConfig(d.cfg)
+	return api.NewAppURLConfig(d.configSnapshot())
 }
 
 func (d *Deployer) SetAppURLConfig(ctx context.Context, cfg api.AppURLConfig) error {
@@ -1246,10 +1320,12 @@ func (d *Deployer) SetAppURLConfig(ctx context.Context, cfg api.AppURLConfig) er
 	if err := d.store.SetSetting(ctx, "app_url_port", api.NormalizeAppURLPortForConfig(cfg.AppURLPort)); err != nil {
 		return fmt.Errorf("persist app url port: %w", err)
 	}
+	d.cfgMu.Lock()
 	d.cfg.AppURLMode = api.NormalizeAppURLModeForConfig(cfg.AppURLMode)
 	d.cfg.AppDomainSuffix = api.NormalizeAppDomainSuffixForConfig(cfg.AppDomainSuffix)
 	d.cfg.AppURLScheme = api.NormalizeAppURLSchemeForConfig(cfg.AppURLScheme)
 	d.cfg.AppURLPort = api.NormalizeAppURLPortForConfig(cfg.AppURLPort)
+	d.cfgMu.Unlock()
 	return nil
 }
 
@@ -1257,16 +1333,23 @@ func (d *Deployer) SetAnonymousDeployLimit(ctx context.Context, n int) error {
 	if err := d.store.SetSetting(ctx, "anonymous_deploy_limit", strconv.Itoa(n)); err != nil {
 		return fmt.Errorf("persist anonymous deploy limit: %w", err)
 	}
+	d.cfgMu.Lock()
 	d.cfg.AnonymousDeployLimit = n
+	d.cfgMu.Unlock()
 	return nil
 }
 
 func (d *Deployer) SetCooldownSeconds(ctx context.Context, n int) error {
+	if !config.IsValidCooldownSeconds(n) {
+		return fmt.Errorf("cooldown seconds must be between 0 and %d", config.MaxCooldownSeconds)
+	}
 	if err := d.store.SetSetting(ctx, "cooldown_seconds", strconv.Itoa(n)); err != nil {
 		return fmt.Errorf("persist cooldown seconds: %w", err)
 	}
+	d.cfgMu.Lock()
 	d.cfg.CooldownSeconds = n
-	d.cooldown.SetWindow(time.Duration(n) * time.Second)
+	d.cfgMu.Unlock()
+	d.cooldown.SetWindow(config.CooldownDuration(n))
 	return nil
 }
 
@@ -1280,9 +1363,11 @@ func (d *Deployer) SetUploadLimits(ctx context.Context, singleFileBytes, siteTot
 	if err := d.store.SetSetting(ctx, "max_files_per_site", strconv.Itoa(filesPerSite)); err != nil {
 		return fmt.Errorf("persist max files per site: %w", err)
 	}
+	d.cfgMu.Lock()
 	d.cfg.MaxSingleFileBytes = singleFileBytes
 	d.cfg.MaxSiteTotalBytes = siteTotalBytes
 	d.cfg.MaxFilesPerSite = filesPerSite
+	d.cfgMu.Unlock()
 	return nil
 }
 
@@ -1291,7 +1376,9 @@ func (d *Deployer) SetCORSAllowOrigins(ctx context.Context, origins string) erro
 	if err := d.store.SetSetting(ctx, "cors_allow_origins", origins); err != nil {
 		return fmt.Errorf("persist CORS allow origins: %w", err)
 	}
+	d.cfgMu.Lock()
 	d.cfg.CORSAllowOrigins = origins
+	d.cfgMu.Unlock()
 	return nil
 }
 
@@ -1304,8 +1391,10 @@ func (d *Deployer) SetEmbedPolicy(ctx context.Context, policy, allowOrigins stri
 	if err := d.store.SetSetting(ctx, "embed_allow_origins", allowOrigins); err != nil {
 		return fmt.Errorf("persist embed allow origins: %w", err)
 	}
+	d.cfgMu.Lock()
 	d.cfg.EmbedPolicy = policy
 	d.cfg.EmbedAllowOrigins = allowOrigins
+	d.cfgMu.Unlock()
 	return nil
 }
 
@@ -1318,7 +1407,9 @@ func (d *Deployer) SetContentInjection(ctx context.Context, cfg config.ContentIn
 	if err := d.store.SetSetting(ctx, "content_injection", string(data)); err != nil {
 		return fmt.Errorf("persist content injection: %w", err)
 	}
+	d.cfgMu.Lock()
 	d.cfg.ContentInjection = cfg
+	d.cfgMu.Unlock()
 	return nil
 }
 
@@ -1367,6 +1458,8 @@ func sanitizeSiteTitle(title string) string {
 // LoadPersistedSettings 启动时从数据库恢复持久化设置。
 // 数据库里没有则保持 cfg 原值不变，并返回恢复后的配置快照。
 func (d *Deployer) LoadPersistedSettings(ctx context.Context) config.Config {
+	d.cfgMu.Lock()
+	defer d.cfgMu.Unlock()
 	if v, err := d.store.GetSetting(ctx, "app_url_mode"); err == nil && v != "" {
 		d.cfg.AppURLMode = api.NormalizeAppURLModeForConfig(v)
 	}
@@ -1385,9 +1478,9 @@ func (d *Deployer) LoadPersistedSettings(ctx context.Context) config.Config {
 		}
 	}
 	if v, err := d.store.GetSetting(ctx, "cooldown_seconds"); err == nil && v != "" {
-		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 {
+		if n, perr := strconv.Atoi(v); perr == nil && config.IsValidCooldownSeconds(n) {
 			d.cfg.CooldownSeconds = n
-			d.cooldown.SetWindow(time.Duration(n) * time.Second)
+			d.cooldown.SetWindow(config.CooldownDuration(n))
 		}
 	}
 	if v, err := d.store.GetSetting(ctx, "max_single_file_bytes"); err == nil && v != "" {
@@ -1434,6 +1527,10 @@ func (d *Deployer) CreateAnonymousSession(ctx context.Context, id string) (store
 		return store.AnonymousSession{}, err
 	}
 	return d.store.GetAnonymousSession(ctx, id)
+}
+
+func (d *Deployer) PruneAnonymousSessions(ctx context.Context, before time.Time) error {
+	return d.store.PruneAnonymousSessions(ctx, before)
 }
 
 func (d *Deployer) GetAnonymousSession(ctx context.Context, id string) (store.AnonymousSession, error) {

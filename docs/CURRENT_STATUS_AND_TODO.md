@@ -1,6 +1,6 @@
 # PagePilot 当前状态与待办
 
-更新时间：2026-07-07
+更新时间：2026-08-31
 
 本文档按当前代码状态整理，区分“底层能力已具备”和“产品化仍待补齐”。它用于避免把计划文档里的目标误读成已经上线的功能。
 
@@ -35,6 +35,9 @@
 - 后台运行设置已区分主站跟随当前访问域名和应用泛域名规则；主站不再需要配置固定 Public Base URL。
 - Skill 下载包改为后台上传维护固定 ZIP，默认 `/skill/pagep.zip`，旧 `/skill/hostctl-deploy.zip` 保留兼容；本地 `make build` / `make docker` 和直接 `docker compose up -d --build` 都会在编译前重新生成内置 Skill ZIP，避免源码改了但 embed 包仍是旧版本。
 - `pagep` Skill 发布和追加版本成功后会输出中文摘要，明确展示服务端返回的访问 URL、详情 URL、版本 URL，并继续保留 JSON 供自动化解析；Agent 不需要也不应该自行拼接应用链接。
+- `pagep doctor` 已同时提供 Go CLI 和 Python Skill 入口，检查健康、公开运行配置、OpenAPI 和用户 Token；未配置 Token 时只检查公开只读接口，不会创建匿名 session。`--require-admin` 仅在需要管理员能力时启用。
+- `pagep preflight <source>` 已同时提供 Go CLI 和 Python Skill 入口，发布前本地检查 HTML、Markdown、目录和 ZIP 的入口、根目录、路径安全、符号链接、重复路径、文件数、展开后体积和外层 ZIP 体积，不创建 session、不上传文件；输出稳定错误码和修复提示。
+- 管理员站点列表已支持按当前筛选结果批量更新模板复用和源码下载策略，并在管理端构建产物与回归测试中锁定。
 - 屏幕端控制链路已使用 Device Token 和 WebSocket，支持投放、刷新、截图指令、休眠、唤醒和软关机指令。
 
 ## jpage 对照结论
@@ -71,7 +74,7 @@
 
    现状：前台已有“使用/复用”抽屉，可给出源码下载、CLI 命令、Agent 指令和独立 MCP 参数；抽屉已展示源文件结构摘要，包括 Bundle 类型、入口、根目录、下载形态、文件数量、总大小和前几个文件路径，并区分“新建二创”和“更新已有发布”。更新模式自动带入当前作品 code，只有所有者或管理员可复制追加版本语义的 CLI / Agent 指令。详情 API 已返回 `allowDownload`、`allowReuse`、`policyNote`、`templateSourceCode` 和 `templateSourceVersion`，并区分访问密码浏览权限和源码下载 / 模板复用权限；源码下载需要登录用户或已绑定注册用户的 Token，匿名点击下载只给友好登录提示。发布 API、CLI、MCP 和 Skill 支持 `templateSourceCode` / `templateSourceVersion`，复用后会记录来源站点、来源版本并增加来源作品的 `reuseCount`。后台站点详情已支持管理员设置源码下载和模板复用策略；加密作品对普通用户默认不提供源码下载，但站点所有者和管理员可直接下载用于审计、备份或二次修改。
 
-   待办：继续打磨模板市场级体验的视觉 QA 和批量策略操作；复用后的新建/更新边界已在 Skill、CLI 示例和详情页参数中约束，站点详情可查看最近审计摘要。
+   待办：继续打磨模板市场级体验的视觉 QA 和批量操作的失败重试/结果明细；复用后的新建/更新边界已在 Skill、CLI 示例和详情页参数中约束，站点详情可查看最近审计摘要。
 
 5. 运行时视觉 QA
 

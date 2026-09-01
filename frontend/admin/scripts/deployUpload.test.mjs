@@ -13,3 +13,12 @@ test("后台发布入口支持 Markdown 和单 ZIP 上传", () => {
   assert.match(source, /!files\.some\(\(file\) => isDeployEntrypointFile\(file\.path\)\) && !isSingleZipUpload/);
   assert.doesNotMatch(source, /files\.some\(\(file\) => \/\\\.html\?/);
 });
+
+test("后台多文件上传分别暴露文件与目录选择器", () => {
+  assert.match(source, /ref=\{fileInput\} className="deploy-upload-input" type="file" multiple onChange=\{handlePickerChange\}/);
+  assert.match(source, /ref=\{dirInput\} className="deploy-upload-input" type="file" multiple webkitdirectory="" onChange=\{handlePickerChange\}/);
+  assert.match(source, /onClick=\{\(\) => fileInput\.current\?\.click\(\)\}/);
+  assert.match(source, /onClick=\{\(\) => dirInput\.current\?\.click\(\)\}/);
+  assert.match(source, /function handlePickerChange\(event: React\.ChangeEvent<HTMLInputElement>\)/);
+  assert.match(source, /event\.currentTarget\.value = "";/);
+});

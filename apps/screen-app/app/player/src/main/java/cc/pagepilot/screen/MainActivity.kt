@@ -31,6 +31,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.tencent.smtt.export.external.interfaces.WebResourceRequest
 import com.tencent.smtt.sdk.QbSdk
 import com.tencent.smtt.sdk.CookieManager
 import com.tencent.smtt.sdk.WebSettings
@@ -292,12 +293,12 @@ class MainActivity : Activity() {
         api.heartbeat(deviceToken, webViewRuntimeLabel(), deviceInfo())
         val manifest = api.manifest(deviceToken)
         currentManifest = manifest
-        applyManifest(serverUrl, manifest, webView)
+        applyManifest(manifest, webView)
         handleScreenshotCommand(api, deviceToken, manifest, webView)
         handleScreenCommand(api, deviceToken, manifest, webView)
       } catch (err: Exception) {
         if (currentEntryUrl.isBlank() && !sleeping) {
-          webView.loadDataWithBaseURL(serverUrl, errorHtml(err.message ?: "连接失败"), "text/html", "UTF-8", null)
+          webView.loadDataWithBaseURL(localDocumentBaseUrl(), errorHtml(err.message ?: "连接失败"), "text/html", "UTF-8", null)
         }
       }
       startHeartbeat(api, deviceToken)
@@ -305,11 +306,11 @@ class MainActivity : Activity() {
       while (isActive) {
         try {
           socketStatus = "连接中"
-          val shouldUseFallback = openScreenSocket(api, deviceToken, serverUrl, webView, useQueryTokenFallback)
+          val shouldUseFallback = openScreenSocket(api, deviceToken, webView, useQueryTokenFallback)
           useQueryTokenFallback = useQueryTokenFallback || shouldUseFallback
         } catch (err: Exception) {
           if (currentEntryUrl.isBlank() && !sleeping) {
-            webView.loadDataWithBaseURL(serverUrl, errorHtml(err.message ?: "连接失败"), "text/html", "UTF-8", null)
+            webView.loadDataWithBaseURL(localDocumentBaseUrl(), errorHtml(err.message ?: "连接失败"), "text/html", "UTF-8", null)
           }
         }
         socketStatus = "重连等待"
@@ -331,7 +332,6 @@ class MainActivity : Activity() {
   private suspend fun openScreenSocket(
     api: PagePilotApi,
     deviceToken: String,
-    serverUrl: String,
     webView: WebView,
     useQueryTokenFallback: Boolean,
   ): Boolean {
@@ -352,7 +352,7 @@ class MainActivity : Activity() {
         scope.launch {
           runCatching {
             val message = PagePilotApi.parseWSMessage(text)
-            handleWSMessage(api, deviceToken, serverUrl, message, webView)
+            handleWSMessage(api, deviceToken, message, webView)
           }.onFailure {
             socketLastEvent = it.message ?: "消息处理失败"
           }
@@ -383,7 +383,6 @@ class MainActivity : Activity() {
   private suspend fun handleWSMessage(
     api: PagePilotApi,
     deviceToken: String,
-    serverUrl: String,
     message: ScreenWSMessage,
     webView: WebView,
   ) {
@@ -392,7 +391,7 @@ class MainActivity : Activity() {
       "manifest" -> {
         val manifest = message.manifest ?: return
         currentManifest = manifest
-        applyManifest(serverUrl, manifest, webView)
+        applyManifest(manifest, webView)
         handleScreenshotCommand(api, deviceToken, manifest, webView)
         handleScreenCommand(api, deviceToken, manifest, webView)
       }
@@ -440,8 +439,9 @@ class MainActivity : Activity() {
         val target = manifest.entryUrl.ifBlank { currentEntryUrl }
         if (target.isNotBlank()) {
           applyAccessCookie(manifest, target, webView)
-          currentEntryUrl = target
-          webView.loadUrl(target)
+          if (loadRemoteUrl(webView, target)) {
+            currentEntryUrl = target
+          }
         } else {
           webView.reload()
         }
@@ -449,39 +449,41 @@ class MainActivity : Activity() {
       "sleep" -> {
         sleeping = true
         currentEntryUrl = ""
-        webView.loadDataWithBaseURL(manifest.entryUrl.ifBlank { "about:blank" }, standbyHtml("屏幕已休眠"), "text/html", "UTF-8", null)
+        webView.loadDataWithBaseURL(localDocumentBaseUrl(), standbyHtml("屏幕已休眠"), "text/html", "UTF-8", null)
       }
       "wake" -> {
         sleeping = false
         val target = manifest.entryUrl
-        currentEntryUrl = target
         if (target.isNotBlank()) {
           applyAccessCookie(manifest, target, webView)
-          webView.loadUrl(target)
+          if (loadRemoteUrl(webView, target)) {
+            currentEntryUrl = target
+          }
         }
       }
       "shutdown" -> {
         sleeping = true
         currentEntryUrl = ""
-        webView.loadDataWithBaseURL(manifest.entryUrl.ifBlank { "about:blank" }, standbyHtml("软关机待机"), "text/html", "UTF-8", null)
+        webView.loadDataWithBaseURL(localDocumentBaseUrl(), standbyHtml("软关机待机"), "text/html", "UTF-8", null)
       }
     }
     api.ackCommand(deviceToken, command.requestId, command.type)
     lastCommandRequestId = command.requestId
   }
 
-  private fun applyManifest(serverUrl: String, manifest: ScreenManifest, webView: WebView) {
+  private fun applyManifest(manifest: ScreenManifest, webView: WebView) {
     if (sleeping) return
     if (manifest.mode == "webapp" && manifest.entryUrl.isNotBlank()) {
       applyAccessCookie(manifest, manifest.entryUrl, webView)
       if (manifest.entryUrl != currentEntryUrl) {
-        currentEntryUrl = manifest.entryUrl
-        webView.loadUrl(manifest.entryUrl)
+        if (loadRemoteUrl(webView, manifest.entryUrl)) {
+          currentEntryUrl = manifest.entryUrl
+        }
       }
       return
     }
     if (currentEntryUrl.isBlank()) {
-      webView.loadDataWithBaseURL(serverUrl, idleHtml(), "text/html", "UTF-8", null)
+      webView.loadDataWithBaseURL(localDocumentBaseUrl(), idleHtml(), "text/html", "UTF-8", null)
     }
   }
 
@@ -513,7 +515,7 @@ class MainActivity : Activity() {
 
   private fun applyAccessCookie(manifest: ScreenManifest, entryUrl: String, webView: WebView) {
     val cookie = manifest.accessCookie ?: return
-    val parsed = runCatching { URL(entryUrl) }.getOrNull() ?: return
+    val parsed = parseRemoteUrl(entryUrl) ?: return
     val port = if (parsed.port > 0) ":${parsed.port}" else ""
     val cookieURL = "${parsed.protocol}://${parsed.host}${port}/"
     val secure = if (parsed.protocol.equals("https", ignoreCase = true)) "; Secure" else ""
@@ -707,6 +709,10 @@ class MainActivity : Activity() {
     webView.settings.javaScriptEnabled = true
     webView.settings.domStorageEnabled = true
     webView.settings.databaseEnabled = true
+    webView.settings.allowFileAccess = false
+    webView.settings.allowContentAccess = false
+    webView.settings.allowFileAccessFromFileURLs = false
+    webView.settings.allowUniversalAccessFromFileURLs = false
     webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
     webView.settings.mediaPlaybackRequiresUserGesture = false
     webView.settings.textZoom = 100
@@ -717,15 +723,49 @@ class MainActivity : Activity() {
     webView.settings.displayZoomControls = false
     webView.settings.loadsImagesAutomatically = true
     webView.webViewClient = object : WebViewClient() {
+      override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+        return !isAllowedRemoteUrl(url)
+      }
+
+      override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+        return !isAllowedRemoteUrl(request?.url?.toString())
+      }
+
       override fun onPageFinished(view: WebView?, url: String?) {
-        view?.loadUrl(
-          "javascript:(function(){var h=document.head||document.getElementsByTagName('head')[0];" +
+        if (!isAllowedRemoteUrl(url)) return
+        view?.evaluateJavascript(
+          "(function(){var h=document.head||document.getElementsByTagName('head')[0];" +
             "if(!h)return;var m=document.querySelector('meta[name=\"viewport\"]');" +
             "if(!m){m=document.createElement('meta');m.name='viewport';h.appendChild(m);}" +
-            "if(!m.content)m.content='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no';})()"
+            "if(!m.content)m.content='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no';})()",
+          null,
         )
       }
     }
+  }
+
+  private fun loadRemoteUrl(webView: WebView, url: String): Boolean {
+    if (!isAllowedRemoteUrl(url)) return false
+    webView.loadUrl(url)
+    return true
+  }
+
+  private fun localDocumentBaseUrl(): String {
+    return "about:blank"
+  }
+
+  private fun isAllowedRemoteUrl(url: String?): Boolean {
+    return parseRemoteUrl(url) != null
+  }
+
+  private fun parseRemoteUrl(url: String?): URL? {
+    val value = url?.trim().orEmpty()
+    if (value.isBlank()) return null
+    val parsed = runCatching { URL(value) }.getOrNull() ?: return null
+    if (!parsed.protocol.equals("http", ignoreCase = true) && !parsed.protocol.equals("https", ignoreCase = true)) {
+      return null
+    }
+    return parsed.takeIf { it.host.isNotBlank() }
   }
 
   private suspend fun captureSystemScreen(): CapturedScreenshot {

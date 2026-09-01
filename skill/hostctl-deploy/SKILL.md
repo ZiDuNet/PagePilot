@@ -1,18 +1,18 @@
 ---
 name: pagep
-description: 当 Agent 需要生成 HTML、Markdown、ZIP 或多文件静态站点，发布或更新 PagePilot 应用，复用创作市场作品，管理访问密码、版本、Token、屏幕投放和截图时使用。
+description: 当 Agent 需要将 HTML、Markdown、ZIP 或多文件静态站点发布或更新到 PagePilot，复用创作市场作品，管理访问密码、版本、Token、屏幕投放和截图时使用；仅要求本地生成或编辑内容时不要自动上传。
 metadata:
   version: "0.3.1"
-  updated: "2026-07-15"
+  updated: "2026-08-31"
 ---
 
 # PagePilot pagep Skill
 
 ## 核心规则
 
-当用户要求生成网页、报告、仪表板、简历、可视化、Markdown 文档，或要求「发布到 PagePilot」「生成访问链接」「投放到屏幕」时，统一走本 Skill。
+当用户明确要求「发布到 PagePilot」「生成访问链接」「投放到屏幕」或执行 PagePilot 管理操作时，走本 Skill。用户只要求生成或编辑本地网页、报告、仪表板、简历、可视化或 Markdown 文档时，不要擅自上传或创建 session。
 
-内容生成后必须发布到 PagePilot，并把服务端返回的 `url`、`detailUrl` 或 `versionUrl` 交给用户。不要只输出代码块让用户自己复制，也不要自行拼接最终公网链接。
+明确要求发布后，先完成本地 `preflight`，再把服务端返回的 `url`、`detailUrl` 或 `versionUrl` 交给用户。不要自行拼接最终公网链接；如果用户只要求本地产物，就直接交付本地文件或内容。
 
 ## 安装和入口
 
@@ -27,6 +27,7 @@ metadata:
 ```bash
 pagep version
 pagep doctor --server https://pagepilot.example.com
+pagep preflight ./site
 ```
 
 如果环境没有独立 `pagep` 命令，但已经解压 Skill 包，则在 Skill 目录内运行：
@@ -34,6 +35,7 @@ pagep doctor --server https://pagepilot.example.com
 ```bash
 python scripts/pagep.py version
 python scripts/pagep.py doctor --server https://pagepilot.example.com
+python scripts/pagep.py preflight ./site
 ```
 
 目标服务器优先使用 `--server`、`PAGEPILOT_SERVER` 或 `pagep config set server <url>` 保存的入口。用户用哪个 PagePilot 入口访问，就用哪个入口调用 API；路径模式下返回的应用链接会跟随这个入口。泛域名模式下，应用链接由后台的应用域名规则决定。
@@ -46,6 +48,7 @@ python scripts/pagep.py doctor --server https://pagepilot.example.com
 4. Skill、CLI、MCP 必须使用同一个 PagePilot 服务器地址和同一个用户 Token。
 5. 所有入口都只展示服务端返回的链接，不按本地 host、端口或域名规则自行拼接。
 6. 发布、追加或覆盖版本成功后，优先把命令输出里的「访问 URL」「详情 URL」「版本 URL」交给用户；这些链接来自服务端返回，同时保留 JSON 供自动化解析。
+7. 需要机器可解析时给 CLI 传 `--json`；成功和失败都会输出 JSON。失败对象至少包含 `success=false`、`errorCode`、`detail` 和 `hint`；服务端提供时还会带 `retryAfterSeconds` 与用于排查的 `requestId`，但进程仍会返回非零退出码。`get --download --json` 必须同时传 `--output`，避免把二进制内容写入标准输出。
 
 ## 身份和权限
 
@@ -70,6 +73,9 @@ pagep config show
 - 屏幕绑定、投放、截图、刷新、休眠、唤醒和关机指令只允许注册用户 Token 使用。
 
 ## 发布前必须确认
+
+- 在上传 HTML、目录或 ZIP 前，先运行 `pagep preflight <source>`。它只读本地文件，不会创建匿名 session、不会上传，也不会消耗配额；输出里的 `success=false` 时先按 `errors[].hint` 修复再发布。`warnings` 只提示兼容性风险，可由 Agent 结合用户目标决定是否继续。
+- `pagep preflight ./site --filename path/to/entry.html` 可在 ZIP 或目录包含多个入口时验证用户明确指定的入口。它检查目录/ZIP 的文件数、体积、路径穿越、符号链接、重复路径和入口识别；本地默认上限会在输出 `limits` 中列出，生产环境若调整过上传限额，先运行 `pagep doctor --server <地址>` 核对服务端返回的实际限制。未配置 Token 时 `doctor` 只检查公开只读接口，不会为了探测匿名发布而创建 session。
 
 - 先确认用户要「新建发布」还是「更新已有发布」。
 - 如果用户要更新但不知道原 code 或 URL，先列出当前身份拥有的站点让用户选择，不要猜 code。
@@ -186,7 +192,7 @@ PagePilot Markdown 渲染链路内置以下能力：
 pagep market search "报告" --sort hot --page-size 5
 pagep market show project-home
 pagep get project-home --download --output ./pagepilot-downloads
-pagep deploy ./pagepilot-downloads/project-home \
+pagep deploy ./pagepilot-downloads/project-home.zip \
   --title "参考项目官网的新作品" \
   --description "基于 project-home 的结构和风格二次创作。" \
   --template-source-code project-home \
@@ -197,7 +203,7 @@ pagep deploy ./pagepilot-downloads/project-home \
 
 ```bash
 pagep get project-home --download --output ./pagepilot-downloads
-pagep append existing-code ./pagepilot-downloads/project-home \
+pagep append existing-code ./pagepilot-downloads/project-home.zip \
   --description "基于 project-home 的结构和风格更新已有发布。" \
   --template-source-code project-home \
   --template-source-version 1

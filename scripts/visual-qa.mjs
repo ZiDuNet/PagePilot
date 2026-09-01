@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { captchaAnswer } from "./captcha-qa.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -127,18 +128,6 @@ async function request(baseURL, pathOrURL, options = {}) {
     return { response, body: raw };
   }
   return { response, body: raw ? JSON.parse(raw) : null };
-}
-
-function captchaAnswer(captchaOrImage) {
-  const image = String(captchaOrImage?.image || captchaOrImage || "");
-  const match = image.match(/^data:image\/svg\+xml(;base64)?,(.+)$/);
-  assert(match, "captcha image is not an SVG data URL");
-  const svg = match[1]
-    ? Buffer.from(match[2], "base64").toString("utf8")
-    : decodeURIComponent(match[2]);
-  const answer = svg.match(/>(\d{4})</)?.[1] || svg.match(/\b(\d{4})\b/)?.[1];
-  assert(answer, "could not read captcha answer from SVG");
-  return answer;
 }
 
 async function waitForServer(baseURL, proc) {
@@ -464,8 +453,10 @@ async function auditField(page, label) {
   const count = await fields.count();
   for (let i = 0; i < count; i += 1) {
     const field = fields.nth(i);
-    const title = (await field.locator("span").first().textContent())?.trim();
-    if (title === label) return field;
+    const title = await field.evaluate((element) =>
+      element.querySelector(":scope > span")?.textContent?.trim() || "",
+    );
+    if (title === label && await field.isVisible()) return field;
   }
   throw new Error(`audit filter field not found: ${label}`);
 }
@@ -515,6 +506,10 @@ async function verifyAuditPanelUI(context, baseURL, sites, adminUserId) {
   );
   assert(actionRows.length > 0 && actionRows.every((text) => text.includes("site.pin")), "audit action UI filter did not isolate site.pin rows");
 
+  const advanced = page.locator(".filter-advanced");
+  if (!(await advanced.getAttribute("open"))) {
+    await advanced.locator("summary").click();
+  }
   await selectAuditFilter(page, "站点", sites.htmlCode);
   await page.locator(".audit-table").getByText(sites.htmlCode, { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
 
@@ -558,19 +553,17 @@ async function verifyMarketBundleDetailUI(context, baseURL, sites) {
 }
 
 async function verifyProtectedMarketReuseUI(context, baseURL, sites) {
-  const page = await context.newPage();
+  const browser = context.browser();
+  assert(browser, "visual QA admin context is not attached to a browser");
+  const publicContext = await browser.newContext();
+  const page = await publicContext.newPage();
   await page.goto(`${baseURL}/market/${encodeURIComponent(sites.secretCode)}`, { waitUntil: "domcontentloaded" });
   await page.locator(".market-detail-layout").waitFor({ state: "visible", timeout: 10000 });
-  for (const text of [
-    "视觉 QA 加密应用",
-    "网页已加密",
-    "访问密码",
-    "模板复用受限",
-  ]) {
-    await page.getByText(text, { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
-  }
+  await page.getByText("视觉 QA 加密应用", { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
+  await page.locator(".detail-preview-toolbar").getByText("已加密", { exact: false }).first().waitFor({ state: "visible", timeout: 10000 });
+  await page.locator(".detail-state-row").getByText("访问密码", { exact: true }).waitFor({ state: "visible", timeout: 10000 });
   await assertDisabledButton(page, "模板复用受限");
-  await page.close();
+  await publicContext.close();
 }
 
 async function assertDisabledButton(page, name) {
@@ -739,11 +732,11 @@ async function main() {
     const mobile = { width: 390, height: 844 };
     const publicPages = [
       { label: "首页", path: "/", selector: ".page-main" },
-      { label: "创作市场", path: "/market", selector: ".market-page", text: "视觉 QA HTML 应用" },
+      { label: "创作市场", path: "/market", selector: ".market-page", text: "全部分类" },
       { label: "市场详情", path: `/market/${sites.multiCode}`, selector: ".market-detail-layout", text: "视觉 QA 多文件站点" },
-      { label: "手动部署", path: "/deploy", selector: ".deploy-format-strip" },
+      { label: "手动部署", path: "/deploy", selector: ".deploy-page-v2", text: "手动部署" },
       { label: "Skill & MCP", path: "/agents/", selector: ".content-page", text: "Skill" },
-      { label: "屏幕介绍", path: "/screens/", selector: ".screen-page-v2" },
+      { label: "屏幕介绍", path: "/screens/", selector: ".screen-page-v3", text: "广告屏" },
       { label: "HTML 应用运行页", path: `/agent/${sites.htmlCode}/`, text: "Visual QA HTML" },
       { label: "Markdown 运行页", path: `/agent/${sites.mdCode}/?theme=dark`, text: "Markdown Visual QA" },
     ];

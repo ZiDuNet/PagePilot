@@ -58,6 +58,9 @@ func (d *Deployer) ListVersions(ctx context.Context, code string) (*api.ListVers
 
 // LockVersion 设置/解除某版本锁定。
 func (d *Deployer) LockVersion(ctx context.Context, code string, version int64, locked bool) (*api.LockResponse, *api.APIError) {
+	d.mutationMu.Lock()
+	defer d.mutationMu.Unlock()
+
 	// 校验版本存在
 	if _, err := d.store.GetVersion(ctx, code, version); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -80,6 +83,9 @@ func (d *Deployer) LockVersion(ctx context.Context, code string, version int64, 
 // SwitchCurrent 切换某 site 的当前对外版本。
 // 同时切磁盘 symlink。
 func (d *Deployer) SwitchCurrent(ctx context.Context, code string, version int64) (*api.SetCurrentResponse, *api.APIError) {
+	d.mutationMu.Lock()
+	defer d.mutationMu.Unlock()
+
 	site, err := d.store.GetSite(ctx, code)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -136,6 +142,9 @@ func (d *Deployer) SwitchCurrentByUUID(ctx context.Context, code, versionID stri
 
 // OverwriteVersion 覆盖未锁定版本的内容（Day 4 用，先实现核心逻辑）。
 func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version int64, req api.OverwriteRequest) (*api.DeployResponse, *api.APIError) {
+	d.mutationMu.Lock()
+	defer d.mutationMu.Unlock()
+
 	// 加载版本
 	v, err := d.store.GetVersion(ctx, code, version)
 	if err != nil {
@@ -272,6 +281,9 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 
 // SetVersionStatus 切换 active/inactive（Day 4）。
 func (d *Deployer) SetVersionStatus(ctx context.Context, code string, version int64, status string) (*api.LockResponse, *api.APIError) {
+	d.mutationMu.Lock()
+	defer d.mutationMu.Unlock()
+
 	v, err := d.store.GetVersion(ctx, code, version)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -301,6 +313,9 @@ func (d *Deployer) SetVersionStatus(ctx context.Context, code string, version in
 
 // DeleteVersion 删除版本（Day 4）。
 func (d *Deployer) DeleteVersion(ctx context.Context, code string, version int64) (*api.SetCurrentResponse, *api.APIError) {
+	d.mutationMu.Lock()
+	defer d.mutationMu.Unlock()
+
 	v, err := d.store.GetVersion(ctx, code, version)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -314,15 +329,15 @@ func (d *Deployer) DeleteVersion(ctx context.Context, code string, version int64
 			fmt.Sprintf("version %d is locked and cannot be deleted", version))
 	}
 
-	// 删 DB 记录
+	// Delete the metadata first. The publication lock prevents another append
+	// from reusing this version number until the synchronous file cleanup below
+	// has completed, so cleanup cannot remove a newly written directory.
 	if err := d.store.DeleteVersion(ctx, code, version); err != nil {
 		return nil, api.NewError(api.CodeInternal, "delete_version", err.Error())
 	}
-
-	// 删磁盘文件（用 .del 后缀再异步清理，避免 race；这里同步删简化）
-	go func() {
-		_ = d.deleteVersionFilesForStorage(context.Background(), code, version, d.versionStorage(v))
-	}()
+	if err := d.deleteVersionFilesForStorage(ctx, code, version, d.versionStorage(v)); err != nil {
+		return nil, api.NewError(api.CodeInternal, "delete_version_files", err.Error())
+	}
 
 	// 如果删的是当前版本，找一个 active 版本顶上
 	site, err := d.store.GetSite(ctx, code)
@@ -543,6 +558,7 @@ func (d *Deployer) writeFilesToDir(dir string, files []resolvedFile) error {
 			return err
 		}
 		if err := tmp.Close(); err != nil {
+			_ = os.Remove(tmp.Name())
 			return err
 		}
 		if err := os.Rename(tmp.Name(), full); err != nil {

@@ -68,7 +68,7 @@ The work is not complete yet. The repository has made large progress and now has
 - Hosted HTML and Markdown include `report-uri /api/security/csp-report`; browser CSP violations are normalized into `security.csp_report` audit logs.
 - Added tests for Markdown rendering and Markdown CSP.
 - Updated README and Docker/deploy docs for:
-  - default admin account
+  - explicit production bootstrap administrator credentials
   - storage persistence
   - OSS envs
   - email verification envs
@@ -328,4 +328,3 @@ python scripts/build_skill_zip.py
 ```
 
 `make build` / `make docker` and the Dockerfile builder stage run the same script before compiling Go binaries, so `docker compose up -d --build` should embed the current Skill ZIP even when the operator does not run Make locally.
-

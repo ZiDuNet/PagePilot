@@ -13,6 +13,9 @@
     "test:deploy-protocol": "node scripts/deployProtocol.test.mjs",
     "test:deploy-upload": "node scripts/deployUpload.test.mjs",
     "test:preview-sandbox": "node scripts/previewSandbox.test.mjs",
+    "test:bulk-reuse-policy": "node scripts/bulkReusePolicy.test.mjs",
+    "test:accessibility": "node scripts/accessibility.test.mjs",
+    "test:auth-storage": "node scripts/authStorage.test.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

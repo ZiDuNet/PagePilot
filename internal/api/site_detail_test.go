@@ -15,11 +15,11 @@ import (
 func TestMarketplaceDetailIncludesBundleFilesAndReuse(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	user, err := authSvc.CreateUser(t.Context(), "reader", "password123", false, 20)
+	user, err := authSvc.CreateUser(context.Background(), "reader", "password123", false, 20)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "reader-token", false, user.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "reader-token", false, user.ID, nil)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
@@ -279,6 +279,7 @@ func TestMarketplaceProtectedDetailBlocksExplicitReusePolicyAllow(t *testing.T) 
 func TestReusePolicyAllowsEncryptedSiteForManager(t *testing.T) {
 	allowDownload, allowReuse, note := reusePolicy(detailReusePolicy{
 		CanManage:            true,
+		Authenticated:        true,
 		AccessProtected:      true,
 		Visibility:           "public",
 		Status:               "active",
@@ -294,14 +295,30 @@ func TestReusePolicyAllowsEncryptedSiteForManager(t *testing.T) {
 	}
 }
 
+func TestReusePolicyBlocksAnonymousManagerSourceDownload(t *testing.T) {
+	allowDownload, allowReuse, note := reusePolicy(detailReusePolicy{
+		CanManage:     true,
+		Authenticated: false,
+		Visibility:    "public",
+		Status:        "active",
+	})
+
+	if allowDownload || allowReuse {
+		t.Fatalf("allowDownload=%v allowReuse=%v; anonymous manager must not get unavailable source actions", allowDownload, allowReuse)
+	}
+	if !strings.Contains(note, "匿名会话") {
+		t.Fatalf("note = %q; want anonymous-session guidance", note)
+	}
+}
+
 func TestAdminSiteDetailIncludesVersionsBundleAndFiles(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	admin, err := authSvc.CreateUser(t.Context(), "admin", "password123", true, -1)
+	admin, err := authSvc.CreateUser(context.Background(), "admin", "password123", true, -1)
 	if err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "admin-token", true, admin.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "admin-token", true, admin.ID, nil)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}

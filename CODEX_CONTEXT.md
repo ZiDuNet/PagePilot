@@ -6,7 +6,7 @@ This file is committed on purpose so another machine or Codex session can resume
 
 - Product name: PagePilot.
 - Repository: `ZiDuNet/PagePilot`.
-- Current release version: `0.3.0`.
+- Current release version: `0.3.1`.
 - Main working branch after this cleanup: `main`.
 - Historical implementation branch: `codex/public-url-embed-settings`; it has been promoted into `main`.
 - Do not commit `竞品/`; it is a local read-only competitor reference checkout.
@@ -29,7 +29,7 @@ The public UI should feel like a polished PagePilot product, not a generic admin
 
 - Default app URL mode is path mode: `/agent/{code}/`.
 - Domain and dual modes are still supported through env/config: `HOSTCTL_APP_URL_MODE`, `HOSTCTL_APP_DOMAIN_SUFFIX`, `HOSTCTL_APP_URL_SCHEME`, `HOSTCTL_APP_URL_PORT`.
-- Docker default admin for an empty database is `admin / 123456`; users must change it after first login.
+- Production Docker has no fixed administrator or password. Set `HOSTCTL_ADMIN_USERNAME` and `HOSTCTL_ADMIN_PASSWORD` explicitly before starting with an empty database; existing databases are never overwritten. `HOSTCTL_MASTER_KEY` is also mandatory in production.
 - Uploaded files persist through the configured storage backend:
   - `HOSTCTL_STORAGE_BACKEND=local` uses local filesystem paths.
   - `HOSTCTL_STORAGE_BACKEND=oss` uses Aliyun OSS for publish, preview/read, source download, version overwrite cleanup, version delete, and whole-site delete.

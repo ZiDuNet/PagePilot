@@ -72,8 +72,9 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			},
 			"/api/config": map[string]any{
 				"get": map[string]any{
-					"summary":  "Read runtime configuration",
-					"security": []any{},
+					"summary":     "Read runtime configuration",
+					"description": "Public endpoint for frontend capability discovery. Anonymous responses redact CORS and iframe allowlists, SMTP connection details, hosted filesystem paths, and OSS endpoint/bucket/prefix fields; administrators receive those fields for the settings console.",
+					"security":    []any{},
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Runtime configuration", "content": jsonSchemaRef("ConfigResponse")},
 					},
@@ -95,6 +96,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"security": []any{},
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Captcha created", "content": jsonSchemaRef("CaptchaResponse")},
+						"429": errorResponse(),
 					},
 				},
 			},
@@ -121,6 +123,29 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 						"200": map[string]any{"description": "User registered", "content": jsonSchemaRef("RegisterResponse")},
 						"400": errorResponse(),
 						"403": errorResponse(),
+						"429": errorResponse(),
+					},
+				},
+			},
+			"/api/account/password": map[string]any{
+				"patch": map[string]any{
+					"summary":     "Change the current account password",
+					"description": "Registered user login cookie or bearer token required. Changing the password invalidates existing sessions and tokens for the account.",
+					"requestBody": jsonBodyRef("AccountPasswordRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Password changed", "content": jsonSchemaRef("AccountPasswordResponse")},
+						"400": errorResponse(),
+						"401": errorResponse(),
+					},
+				},
+				"post": map[string]any{
+					"summary":     "Change the current account password (compatibility method)",
+					"description": "Compatibility alias for PATCH /api/account/password.",
+					"requestBody": jsonBodyRef("AccountPasswordRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Password changed", "content": jsonSchemaRef("AccountPasswordResponse")},
+						"400": errorResponse(),
+						"401": errorResponse(),
 					},
 				},
 			},
@@ -141,15 +166,24 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			},
 			"/api/deploy/content": map[string]any{
 				"get": map[string]any{
-					"summary":  "Read deployed content metadata or download files",
-					"security": []any{},
+					"summary":     "Read deployed content metadata or download files",
+					"description": "Registered user token or login cookie required. Source download is subject to the site's visibility, access password, and reuse policy; admins can download any site for audit or backup.",
+					"security":    []map[string]any{{"bearerAuth": []string{}}},
 					"parameters": []map[string]any{
 						queryParam("code", "string", true),
 						queryParam("version", "integer", false),
 						queryParam("download", "boolean", false),
 					},
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Content metadata or raw download", "content": jsonSchemaRef("GetContentResponse")},
+						"200": map[string]any{
+							"description": "Content metadata or raw ZIP download",
+							"content": map[string]any{
+								"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/GetContentResponse"}},
+								"application/zip":  map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}},
+							},
+						},
+						"401": errorResponse(),
+						"403": errorResponse(),
 						"404": errorResponse(),
 					},
 				},
@@ -176,6 +210,16 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"responses": map[string]any{"200": map[string]any{"description": "Creation market deploy list"}},
 				},
 			},
+			"/api/market/categories": map[string]any{
+				"get": map[string]any{
+					"summary":     "List creation market categories",
+					"description": "Public endpoint used to populate market filters and deployment category selectors.",
+					"security":    []any{},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Market categories", "content": jsonSchemaRef("MarketCategoriesResponse")},
+					},
+				},
+			},
 			"/api/deploys/{publicId}": map[string]any{
 				"get": map[string]any{
 					"summary":    "Read public deploy metadata by UUID or code",
@@ -192,6 +236,32 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"responses":  map[string]any{"200": map[string]any{"description": "Like count updated"}},
 				},
 			},
+			"/api/deploys/{code}/favorite": map[string]any{
+				"post": map[string]any{
+					"summary":     "Favorite or unfavorite a deploy",
+					"description": "Registered user login cookie or bearer token required. The operation is idempotent for the current user.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object", "required": []string{"favorited"}, "properties": map[string]any{"favorited": map[string]any{"type": "boolean"}}}}}},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Favorite state updated"},
+						"400": errorResponse(),
+						"401": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+			},
+			"/api/deploys/{code}/qr": map[string]any{
+				"get": map[string]any{
+					"summary":     "Generate a deploy QR code",
+					"description": "Public endpoint. Returns a PNG QR code for the current public application URL.",
+					"security":    []any{},
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "PNG QR code", "content": map[string]any{"image/png": map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}}}},
+						"404": errorResponse(),
+					},
+				},
+			},
 			"/api/deploys/{code}/access": map[string]any{
 				"post": map[string]any{
 					"summary":     "Verify a site access password",
@@ -206,6 +276,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 						"200": map[string]any{"description": "Access granted"},
 						"400": errorResponse(),
 						"401": errorResponse(),
+						"429": errorResponse(),
 					},
 				},
 				"patch": map[string]any{
@@ -217,6 +288,49 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 						"200": map[string]any{"description": "Access password updated"},
 						"401": errorResponse(),
 						"403": errorResponse(),
+					},
+				},
+			},
+			"/api/deploys/{code}/access/set": map[string]any{
+				"post": map[string]any{
+					"summary":     "Set or clear a site access password (compatibility method)",
+					"description": "Compatibility alias for PATCH /api/deploys/{code}/access. Site owner or admin required.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteAccessRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Access password updated"},
+						"400": errorResponse(),
+						"401": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+			},
+			"/api/deploys/{code}/visibility": map[string]any{
+				"patch": map[string]any{
+					"summary":     "Set site market visibility",
+					"description": "Site owner or admin required. Supported values are public and unlisted.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteVisibilityRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Visibility updated", "content": jsonSchemaRef("SiteVisibilityResponse")},
+						"400": errorResponse(),
+						"401": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+				"post": map[string]any{
+					"summary":     "Set site market visibility (compatibility method)",
+					"description": "Compatibility alias for PATCH /api/deploys/{code}/visibility.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteVisibilityRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Visibility updated", "content": jsonSchemaRef("SiteVisibilityResponse")},
+						"400": errorResponse(),
+						"401": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
 					},
 				},
 			},
@@ -327,7 +441,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"description": "Called by the screen app after the operator configures the PagePilot server address.",
 					"security":    []any{},
 					"requestBody": jsonBodyRef("DevicePairingStartRequest"),
-					"responses":   map[string]any{"200": map[string]any{"description": "Pairing code created", "content": jsonSchemaRef("DevicePairingStartResponse")}},
+					"responses":   map[string]any{"200": map[string]any{"description": "Pairing code created", "content": jsonSchemaRef("DevicePairingStartResponse")}, "429": errorResponse()},
 				},
 			},
 			"/api/device/pairing/complete": map[string]any{
@@ -336,7 +450,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"description": "Called by the screen app with pairingId and pairingSecret. Returns paired=false until a registered user binds the pairing code.",
 					"security":    []any{},
 					"requestBody": jsonBodyRef("DevicePairingCompleteRequest"),
-					"responses":   map[string]any{"200": map[string]any{"description": "Device token issued", "content": jsonSchemaRef("DevicePairingCompleteResponse")}, "202": map[string]any{"description": "Not paired yet"}},
+					"responses":   map[string]any{"200": map[string]any{"description": "Device token issued", "content": jsonSchemaRef("DevicePairingCompleteResponse")}, "202": map[string]any{"description": "Not paired yet"}, "429": errorResponse()},
 				},
 			},
 			"/api/device/manifest": map[string]any{
@@ -350,7 +464,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/device/ws": map[string]any{
 				"get": map[string]any{
 					"summary":     "Open the realtime screen control WebSocket",
-					"description": "Requires Authorization: Device <deviceToken>. For reverse proxies that drop Authorization during Upgrade, deviceToken or token query parameter is also accepted.",
+					"description": "Requires Authorization: Device <deviceToken>. For reverse proxies that drop Authorization during Upgrade, deviceToken or token query parameter is accepted only on this WebSocket route; ordinary device HTTP endpoints require the Authorization header.",
 					"security":    []any{},
 					"responses":   map[string]any{"101": map[string]any{"description": "WebSocket upgrade"}, "401": errorResponse()},
 				},
@@ -396,6 +510,13 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"requestBody": versionPatchBodyRef(),
 					"responses":   map[string]any{"200": map[string]any{"description": "Version updated"}, "423": errorResponse()},
 				},
+				"post": map[string]any{
+					"summary":     "Overwrite an unlocked version (compatibility method)",
+					"description": "Compatibility alias for PATCH /api/deploys/{code}/versions/{version}.",
+					"parameters":  []map[string]any{pathParam("code", "string"), pathParam("version", "integer")},
+					"requestBody": versionPatchBodyRef(),
+					"responses":   map[string]any{"200": map[string]any{"description": "Version updated"}, "400": errorResponse(), "401": errorResponse(), "403": errorResponse(), "404": errorResponse(), "423": errorResponse()},
+				},
 				"delete": map[string]any{
 					"summary":    "Delete an unlocked version",
 					"parameters": []map[string]any{pathParam("code", "string"), pathParam("version", "integer")},
@@ -417,6 +538,13 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"requestBody": jsonBodyRef("SetCurrentRequest"),
 					"responses":   map[string]any{"200": map[string]any{"description": "Current version switched"}},
 				},
+				"post": map[string]any{
+					"summary":     "Switch the current public version (compatibility method)",
+					"description": "Compatibility alias for PATCH /api/deploys/{code}/current.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SetCurrentRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "Current version switched"}, "400": errorResponse(), "401": errorResponse(), "403": errorResponse(), "404": errorResponse()},
+				},
 			},
 			"/api/deploys/{code}/primary-strategy": map[string]any{
 				"get": map[string]any{
@@ -430,12 +558,57 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"requestBody": jsonBodyRef("PrimaryStrategyRequest"),
 					"responses":   map[string]any{"200": map[string]any{"description": "Primary strategy updated"}},
 				},
+				"post": map[string]any{
+					"summary":     "Set primary version strategy (compatibility method)",
+					"description": "Compatibility alias for PATCH /api/deploys/{code}/primary-strategy.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("PrimaryStrategyRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "Primary strategy updated"}, "400": errorResponse(), "401": errorResponse(), "403": errorResponse(), "404": errorResponse()},
+				},
+			},
+			"/api/admin/login": map[string]any{
+				"post": map[string]any{
+					"summary":     "Log in to the admin console",
+					"description": "Public login endpoint. A successful request sets an HttpOnly admin session cookie; captcha is required when the server presents a challenge.",
+					"security":    []any{},
+					"requestBody": jsonBodyRef("AdminLoginRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Admin login succeeded", "content": jsonSchemaRef("AdminLoginResponse")},
+						"400": errorResponse(),
+						"401": errorResponse(),
+						"429": errorResponse(),
+					},
+				},
+			},
+			"/api/admin/logout": map[string]any{
+				"post": map[string]any{
+					"summary":     "Log out of the admin console",
+					"description": "Clears the current admin login cookie. Calling this endpoint is safe when no session is present.",
+					"security":    []any{},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Admin logout completed", "content": jsonSchemaRef("AdminLogoutResponse")},
+					},
+				},
+			},
+			"/api/admin/setup": map[string]any{
+				"post": map[string]any{
+					"summary":     "Create the first administrator",
+					"description": "Only available in development mode while the database has no active administrator (is_admin=1 and is_active=1). Production startup requires explicit HOSTCTL_ADMIN_USERNAME and HOSTCTL_ADMIN_PASSWORD credentials when no active administrator exists; this endpoint returns 403 when authentication is required.",
+					"security":    []any{},
+					"requestBody": jsonBodyRef("AdminSetupRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Administrator created", "content": jsonSchemaRef("AdminSetupResponse")},
+						"400": errorResponse(),
+						"401": errorResponse(),
+						"403": errorResponse(),
+					},
+				},
 			},
 			"/api/admin/session": map[string]any{
 				"get": map[string]any{
 					"summary":     "Validate admin login session",
 					"description": "Validates an admin login cookie or bearer token. Development mode only reports mode=dev and still requires login.",
-					"responses":   map[string]any{"200": map[string]any{"description": "Admin session", "content": jsonSchemaRef("AdminSessionResponse")}, "403": errorResponse()},
+					"responses":   map[string]any{"200": map[string]any{"description": "Admin session", "content": jsonSchemaRef("AdminSessionResponse")}, "401": errorResponse(), "403": errorResponse()},
 				},
 			},
 			"/api/admin/sites": map[string]any{
@@ -481,6 +654,13 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 						"200": map[string]any{"description": "Pin state updated", "content": jsonSchemaRef("SitePinResponse")},
 						"403": errorResponse(),
 					},
+					"post": map[string]any{
+						"summary":     "Pin or unpin a creation market site (compatibility method)",
+						"description": "Compatibility alias for PATCH /api/admin/sites/{code}/pin.",
+						"parameters":  []map[string]any{pathParam("code", "string")},
+						"requestBody": jsonBodyRef("SitePinRequest"),
+						"responses":   map[string]any{"200": map[string]any{"description": "Pin state updated", "content": jsonSchemaRef("SitePinResponse")}, "400": errorResponse(), "401": errorResponse(), "403": errorResponse(), "404": errorResponse()},
+					},
 				},
 			},
 			"/api/admin/sites/{code}/reuse-policy": map[string]any{
@@ -494,6 +674,13 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 						"400": errorResponse(),
 						"403": errorResponse(),
 						"404": errorResponse(),
+					},
+					"post": map[string]any{
+						"summary":     "Update site source download and reuse policy (compatibility method)",
+						"description": "Compatibility alias for PATCH /api/admin/sites/{code}/reuse-policy.",
+						"parameters":  []map[string]any{pathParam("code", "string")},
+						"requestBody": jsonBodyRef("SiteReusePolicyRequest"),
+						"responses":   map[string]any{"200": map[string]any{"description": "Reuse policy updated", "content": jsonSchemaRef("SiteReusePolicyResponse")}, "400": errorResponse(), "401": errorResponse(), "403": errorResponse(), "404": errorResponse()},
 					},
 				},
 			},
@@ -509,6 +696,64 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 						"403": errorResponse(),
 						"404": errorResponse(),
 					},
+					"post": map[string]any{
+						"summary":     "Update site runtime security mode (compatibility method)",
+						"description": "Compatibility alias for PATCH /api/admin/sites/{code}/security-mode.",
+						"parameters":  []map[string]any{pathParam("code", "string")},
+						"requestBody": jsonBodyRef("SiteSecurityModeRequest"),
+						"responses":   map[string]any{"200": map[string]any{"description": "Security mode updated", "content": jsonSchemaRef("SiteSecurityModeResponse")}, "400": errorResponse(), "401": errorResponse(), "403": errorResponse(), "404": errorResponse()},
+					},
+				},
+			},
+			"/api/admin/sites/{code}/category": map[string]any{
+				"patch": map[string]any{
+					"summary":     "Set a site's creation market category",
+					"description": "Site owner or admin required. An empty category removes the current category.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteCategoryRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Category updated"},
+						"400": errorResponse(),
+						"401": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
+				},
+				"post": map[string]any{
+					"summary":     "Set a site's creation market category (compatibility method)",
+					"description": "Compatibility alias for PATCH /api/admin/sites/{code}/category.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteCategoryRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "Category updated"}, "400": errorResponse(), "401": errorResponse(), "403": errorResponse(), "404": errorResponse()},
+				},
+			},
+			"/api/admin/sites/{code}/tags": map[string]any{
+				"patch": map[string]any{
+					"summary":     "Set a site's creation market tags",
+					"description": "Site owner or admin required. Replaces the complete tag list for the site.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteTagsRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "Tags updated"}, "400": errorResponse(), "401": errorResponse(), "403": errorResponse(), "404": errorResponse()},
+				},
+				"post": map[string]any{
+					"summary":     "Set a site's creation market tags (compatibility method)",
+					"description": "Compatibility alias for PATCH /api/admin/sites/{code}/tags.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"requestBody": jsonBodyRef("SiteTagsRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "Tags updated"}, "400": errorResponse(), "401": errorResponse(), "403": errorResponse(), "404": errorResponse()},
+				},
+			},
+			"/api/admin/sites/{code}/access/reveal": map[string]any{
+				"post": map[string]any{
+					"summary":     "Reveal a site's access password",
+					"description": "Admin token or admin login cookie required. This sensitive operation is audited and returns the configured plaintext access password.",
+					"parameters":  []map[string]any{pathParam("code", "string")},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Access password revealed"},
+						"401": errorResponse(),
+						"403": errorResponse(),
+						"404": errorResponse(),
+					},
 				},
 			},
 			"/api/admin/anonymous-sessions": map[string]any{
@@ -516,6 +761,43 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"summary":     "List recent anonymous deploy sessions",
 					"description": "Admin token required in production.",
 					"responses":   map[string]any{"200": map[string]any{"description": "Anonymous session list", "content": jsonSchemaRef("AnonymousSessionListResponse")}},
+				},
+			},
+			"/api/admin/skill": map[string]any{
+				"get": map[string]any{
+					"summary":     "Read the managed Skill package metadata",
+					"description": "Admin token or admin login cookie required. Returns the active package source, size, digest, and update time.",
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Skill package metadata"},
+						"401": errorResponse(),
+						"403": errorResponse(),
+					},
+				},
+			},
+			"/api/admin/skill/package": map[string]any{
+				"post": map[string]any{
+					"summary":     "Upload a managed Skill package",
+					"description": "Admin token or admin login cookie required. Uploads a validated ZIP package and records an audit event.",
+					"requestBody": map[string]any{"required": true, "content": map[string]any{"multipart/form-data": map[string]any{"schema": map[string]any{"type": "object", "required": []string{"file"}, "properties": map[string]any{"file": map[string]any{"type": "string", "format": "binary"}}}}}},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Skill package uploaded"},
+						"400": errorResponse(),
+						"401": errorResponse(),
+						"403": errorResponse(),
+					},
+				},
+			},
+			"/api/admin/market/categories": map[string]any{
+				"put": map[string]any{
+					"summary":     "Replace creation market categories",
+					"description": "Admin token or admin login cookie required. Replaces the complete category list used by the market and deployment forms.",
+					"requestBody": jsonBodyRef("MarketCategoriesRequest"),
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Market categories updated", "content": jsonSchemaRef("MarketCategoriesResponse")},
+						"400": errorResponse(),
+						"401": errorResponse(),
+						"403": errorResponse(),
+					},
 				},
 			},
 			"/api/admin/users": map[string]any{
@@ -538,6 +820,13 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 					"parameters":  []map[string]any{pathParam("id", "string")},
 					"requestBody": jsonBodyRef("UserUpdateRequest"),
 					"responses":   map[string]any{"200": map[string]any{"description": "User updated", "content": jsonSchemaRef("UserUpdateResponse")}, "400": errorResponse(), "403": errorResponse(), "404": errorResponse()},
+				},
+				"post": map[string]any{
+					"summary":     "Update a registered user (compatibility method)",
+					"description": "Compatibility alias for PATCH /api/admin/users/{id}.",
+					"parameters":  []map[string]any{pathParam("id", "string")},
+					"requestBody": jsonBodyRef("UserUpdateRequest"),
+					"responses":   map[string]any{"200": map[string]any{"description": "User updated", "content": jsonSchemaRef("UserUpdateResponse")}, "400": errorResponse(), "401": errorResponse(), "403": errorResponse(), "404": errorResponse()},
 				},
 				"delete": map[string]any{
 					"summary":     "Delete a registered user",
@@ -676,8 +965,10 @@ func openAPISchemas() map[string]any {
 		"RegisterResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "userId": str, "username": str, "email": str, "emailVerified": boolSchema,
 		}},
-		"DeployFile": map[string]any{"type": "object", "required": []string{"path"}, "properties": map[string]any{
-			"path": str, "content": str, "contentBase64": str,
+		"DeployFile": map[string]any{"type": "object", "required": []string{"path"}, "description": "A deployable file. Set content for UTF-8 text or contentBase64 for binary data; omit both fields for an intentional zero-byte file. Do not set both fields to non-empty values.", "properties": map[string]any{
+			"path":          str,
+			"content":       map[string]any{"type": "string", "description": "UTF-8 text content. Use an empty string for a zero-byte text file."},
+			"contentBase64": map[string]any{"type": "string", "description": "Base64-encoded binary content. Omit this field for a zero-byte file unless binary metadata is important to the client."},
 		}},
 		"DeployRequest": map[string]any{"type": "object", "required": []string{"description"}, "properties": map[string]any{
 			"filename": map[string]any{
@@ -736,10 +1027,19 @@ func openAPISchemas() map[string]any {
 		"PrimaryStrategyRequest": map[string]any{"type": "object", "properties": map[string]any{"primaryVersionStrategy": map[string]any{"type": "string", "enum": []string{"likes", "latest"}}}},
 		"ConfigResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "currentBaseURL": str,
-			"mode": str, "corsAllowOrigins": str,
-			"embedPolicy": str, "embedAllowOrigins": str, "cooldownSeconds": intSchema,
-			"appURL": map[string]any{"$ref": "#/components/schemas/AppURLConfig"},
-			"limits": map[string]any{"$ref": "#/components/schemas/Limits"}, "anonymousPolicy": map[string]any{"$ref": "#/components/schemas/AnonymousPolicy"}, "version": str,
+			"mode":                str,
+			"corsAllowOrigins":    map[string]any{"type": "string", "description": "Administrator-only CORS origin allowlist; empty for anonymous requests."},
+			"embedPolicy":         str,
+			"embedAllowOrigins":   map[string]any{"type": "string", "description": "Administrator-only iframe origin allowlist; omitted or empty for anonymous requests."},
+			"contentInjection":    map[string]any{"$ref": "#/components/schemas/ContentInjectionConfig", "description": "Administrators receive code snippets; anonymous requests receive enabled/disabled summaries only."},
+			"cooldownSeconds":     intSchema,
+			"appURL":              map[string]any{"$ref": "#/components/schemas/AppURLConfig"},
+			"limits":              map[string]any{"$ref": "#/components/schemas/Limits"},
+			"anonymousPolicy":     map[string]any{"$ref": "#/components/schemas/AnonymousPolicy"},
+			"registrationAllowed": boolSchema,
+			"email":               map[string]any{"$ref": "#/components/schemas/EmailConfig"},
+			"storage":             map[string]any{"$ref": "#/components/schemas/StorageConfig"},
+			"version":             str,
 		}},
 		"AppURLConfig": map[string]any{"type": "object", "properties": map[string]any{
 			"appURLMode":      map[string]any{"type": "string", "enum": []string{"path", "domain", "dual"}},
@@ -747,6 +1047,40 @@ func openAPISchemas() map[string]any {
 		}},
 		"Limits":          map[string]any{"type": "object", "properties": map[string]any{"maxSingleFileBytes": intSchema, "maxSiteTotalBytes": intSchema, "maxFilesPerSite": intSchema}},
 		"AnonymousPolicy": map[string]any{"type": "object", "properties": map[string]any{"deployLimit": intSchema}},
+		"EmailConfig": map[string]any{"type": "object", "properties": map[string]any{
+			"verificationEnabled": boolSchema,
+			"smtpConfigured":      boolSchema,
+			"smtpHost":            map[string]any{"type": "string", "description": "Administrator-only SMTP host; omitted for anonymous requests."},
+			"smtpFrom":            map[string]any{"type": "string", "description": "Administrator-only SMTP sender; omitted for anonymous requests."},
+			"smtpSecure":          map[string]any{"type": "string", "description": "Administrator-only SMTP transport mode; omitted for anonymous requests."},
+		}},
+		"StorageConfig": map[string]any{"type": "object", "description": "Administrator-only storage location details; anonymous requests receive an empty object.", "properties": map[string]any{
+			"backend":          str,
+			"hostedDir":        str,
+			"ossProvider":      str,
+			"ossEndpoint":      str,
+			"ossBucket":        str,
+			"ossPrefix":        str,
+			"ossPublicBaseURL": str,
+			"ossConfigured":    boolSchema,
+		}},
+		"ContentInjectionConfig": map[string]any{"type": "object", "properties": map[string]any{
+			"main": map[string]any{"$ref": "#/components/schemas/InjectionTargetConfig"},
+			"app":  map[string]any{"$ref": "#/components/schemas/InjectionTargetConfig"},
+		}},
+		"InjectionTargetConfig": map[string]any{"type": "object", "properties": map[string]any{
+			"enabled":       boolSchema,
+			"headCode":      map[string]any{"type": "string", "description": "Administrator-only injected code; omitted for anonymous requests."},
+			"bodyStartCode": map[string]any{"type": "string", "description": "Administrator-only injected code; omitted for anonymous requests."},
+			"bodyEndCode":   map[string]any{"type": "string", "description": "Administrator-only injected code; omitted for anonymous requests."},
+		}},
+		"MarketCategory": map[string]any{"type": "object", "required": []string{"slug", "label"}, "properties": map[string]any{"slug": map[string]any{"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"}, "label": map[string]any{"type": "string", "maxLength": 128}, "note": map[string]any{"type": "string", "maxLength": 512}}},
+		"MarketCategoriesResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "categories": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/MarketCategory"}},
+		}},
+		"MarketCategoriesRequest": map[string]any{"type": "object", "required": []string{"categories"}, "properties": map[string]any{
+			"categories": map[string]any{"type": "array", "maxItems": 64, "items": map[string]any{"$ref": "#/components/schemas/MarketCategory"}},
+		}},
 		"AnonymousSessionResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "sessionId": str, "agentId": str, "agentLabel": str, "deployCount": intSchema, "deployLimit": intSchema, "remaining": intSchema,
 		}},
@@ -759,6 +1093,21 @@ func openAPISchemas() map[string]any {
 		"SiteAccessRequest": map[string]any{"type": "object", "properties": map[string]any{
 			"password": str,
 		}},
+		"SiteVisibilityRequest": map[string]any{"type": "object", "required": []string{"visibility"}, "properties": map[string]any{
+			"visibility": map[string]any{"type": "string", "enum": []string{"public", "unlisted"}},
+		}},
+		"SiteVisibilityResponse": map[string]any{"type": "object", "properties": map[string]any{
+			"success": boolSchema, "code": str, "visibility": str,
+		}},
+		"SiteCategoryRequest":     map[string]any{"type": "object", "required": []string{"category"}, "properties": map[string]any{"category": str}},
+		"SiteTagsRequest":         map[string]any{"type": "object", "required": []string{"tags"}, "properties": map[string]any{"tags": map[string]any{"type": "array", "items": str}}},
+		"AccountPasswordRequest":  map[string]any{"type": "object", "required": []string{"oldPassword", "newPassword"}, "properties": map[string]any{"oldPassword": str, "newPassword": str}},
+		"AccountPasswordResponse": map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema}},
+		"AdminLoginRequest":       map[string]any{"type": "object", "required": []string{"username", "password"}, "properties": map[string]any{"username": str, "password": str, "captchaId": str, "captcha": str}},
+		"AdminLoginResponse":      map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "mode": str, "userId": str, "username": str, "isAdmin": boolSchema}},
+		"AdminLogoutResponse":     map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema}},
+		"AdminSetupRequest":       map[string]any{"type": "object", "required": []string{"username", "password"}, "properties": map[string]any{"username": str, "password": str, "captchaId": str, "captcha": str}},
+		"AdminSetupResponse":      map[string]any{"type": "object", "properties": map[string]any{"success": boolSchema, "userId": str, "username": str}},
 		"AnonymousSessionListResponse": map[string]any{"type": "object", "properties": map[string]any{
 			"success": boolSchema, "deployLimit": intSchema,
 			"sessions": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{

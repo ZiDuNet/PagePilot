@@ -15,11 +15,6 @@ export function authHeaders(extra: HeadersInit = {}): HeadersInit {
   if (typeof location !== "undefined" && !headers["X-Hostctl-Current-Origin"]) {
     headers["X-Hostctl-Current-Origin"] = location.origin;
   }
-  const token =
-    localStorage.getItem("hostctl-admin-token") ||
-    localStorage.getItem("hostctl-token") ||
-    "";
-  if (token && !headers.Authorization) headers.Authorization = `Bearer ${token}`;
   return headers;
 }
 

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -39,6 +41,12 @@ type Limits struct {
 	MaxSingleFileBytes int64
 	MaxSiteTotalBytes  int64
 	MaxFiles           int
+}
+
+// DefaultLimits returns the same upload limits used when callers do not pass
+// explicit limits to AnalyzeZip.
+func DefaultLimits() Limits {
+	return normalizeLimits(Limits{})
 }
 
 type Input struct {
@@ -109,7 +117,11 @@ func AnalyzeZip(input Input) (Result, error) {
 		)
 	}
 
-	raw := make([]File, 0, len(zr.File))
+	// Do not mirror the archive's declared entry count into an allocation. ZIP
+	// metadata is attacker-controlled, and a large number of empty entries
+	// would otherwise allocate before the file-count limit is enforced.
+	raw := make([]File, 0)
+	var rawTotal int64
 	for _, zf := range zr.File {
 		if zf.FileInfo().IsDir() {
 			continue
@@ -120,6 +132,14 @@ func AnalyzeZip(input Input) (Result, error) {
 		path := normalizeZipEntryPath(zf.Name)
 		if shouldSkipArchivePath(path) {
 			continue
+		}
+		if len(raw) >= limits.MaxFiles {
+			return Result{}, newError(
+				ErrCodeTooManyFiles,
+				fmt.Sprintf("too many files in ZIP; max %d per site", limits.MaxFiles),
+				"Reduce generated artifacts or raise the file-count limit in admin settings.",
+				nil,
+			)
 		}
 		if err := validatePath(path); err != nil {
 			return Result{}, unsafePathError(zf.Name, err)
@@ -151,6 +171,19 @@ func AnalyzeZip(input Input) (Result, error) {
 				err,
 			)
 		}
+		entrySize := int64(len(data))
+		// Enforce a decompression budget while entries are being read. The final
+		// root-trim check remains authoritative, but this prevents a ZIP bomb from
+		// retaining an arbitrarily large set of discarded sibling files first.
+		if entrySize > limits.MaxSiteTotalBytes || rawTotal > limits.MaxSiteTotalBytes-entrySize {
+			return Result{}, newError(
+				ErrCodeTotalTooLarge,
+				fmt.Sprintf("ZIP expands beyond max site size (%d bytes)", limits.MaxSiteTotalBytes),
+				"Remove unrelated files or raise the total site upload limit in admin settings.",
+				nil,
+			)
+		}
+		rawTotal += entrySize
 		raw = append(raw, File{
 			Path:     path,
 			Bytes:    data,
@@ -237,8 +270,8 @@ func trimRoot(files []File, root string, limits Limits) ([]File, error) {
 			)
 		}
 		seen[rel] = true
-		totalSize += int64(len(f.Bytes))
-		if totalSize > limits.MaxSiteTotalBytes {
+		fileSize := int64(len(f.Bytes))
+		if fileSize > limits.MaxSiteTotalBytes || totalSize > limits.MaxSiteTotalBytes-fileSize {
 			return nil, newError(
 				ErrCodeTotalTooLarge,
 				fmt.Sprintf("total size exceeds site limit (%d bytes)", limits.MaxSiteTotalBytes),
@@ -246,6 +279,7 @@ func trimRoot(files []File, root string, limits Limits) ([]File, error) {
 				nil,
 			)
 		}
+		totalSize += fileSize
 		f.Path = rel
 		f.SHA256 = sha256sum(f.Bytes)
 		trimmed = append(trimmed, f)
@@ -401,23 +435,77 @@ func shouldSkipArchivePath(path string) bool {
 }
 
 func validatePath(path string) error {
-	if path == "" || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\\`) {
+	if path == "" || len(path) > 255 || !utf8.ValidString(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\\`) {
 		return fmt.Errorf("path must be a non-empty relative path")
 	}
-	path = filepath.ToSlash(path)
 	if len(path) >= 2 && path[1] == ':' {
 		return fmt.Errorf("path must not contain a drive letter")
 	}
-	for _, seg := range strings.Split(path, "/") {
+	if strings.Contains(path, "//") || strings.Contains(path, "\\") {
+		return fmt.Errorf("path must not contain consecutive separators")
+	}
+	for _, r := range path {
+		if r == '/' {
+			continue
+		}
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("path contains non-printable characters")
+		}
+		switch r {
+		case '<', '>', ':', '"', '\\', '|', '?', '*':
+			return fmt.Errorf("path contains Windows-reserved characters")
+		}
+	}
+	segments := strings.Split(path, "/")
+	if len(segments) > 16 {
+		return fmt.Errorf("path is too deep")
+	}
+	for _, seg := range segments {
 		if seg == "" || seg == "." || seg == ".." {
 			return fmt.Errorf("path contains unsafe segment %q", seg)
+		}
+		if strings.HasSuffix(seg, ".") || strings.HasSuffix(seg, " ") {
+			return fmt.Errorf("path segment must not end with a dot or space")
+		}
+		if isWindowsReservedName(seg) {
+			return fmt.Errorf("path uses reserved name %q", seg)
 		}
 	}
 	return nil
 }
 
+// IsSafePath exposes the same canonical path predicate used while inspecting
+// ZIP entries. Local clients use it to keep preflight decisions consistent
+// with the server's final validation.
+func IsSafePath(path string) bool {
+	return validatePath(path) == nil
+}
+
+func isWindowsReservedName(name string) bool {
+	// Windows reserves the device-name prefix even when multiple extensions
+	// follow it (for example CON.foo.bar), so split at the first dot.
+	if i := strings.IndexByte(name, '.'); i > 0 {
+		name = name[:i]
+	}
+	switch strings.ToUpper(name) {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	default:
+		return false
+	}
+}
+
 func readLimited(r io.Reader, max int64) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	if max < 0 {
+		return nil, fmt.Errorf("invalid negative size limit")
+	}
+	limit := max
+	if max < int64(^uint64(0)>>1) {
+		limit++
+	}
+	data, err := io.ReadAll(io.LimitReader(r, limit))
 	if err != nil {
 		return nil, err
 	}

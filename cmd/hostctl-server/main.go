@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"flag"
 	"log"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/yourorg/hostctl/internal/config"
 	"github.com/yourorg/hostctl/internal/deploy"
 	"github.com/yourorg/hostctl/internal/store"
+	appversion "github.com/yourorg/hostctl/internal/version"
 )
 
 // loadMasterKey 从环境变量加载 AES-256 主密钥。
@@ -32,13 +34,17 @@ func loadMasterKey() ([32]byte, error) {
 		return key, errMasterKeyMissing
 	}
 
-	// 接受 base64 或原始 32 字节字符串
+	// 接受 base64、64 位十六进制或恰好 32 字节的原始字符串。
 	if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil && len(decoded) == 32 {
 		copy(key[:], decoded)
 		return key, nil
 	}
-	if len(raw) >= 32 {
-		copy(key[:], []byte(raw)[:32])
+	if decoded, err := hex.DecodeString(raw); err == nil && len(decoded) == 32 {
+		copy(key[:], decoded)
+		return key, nil
+	}
+	if len(raw) == 32 {
+		copy(key[:], []byte(raw))
 		return key, nil
 	}
 	return key, errMasterKeyLength
@@ -55,38 +61,65 @@ func (e *configError) Error() string { return e.msg }
 
 func isDev() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("HOSTCTL_DEV"))) {
-	case "1", "true", "yes", "on":
+	case "1", "true", "yes", "on", "enabled":
 		return true
 	}
 	return false
 }
 
+type serverFlagValues struct {
+	addr      string
+	hostedDir string
+	dbPath    string
+}
+
+// effectiveRequireAuth confines unauthenticated operation to explicit
+// development mode. A production process must never become publicly writable
+// merely because a convenience flag was omitted.
+func effectiveRequireAuth(requested bool) bool {
+	return requested || !isDev()
+}
+
+// applyServerFlagOverrides reapplies only flags explicitly provided by the
+// operator after dev mode rebuilds the environment-derived defaults.
+func applyServerFlagOverrides(cfg config.Config, values serverFlagValues, visited map[string]bool) config.Config {
+	if visited["addr"] {
+		cfg.HTTPAddr = values.addr
+	}
+	if visited["hosted-dir"] {
+		cfg.HostedDir = values.hostedDir
+	}
+	if visited["db"] {
+		cfg.DBPath = values.dbPath
+	}
+	return cfg
+}
+
 func main() {
 	cfg := config.Default()
+	flagValues := serverFlagValues{
+		addr:      cfg.HTTPAddr,
+		hostedDir: cfg.HostedDir,
+		dbPath:    cfg.DBPath,
+	}
 
 	// CLI flag 覆盖（环境变量已由 config.Default 处理）
-	flag.StringVar(&cfg.HTTPAddr, "addr", cfg.HTTPAddr, "HTTP listen address")
-	flag.StringVar(&cfg.HostedDir, "hosted-dir", cfg.HostedDir, "static files root directory")
-	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
+	flag.StringVar(&flagValues.addr, "addr", flagValues.addr, "HTTP listen address")
+	flag.StringVar(&flagValues.hostedDir, "hosted-dir", flagValues.hostedDir, "static files root directory")
+	flag.StringVar(&flagValues.dbPath, "db", flagValues.dbPath, "SQLite database path")
 	dev := flag.Bool("dev", false, "enable dev mode (uses ./data/ for paths)")
-	requireAuth := flag.Bool("require-auth", false, "require Bearer token on all write operations")
+	requireAuth := flag.Bool("require-auth", false, "require Bearer token on all write operations (always enabled outside dev mode)")
 	flag.Parse()
 
+	visitedFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		visitedFlags[f.Name] = true
+	})
 	if *dev {
 		os.Setenv("HOSTCTL_DEV", "1")
 		cfg = config.Default()
-		// flag 已经覆盖过的，重新覆盖一次
-		flag.Visit(func(f *flag.Flag) {
-			switch f.Name {
-			case "addr":
-				cfg.HTTPAddr = f.Value.String()
-			case "hosted-dir":
-				cfg.HostedDir = f.Value.String()
-			case "db":
-				cfg.DBPath = f.Value.String()
-			}
-		})
 	}
+	cfg = applyServerFlagOverrides(cfg, flagValues, visitedFlags)
 
 	// REQUIRE_AUTH 环境变量（便于 docker compose / systemd 配置）
 	if !*requireAuth {
@@ -94,6 +127,7 @@ func main() {
 			*requireAuth = true
 		}
 	}
+	*requireAuth = effectiveRequireAuth(*requireAuth)
 
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("config invalid: %v", err)
@@ -124,6 +158,14 @@ func main() {
 
 	// 构造 auth + deployer
 	authSvc := auth.New(st)
+	hasAdmin, err := authSvc.HasAdminUser(context.Background())
+	if err != nil {
+		log.Fatalf("check bootstrap admin: %v", err)
+	}
+	if *requireAuth && !isDev() && !hasAdmin &&
+		(strings.TrimSpace(cfg.BootstrapAdminUsername) == "" || strings.TrimSpace(cfg.BootstrapAdminPassword) == "") {
+		log.Fatalf("bootstrap admin credentials are required when the production database has no active administrator; set HOSTCTL_ADMIN_USERNAME and HOSTCTL_ADMIN_PASSWORD")
+	}
 	if err := authSvc.EnsureBootstrapAdmin(context.Background(), cfg.BootstrapAdminUsername, cfg.BootstrapAdminPassword); err != nil {
 		log.Fatalf("bootstrap admin: %v", err)
 	}
@@ -134,7 +176,7 @@ func main() {
 
 	// 构造 server
 	srv := api.New(cfg, deployer, authSvc, *requireAuth, log.Default()).
-		WithVersion("0.3.0")
+		WithVersion(appversion.Current)
 
 	// 信号处理：优雅退出
 	go func() {

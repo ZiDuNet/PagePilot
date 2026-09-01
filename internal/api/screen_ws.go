@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +16,8 @@ const (
 	screenWSPongWait   = 70 * time.Second
 	screenWSPingPeriod = 25 * time.Second
 	screenWSWriteWait  = 8 * time.Second
+	screenWSReadLimit  = 64 << 10
+	screenWSMaxClients = 4
 )
 
 type screenHub struct {
@@ -32,13 +36,17 @@ func newScreenHub() *screenHub {
 	return &screenHub{clients: map[string]map[*screenWSClient]struct{}{}}
 }
 
-func (h *screenHub) register(client *screenWSClient) {
+func (h *screenHub) register(client *screenWSClient) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.clients[client.screenID] == nil {
 		h.clients[client.screenID] = map[*screenWSClient]struct{}{}
 	}
+	if len(h.clients[client.screenID]) >= screenWSMaxClients {
+		return false
+	}
 	h.clients[client.screenID][client] = struct{}{}
+	return true
 }
 
 func (h *screenHub) unregister(client *screenWSClient) {
@@ -100,7 +108,7 @@ func (s *Server) handleDeviceWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
+		CheckOrigin: screenWSOriginAllowed,
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -113,7 +121,10 @@ func (s *Server) handleDeviceWebSocket(w http.ResponseWriter, r *http.Request) {
 		send:     make(chan ScreenWSMessage, 8),
 		baseURL:  s.requestBaseURL(r),
 	}
-	s.screenHub.register(client)
+	if !s.screenHub.register(client) {
+		_ = conn.Close()
+		return
+	}
 	defer s.screenHub.unregister(client)
 
 	if err := s.sendScreenWSManifest(r.Context(), screen.ID, r); err != nil {
@@ -127,6 +138,7 @@ func (s *Server) handleDeviceWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func (c *screenWSClient) readLoop(done chan<- struct{}) {
 	defer close(done)
+	c.conn.SetReadLimit(screenWSReadLimit)
 	_ = c.conn.SetReadDeadline(time.Now().Add(screenWSPongWait))
 	c.conn.SetPongHandler(func(string) error {
 		return c.conn.SetReadDeadline(time.Now().Add(screenWSPongWait))
@@ -136,6 +148,35 @@ func (c *screenWSClient) readLoop(done chan<- struct{}) {
 			return
 		}
 	}
+}
+
+// screenWSOriginAllowed accepts native clients (which omit Origin) and
+// same-origin browser handshakes. Cross-origin browser requests must not be
+// able to reuse a device token, even when a proxy requires query fallback.
+func screenWSOriginAllowed(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	if !strings.EqualFold(u.Scheme, requestScheme(r)) {
+		return false
+	}
+	if strings.EqualFold(u.Host, strings.TrimSpace(r.Host)) {
+		return true
+	}
+	forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if forwarded != "" {
+		forwarded, _, _ = strings.Cut(forwarded, ",")
+		return strings.EqualFold(u.Host, strings.TrimSpace(forwarded))
+	}
+	return false
 }
 
 func (c *screenWSClient) writeLoop(done <-chan struct{}) {

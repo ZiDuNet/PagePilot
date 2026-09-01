@@ -177,6 +177,12 @@ func (o *ossStorage) put(ctx context.Context, key string, body []byte, contentTy
 }
 
 func (o *ossStorage) get(ctx context.Context, key string) ([]byte, time.Time, error) {
+	return o.getLimited(ctx, key, -1)
+}
+
+// getLimited prevents a replaced or stale object from being fully buffered
+// before the caller's download quota is checked. maxBytes < 0 is unlimited.
+func (o *ossStorage) getLimited(ctx context.Context, key string, maxBytes int64) ([]byte, time.Time, error) {
 	req, err := o.signedRequest(ctx, http.MethodGet, key, nil, "", nil)
 	if err != nil {
 		return nil, time.Time{}, err
@@ -193,9 +199,19 @@ func (o *ossStorage) get(ctx context.Context, key string) ([]byte, time.Time, er
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, time.Time{}, fmt.Errorf("oss get %s failed: %s %s", key, resp.Status, strings.TrimSpace(string(data)))
 	}
-	data, err := io.ReadAll(resp.Body)
+	if maxBytes >= 0 && resp.ContentLength > maxBytes {
+		return nil, time.Time{}, errFileTooLarge
+	}
+	reader := io.Reader(resp.Body)
+	if maxBytes >= 0 {
+		reader = io.LimitReader(resp.Body, maxBytes+1)
+	}
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, time.Time{}, err
+	}
+	if maxBytes >= 0 && int64(len(data)) > maxBytes {
+		return nil, time.Time{}, errFileTooLarge
 	}
 	modTime := time.Time{}
 	if raw := resp.Header.Get("Last-Modified"); raw != "" {

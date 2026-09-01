@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yourorg/hostctl/internal/api"
@@ -184,6 +185,19 @@ func TestDeployPersistsBundleMetadataForContentModes(t *testing.T) {
 			wantSecurity: "standard",
 		},
 		{
+			name: "multi file site keeps empty asset",
+			code: "empty-asset",
+			req: api.DeployRequest{
+				Files: []api.DeployFile{
+					{Path: "index.html", Content: "<!doctype html><html><body><main>Static</main></body></html>"},
+					{Path: "assets/empty.css"},
+				},
+			},
+			wantKind:     "static_site",
+			wantEntry:    "index.html",
+			wantSecurity: "standard",
+		},
+		{
 			name: "zip site",
 			code: "zip-site",
 			req: api.DeployRequest{
@@ -292,6 +306,148 @@ func newDeployTestHarness(t *testing.T) (*Deployer, *store.SQLiteStore) {
 	return New(cfg, st), st
 }
 
+func TestReadAppFileLimitedRejectsOversizedObject(t *testing.T) {
+	d, _ := newDeployTestHarness(t)
+	resp, apiErr := d.Deploy(context.Background(), api.DeployRequest{
+		Filename:    "index.html",
+		Description: "limited file read regression",
+		Content:     "<!doctype html><html><body><main>" + strings.Repeat("x", 1024) + "</main></body></html>",
+	}, "anon:limited-read", "127.0.0.1")
+	if apiErr != nil {
+		t.Fatalf("deploy returned API error: %s", apiErr.Detail)
+	}
+	if _, _, apiErr := d.readAppFileLimited(context.Background(), resp.Code, nil, "index.html", 32); apiErr == nil || apiErr.ErrorCode != api.CodeContentTooLarge {
+		t.Fatalf("limited read error = %+v; want CONTENT_TOO_LARGE", apiErr)
+	}
+	body, _, apiErr := d.ReadAppFile(context.Background(), resp.Code, nil, "index.html")
+	if apiErr != nil {
+		t.Fatalf("unlimited read returned API error: %s", apiErr.Detail)
+	}
+	if len(body) <= 32 {
+		t.Fatalf("unlimited read returned %d bytes; want full file", len(body))
+	}
+}
+
+func TestAdminDeployAsCanAppendAnotherUsersSite(t *testing.T) {
+	ctx := context.Background()
+	d, st := newDeployTestHarness(t)
+	first, apiErr := d.Deploy(ctx, api.DeployRequest{
+		EnableCustomCode: true,
+		CustomCode:       "owned-site",
+		CreateVersion:    false,
+		Filename:         "index.html",
+		Description:      "初始站点内容用于验证管理员追加版本。",
+		Content:          "<!doctype html><html><body><main>v1</main></body></html>",
+	}, "user:owner", "127.0.0.1")
+	if apiErr != nil {
+		t.Fatalf("initial deploy returned API error: %s", apiErr.Detail)
+	}
+	updated, apiErr := d.DeployAs(ctx, api.DeployRequest{
+		EnableCustomCode: true,
+		CustomCode:       first.Code,
+		CreateVersion:    true,
+		Filename:         "index.html",
+		Description:      "管理员追加版本内容。",
+		Content:          "<!doctype html><html><body><main>v2</main></body></html>",
+	}, "user:admin", "127.0.0.1", true)
+	if apiErr != nil {
+		t.Fatalf("admin append returned API error: %s", apiErr.Detail)
+	}
+	if updated.VersionNumber != 2 || updated.Code != first.Code {
+		t.Fatalf("admin append response = %+v; want code %q version 2", updated, first.Code)
+	}
+	if site, err := st.GetSite(ctx, first.Code); err != nil || site.CurrentVersion == nil || *site.CurrentVersion != 2 {
+		t.Fatalf("site current version = %+v, err=%v; want version 2", site.CurrentVersion, err)
+	}
+}
+
+func TestConcurrentCreateVersionWithDisabledCooldownPublishesDistinctFiles(t *testing.T) {
+	ctx := context.Background()
+	d, st := newDeployTestHarness(t)
+	const code = "concurrent-site"
+
+	_, apiErr := d.Deploy(ctx, api.DeployRequest{
+		EnableCustomCode: true,
+		CustomCode:       code,
+		Filename:         "index.html",
+		Title:            "Initial version",
+		Description:      "Initial content before concurrent version publishing.",
+		Content:          "<!doctype html><html><body><main>initial</main></body></html>",
+	}, "user:owner", "127.0.0.1")
+	if apiErr != nil {
+		t.Fatalf("initial deploy returned API error: %s", apiErr.Detail)
+	}
+
+	type result struct {
+		marker string
+		resp   *api.DeployResponse
+		err    *api.APIError
+	}
+	markers := []string{"concurrent-a", "concurrent-b"}
+	start := make(chan struct{})
+	results := make(chan result, len(markers))
+	var wg sync.WaitGroup
+	for _, marker := range markers {
+		marker := marker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			resp, err := d.Deploy(ctx, api.DeployRequest{
+				EnableCustomCode: true,
+				CustomCode:       code,
+				CreateVersion:    true,
+				Filename:         "index.html",
+				Title:            marker,
+				Description:      "Concurrent publishing must keep every version directory intact.",
+				Content:          "<!doctype html><html><body><main>" + marker + "</main></body></html>",
+			}, "user:owner", "127.0.0.1")
+			results <- result{marker: marker, resp: resp, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	versions := map[int64]string{}
+	for got := range results {
+		if got.err != nil {
+			t.Fatalf("concurrent deploy %s returned API error: %s", got.marker, got.err.Detail)
+		}
+		if got.resp == nil {
+			t.Fatalf("concurrent deploy %s returned no response", got.marker)
+		}
+		version := int64(got.resp.VersionNumber)
+		if version != 2 && version != 3 {
+			t.Fatalf("concurrent deploy %s version = %d; want 2 or 3", got.marker, version)
+		}
+		if _, duplicate := versions[version]; duplicate {
+			t.Fatalf("two concurrent publishes returned version %d", version)
+		}
+		versions[version] = got.marker
+	}
+	if len(versions) != len(markers) {
+		t.Fatalf("published versions = %#v; want two distinct versions", versions)
+	}
+
+	stored, err := st.ListVersions(ctx, code)
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if len(stored) != 3 {
+		t.Fatalf("version count = %d; want 3", len(stored))
+	}
+	for version, marker := range versions {
+		body, _, readErr := d.ReadAppFile(ctx, code, &version, "index.html")
+		if readErr != nil {
+			t.Fatalf("read version %d: %s", version, readErr.Detail)
+		}
+		if !strings.Contains(string(body), marker) {
+			t.Fatalf("version %d body = %q; want marker %q", version, body, marker)
+		}
+	}
+}
+
 func TestDeployRecordsTemplateSourceAndIncrementsReuseCount(t *testing.T) {
 	tmp := t.TempDir()
 	st, err := store.NewSQLiteStore(filepath.Join(tmp, "hostctl.db"))
@@ -368,5 +524,85 @@ func TestDeployRecordsTemplateSourceAndIncrementsReuseCount(t *testing.T) {
 	if version.TemplateSourceCode != "source-demo" || version.TemplateSourceVersion == nil || *version.TemplateSourceVersion != 1 {
 		t.Fatalf("target version template source = %s %v, want source-demo v1",
 			version.TemplateSourceCode, version.TemplateSourceVersion)
+	}
+}
+
+func TestDeployRejectsNegativeTemplateSourceVersion(t *testing.T) {
+	d, st := newDeployTestHarness(t)
+	_, apiErr := d.Deploy(context.Background(), api.DeployRequest{
+		EnableCustomCode:      true,
+		CustomCode:            "negative-source-version",
+		Filename:              "index.html",
+		Description:           "invalid template source version",
+		Content:               "<!doctype html><html><body><main>Valid page</main></body></html>",
+		TemplateSourceCode:    "missing-source",
+		TemplateSourceVersion: -1,
+	}, "user:test", "127.0.0.1")
+	if apiErr == nil {
+		t.Fatal("Deploy accepted negative templateSourceVersion")
+	}
+	if apiErr.ErrorCode != api.CodeInvalidInput || !strings.Contains(apiErr.Detail, "templateSourceVersion") {
+		t.Fatalf("Deploy error = %#v; want invalid templateSourceVersion", apiErr)
+	}
+	if exists, err := st.SiteExists(context.Background(), "negative-source-version"); err != nil {
+		t.Fatalf("check site existence: %v", err)
+	} else if exists {
+		t.Fatal("Deploy created site despite invalid templateSourceVersion")
+	}
+}
+
+func TestTemplateSourceReuseAllowedMatchesSitePolicy(t *testing.T) {
+	cases := []struct {
+		name  string
+		site  store.Site
+		owner string
+		admin bool
+		want  bool
+	}{
+		{
+			name:  "public defaults",
+			site:  store.Site{Status: "active", Visibility: "public", ReusePolicy: "auto", SourceDownloadPolicy: "auto"},
+			owner: "user:other",
+			want:  true,
+		},
+		{
+			name:  "unlisted explicit allow",
+			site:  store.Site{Status: "active", Visibility: "unlisted", ReusePolicy: "auto", SourceDownloadPolicy: "allow"},
+			owner: "user:other",
+			want:  true,
+		},
+		{
+			name:  "source deny",
+			site:  store.Site{Status: "active", Visibility: "public", ReusePolicy: "allow", SourceDownloadPolicy: "deny"},
+			owner: "user:other",
+			want:  false,
+		},
+		{
+			name:  "owner bypass",
+			site:  store.Site{OwnerTokenID: "user:owner", AccessPasswordHash: "hash", Status: "inactive", Visibility: "unlisted"},
+			owner: "user:owner",
+			want:  true,
+		},
+		{
+			name:  "admin bypass",
+			site:  store.Site{AccessPasswordHash: "hash", Status: "inactive", Visibility: "unlisted"},
+			owner: "user:admin",
+			admin: true,
+			want:  true,
+		},
+		{
+			name:  "anonymous denied",
+			site:  store.Site{OwnerTokenID: "anon:s1", Status: "active", Visibility: "public"},
+			owner: "anon:s1",
+			want:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := templateSourceReuseAllowed(tc.site, tc.owner, tc.admin); got != tc.want {
+				t.Fatalf("templateSourceReuseAllowed() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

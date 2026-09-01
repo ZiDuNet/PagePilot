@@ -3,6 +3,7 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -140,6 +141,87 @@ func TestConfigOnlyReturnsInjectionCodeToAdmin(t *testing.T) {
 	}
 }
 
+func TestPublicConfigRedactsInfrastructureDetails(t *testing.T) {
+	srv, adminToken, cleanup := newDevAuthTestServer(t)
+	defer cleanup()
+	srv.updateConfig(func(cfg *config.Config) {
+		cfg.CORSAllowOrigins = "https://studio.internal.example"
+		cfg.EmbedAllowOrigins = "https://portal.internal.example"
+		cfg.SMTPHost = "smtp.internal.example"
+		cfg.SMTPFrom = "noreply@internal.example"
+		cfg.SMTPSecure = "ssl"
+		cfg.StorageBackend = "oss"
+		cfg.HostedDir = "/srv/pagepilot/hosted"
+		cfg.OSSProvider = "aliyun"
+		cfg.OSSEndpoint = "https://oss.internal.example"
+		cfg.OSSBucket = "private-pagepilot"
+		cfg.OSSPrefix = "tenant/private"
+		cfg.OSSPublicBaseURL = "https://cdn.internal.example"
+		cfg.OSSAccessKeyID = "access-key-id"
+		cfg.OSSAccessKeySecret = "access-key-secret"
+	})
+
+	publicReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	publicRR := httptest.NewRecorder()
+	srv.handleGetConfig(publicRR, publicReq)
+	if publicRR.Code != http.StatusOK {
+		t.Fatalf("public status = %d, body = %s", publicRR.Code, publicRR.Body.String())
+	}
+	var publicResp ConfigResponse
+	if err := json.Unmarshal(publicRR.Body.Bytes(), &publicResp); err != nil {
+		t.Fatalf("decode public response: %v", err)
+	}
+	if publicResp.CORSAllowOrigins != "" || publicResp.EmbedAllowOrigins != "" {
+		t.Fatalf("public config leaked origin allowlists: cors=%q embed=%q", publicResp.CORSAllowOrigins, publicResp.EmbedAllowOrigins)
+	}
+	if publicResp.Email.SMTPHost != "" || publicResp.Email.SMTPFrom != "" || publicResp.Email.SMTPSecure != "" {
+		t.Fatalf("public config leaked SMTP details: %+v", publicResp.Email)
+	}
+	if publicResp.Email.VerificationEnabled != srv.configSnapshot().EmailVerificationEnabled || !publicResp.Email.SMTPConfigured {
+		t.Fatalf("public config email summary = %+v; expected capability flags and no SMTP detail", publicResp.Email)
+	}
+	if publicResp.Storage != (StorageConfig{}) {
+		t.Fatalf("public config leaked storage details: %+v", publicResp.Storage)
+	}
+	for _, secret := range []string{
+		"studio.internal.example",
+		"portal.internal.example",
+		"smtp.internal.example",
+		"noreply@internal.example",
+		"/srv/pagepilot/hosted",
+		"oss.internal.example",
+		"private-pagepilot",
+		"tenant/private",
+		"access-key-id",
+		"access-key-secret",
+	} {
+		if strings.Contains(publicRR.Body.String(), secret) {
+			t.Fatalf("public config body contains sensitive value %q: %s", secret, publicRR.Body.String())
+		}
+	}
+
+	adminReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	adminReq.Header.Set("Authorization", "Bearer "+adminToken)
+	adminRR := httptest.NewRecorder()
+	srv.handleGetConfig(adminRR, adminReq)
+	if adminRR.Code != http.StatusOK {
+		t.Fatalf("admin status = %d, body = %s", adminRR.Code, adminRR.Body.String())
+	}
+	var adminResp ConfigResponse
+	if err := json.Unmarshal(adminRR.Body.Bytes(), &adminResp); err != nil {
+		t.Fatalf("decode admin response: %v", err)
+	}
+	if adminResp.CORSAllowOrigins != "https://studio.internal.example" || adminResp.EmbedAllowOrigins != "https://portal.internal.example" {
+		t.Fatalf("admin config lost origin allowlists: cors=%q embed=%q", adminResp.CORSAllowOrigins, adminResp.EmbedAllowOrigins)
+	}
+	if adminResp.Email.SMTPHost != "smtp.internal.example" || adminResp.Email.SMTPFrom != "noreply@internal.example" || adminResp.Email.SMTPSecure != "ssl" {
+		t.Fatalf("admin config lost SMTP details: %+v", adminResp.Email)
+	}
+	if adminResp.Storage.Backend != "oss" || adminResp.Storage.HostedDir != "/srv/pagepilot/hosted" || adminResp.Storage.OSSEndpoint != "https://oss.internal.example" || adminResp.Storage.OSSBucket != "private-pagepilot" || !adminResp.Storage.OSSConfigured {
+		t.Fatalf("admin config lost storage details: %+v", adminResp.Storage)
+	}
+}
+
 func TestRequestHostDoesNotOverrideDomainAppURL(t *testing.T) {
 	srv, _, cleanup := newTokenTestServer(t)
 	defer cleanup()
@@ -245,11 +327,11 @@ func TestSkillDownloadFallsBackToBuiltInZip(t *testing.T) {
 func TestAdminUploadSkillZipPersistsManagedPackage(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	admin, err := authSvc.CreateUser(t.Context(), "admin", "password123", true, -1)
+	admin, err := authSvc.CreateUser(context.Background(), "admin", "password123", true, -1)
 	if err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "admin-token", true, admin.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "admin-token", true, admin.ID, nil)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
@@ -296,11 +378,11 @@ func TestAdminUploadSkillZipPersistsManagedPackage(t *testing.T) {
 func TestAdminSkillSourceFileWriteIsNotAllowed(t *testing.T) {
 	srv, authSvc, cleanup := newTokenTestServer(t)
 	defer cleanup()
-	admin, err := authSvc.CreateUser(t.Context(), "admin", "password123", true, -1)
+	admin, err := authSvc.CreateUser(context.Background(), "admin", "password123", true, -1)
 	if err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
-	token, err := authSvc.Generate(t.Context(), "admin-token", true, admin.ID, nil)
+	token, err := authSvc.Generate(context.Background(), "admin-token", true, admin.ID, nil)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}

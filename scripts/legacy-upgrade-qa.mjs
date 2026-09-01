@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { captchaAnswer } from "./captcha-qa.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -97,18 +98,6 @@ async function request(baseURL, pathOrURL, options = {}) {
     return { response, body: raw };
   }
   return { response, body: raw ? JSON.parse(raw) : null };
-}
-
-function captchaAnswer(captcha) {
-  const image = String(captcha.image || "");
-  const match = image.match(/^data:image\/svg\+xml(;base64)?,(.+)$/);
-  assert(match, "captcha image is not an SVG data URL");
-  const svg = match[1]
-    ? Buffer.from(match[2], "base64").toString("utf8")
-    : decodeURIComponent(match[2]);
-  const answer = svg.match(/>(\d{4})</)?.[1] || svg.match(/\b(\d{4})\b/)?.[1];
-  assert(answer, "could not read captcha answer from SVG");
-  return answer;
 }
 
 async function waitForServer(baseURL, proc) {
@@ -253,7 +242,7 @@ async function main() {
     assert(unlockedPage.includes("legacy secret ok"), "legacy-secret password access did not unlock page");
     await request(baseURL, "/api/deploy/content?code=legacy-secret&download=1", {
       jar: publicJar,
-      expect: 403,
+      expect: 401,
     });
 
     const { body: screens } = await request(baseURL, "/api/screens", { jar: adminJar });

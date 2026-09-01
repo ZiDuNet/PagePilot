@@ -11,7 +11,7 @@ PagePilot 是面向 AI Agent 的 HTML / Markdown / ZIP / 多文件静态站点�
 
 ## 当前状态与待办
 
-当前代码已经完成 multipart 发布、ZIP 入口识别、Markdown 高级渲染链路、FTS 搜索、Bundle 元数据表写入、审计日志 API/OpenAPI、后台全局审计页和产品化筛选、站点详情最近审计摘要、站点详情基础接口、创作市场详情直达路由、可搜索 / 可复制的文件树、模板复用抽屉的源文件结构 / CLI / Agent / MCP 参数，以及前后台部署错误面板，并完成基础运行时 smoke、真实浏览器视觉 QA、旧库升级演练与一轮重点深度 QA。仍需继续产品化的重点包括：模板复用批量策略、生产数据量视觉复核以及真实 Docker 旧数据库升级验证。
+当前代码已经完成 multipart 发布、ZIP 入口识别、Markdown 高级渲染链路、FTS 搜索、Bundle 元数据表写入、审计日志 API/OpenAPI、后台全局审计页和产品化筛选、站点详情最近审计摘要、站点详情基础接口、创作市场详情直达路由、可搜索 / 可复制的文件树、模板复用抽屉的源文件结构 / CLI / Agent / MCP 参数、模板复用批量策略，以及前后台部署错误面板，并完成基础运行时 smoke、真实浏览器视觉 QA、旧库升级演练与一轮重点深度 QA。仍需继续产品化的重点包括：生产数据量视觉复核、复杂 ZIP/安全模式兼容性和真实 Docker 旧数据库升级验证。
 
 详细状态和待办见 [docs/CURRENT_STATUS_AND_TODO.md](docs/CURRENT_STATUS_AND_TODO.md)。
 
@@ -59,12 +59,18 @@ docker compose up -d --build
 
 发布接口返回的 `url`、`detailUrl` 和 `versionUrl` 是最终权威结果。路径模式下它们按当前访问入口或 `--server` 生成；泛域名模式下它们按后台配置的应用域名后缀、协议和端口生成。Skill、MCP、CLI 不应该自行拼最终应用 URL。
 
-Docker 首次启动会在空数据库中自动创建默认管理员：
+Docker 首次启动不会使用固定管理员或固定密码。生产环境必须显式配置
+`HOSTCTL_MASTER_KEY`；当数据库中没有可用管理员（`is_admin=1` 且 `is_active=1`）时，还必须同时提供
+`HOSTCTL_ADMIN_USERNAME` 和 `HOSTCTL_ADMIN_PASSWORD`，服务会用它们创建首个管理员，且不会覆盖已有用户：
 
-- 用户名：`admin`
-- 密码：`123456`
+```bash
+cp .env.example .env
+openssl rand -base64 32
+# 将生成的值和你自己的管理员凭据写入 .env
+docker compose up -d --build
+```
 
-首次登录后请进入后台的“账号设置”立即修改密码。
+开发模式（`HOSTCTL_DEV=1`）可使用后台初始化流程；不要把开发配置用于公网部署。
 
 ## 生产模式
 
@@ -129,7 +135,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 | `POST` | `/api/token` | 创建永久或临时令牌 |
 | `GET` | `/api/tokens` | 列出令牌 |
 | `DELETE` | `/api/tokens/{id}` | 吊销令牌 |
-| `GET/PUT` | `/api/config` | 读取 / 更新运行时配置 |
+| `GET/PUT` | `/api/config` | 读取 / 更新运行时配置；GET 对匿名请求只返回前台能力摘要，管理员登录后才返回 CORS/嵌入白名单、SMTP 连接详情和本地/OSS 存储定位信息 |
 
 生产环境认证规则：
 
@@ -138,6 +144,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 匿名会话可以设置访问密码、删除和修改自己发布的站点；匿名统计只按实际未登录发布记录，未发布的空 session 不计入后台列表。
 - 用户注册 / 登录或使用 Bearer Token 后，可以调用 `/api/session/claim` 认领当前匿名 session。认领后该 session 已发布的站点会迁移到 `user:{userId}`，一个用户可以认领多个匿名 session。
 - Token 必须归属到用户。创建 Token 时默认永久有效，也可传 `expiresAt` 或 `ttlSeconds` 创建临时 Token。
+- 浏览器前台和后台登录只使用服务端 `HttpOnly`、`SameSite=Lax` 会话 Cookie，不会从 `localStorage` / `sessionStorage` 自动注入 Bearer Token；API Token 仅在 Skill、MCP、CLI 或显式 API 调用中使用。
 - 管理员控制台、令牌管理、配置写入以及整站删除都需要管理员权限（`isAdmin=true`）。
 - 后台“Skill & MCP”只维护固定下载包。默认内置包会保证 `/skill/pagep.zip` 不返回 404；旧的 `/skill/hostctl-deploy.zip` 保留兼容。管理员上传 ZIP 后会覆盖内置包。源码修改应在仓库或本地完成并重新打包，不能在后台直接编辑。
 - 创作市场、点赞和静态页面访问保持公开；源码内容读取 / 下载按站点复用策略判断。
@@ -152,6 +159,7 @@ Docker 首次启动会在空数据库中自动创建默认管理员：
 - 后台 `/admin` 和 `/admin/assets/*` 使用独立严格 CSP：只允许同源脚本、样式、接口和资源，不允许 `unsafe-inline` / `unsafe-eval`，并通过 `frame-ancestors 'none'` 禁止被 iframe 嵌入。
 - 首页、创作市场详情、手动部署和后台渲染视图里的预览 iframe 使用统一 `PREVIEW_IFRAME_SANDBOX`：允许脚本、表单、下载、弹窗和用户触发的顶层导航，但不包含 `allow-same-origin`。真实 `/agent/{code}` 应用运行时仍按站点安全模式设置 CSP / sandbox。
 - 如果前面有 Nginx、宝塔或负载均衡，必须为 `/api/device/ws` 转发 WebSocket Upgrade 头，否则后台刷新、截图、休眠等指令会退化为不可实时或连接失败。
+- 生产反向代理必须覆盖客户端传入的 `Host`、`X-Forwarded-Host`、`X-Forwarded-Proto` 和 `X-Forwarded-For`，只把代理确认过的外部主机、协议和客户端地址转发给 PagePilot；不要让公网客户端直连并伪造这些头。
 - CORS 白名单只控制外部网页用 `fetch` / XHR 调用 PagePilot API，不控制 iframe。应用是否允许被外部网站嵌入由后台“运行设置 -> 跨域与嵌入 -> iframe 嵌入”控制，支持任意、仅本站、白名单和禁止嵌入，底层会写入托管应用响应的 CSP `frame-ancestors`。
 - 托管 HTML 和 Markdown 响应会携带 `report-uri /api/security/csp-report`。浏览器通过传统 `application/csp-report` 或 Reporting API 上报的 CSP 违规都会以 `security.csp_report` 写入审计日志，管理员可在后台“审计日志”按动作、站点、IP、UA 或关键字排查被拦截的脚本、资源和嵌入问题；也可以在后台站点详情中查看按当前 code 过滤的最近审计摘要。Markdown 脚本策略使用 nonce-only `script-src`，不依赖 `script-src 'self'`，也不允许 `unsafe-inline` / `unsafe-eval`；KaTeX、auto-render、Mermaid 和平台初始化脚本都由 nonce 放行，公式和图表运行时只在样式侧做必要放行。
 
@@ -197,7 +205,10 @@ go build -o bin/pagep ./cmd/hostctl
 
 bin/pagep config set server https://host.example.com
 bin/pagep config set token <pagepilot-token>
+bin/pagep doctor
+bin/pagep doctor --require-admin
 
+bin/pagep preflight ./site
 bin/pagep deploy ./site --code my-landing --description "Landing page for Project X."
 bin/pagep append my-landing ./site-v2 --description "Second version with updated copy."
 bin/pagep versions my-landing
@@ -211,6 +222,10 @@ bin/pagep admin pin-site my-landing
 bin/pagep admin pin-site my-landing --unpin
 ```
 
+传入 `--json` 时，CLI 的失败结果也会输出到标准输出，并至少包含
+`success=false`、`errorCode`、`detail` 和 `hint` 字段；服务端提供时会附带
+`retryAfterSeconds` 与 `requestId`。进程仍返回非零退出码，便于 Agent 在不解析人类文本的情况下处理失败。
+
 旧 `hostctl` 二进制名保留为兼容别名；新文档、Docker 镜像和 Agent 文案统一使用 `pagep`。
 
 ## Agent 技能
@@ -220,6 +235,7 @@ bin/pagep admin pin-site my-landing --unpin
 ```bash
 python scripts/pagep.py version
 python scripts/pagep.py doctor --server http://127.0.0.1:8787
+python scripts/pagep.py preflight ./site
 python scripts/pagep.py config set server http://127.0.0.1:8787
 python scripts/pagep.py deploy ./site --code demo --title "演示站点" --description "Shareable demo site."
 python scripts/pagep.py deploy ./site --code demo --update --title "演示站点升级版" --description "Revised demo site."
@@ -230,9 +246,13 @@ python scripts/pagep.py admin sites
 python scripts/pagep.py admin pin-site my-landing
 ```
 
-`--server`、`PAGEPILOT_SERVER` 或 `pagep config set server <url>` 表示本次 Agent 调用 PagePilot API 的入口地址，不是全局主站配置。Python Skill 版 `pagep` 的读取优先级是：命令行 `--server`、环境变量、`~/.pagep/config.json`、本地默认 `http://localhost:8787`；Token 读取优先级是：命令行 `--token`、环境变量、已保存配置。`pagep token create <label> --save` 会把服务端仅返回一次的明文 Token 保存到本地配置，后续命令不需要重复传 Token。路径模式发布成功后，接口返回的应用链接会使用这个入口；如果要把公网链接交给用户，就用公网地址作为 `--server` 或保存为默认 server。泛域名模式的应用链接由后台“运行设置 -> 应用链接规则”决定，和 `--server` 只用于调用控制面入口的职责分开。旧环境变量仍会被兼容读取，但新文档统一使用 `PAGEPILOT_*`。
+`--server`、`PAGEPILOT_SERVER` 或 `pagep config set server <url>` 表示本次 Agent 调用 PagePilot API 的入口地址，不是全局主站配置。Python Skill 版 `pagep` 的读取优先级是：命令行 `--server`、环境变量、`~/.pagep/config.json`、内置默认 `https://pagepilot.dell.4dbim.cc:1143/`；Token 读取优先级是：命令行 `--token`、环境变量、与当前 server 绑定的已保存配置。`pagep token create <label> --save` 会把服务端仅返回一次的明文 Token 保存到本地配置，后续命令不需要重复传 Token。路径模式发布成功后，接口返回的应用链接会使用这个入口；如果要把公网链接交给用户，就用公网地址作为 `--server` 或保存为默认 server。泛域名模式的应用链接由后台“运行设置 -> 应用链接规则”决定，和 `--server` 只用于调用控制面入口的职责分开。旧环境变量仍会被兼容读取，但新文档统一使用 `PAGEPILOT_*`。
 
 发布或追加版本成功后，`pagep` Skill 会先输出中文摘要，包含服务端返回的 `访问 URL`、`详情 URL` 和 `版本 URL`，随后继续输出 JSON 供自动化解析。Agent 应直接转交这些服务端返回链接，不要按本机 host、端口或域名规则自行拼接。
+
+`pagep doctor` 会检查服务健康、运行配置、OpenAPI 和当前 Token；普通用户 Token 可验证发布身份，只有传 `--require-admin` 时才要求管理员权限。未配置 Token 时它不会为了探测匿名发布而创建匿名 session，实际匿名发布会按需创建并复用本地 session。`pagep preflight <source>` 完全在本地分析 HTML、目录或 ZIP，不上传文件、不创建匿名 session；它会返回 JSON 文件树、入口、Bundle 类型、体积和稳定错误码。看到 `success=false` 时，应先根据 `errors[].hint` 修复后再发布。
+
+Skill 只有在用户明确要求发布、生成访问链接、投放或执行 PagePilot 管理操作时才上传；仅要求生成本地网页或文档时不会自动创建 session。
 
 屏幕投放命令仅支持注册用户 Token：
 
@@ -319,7 +339,8 @@ SQLite 中保存令牌、站点、版本、文件、点赞与可变设置。静�
 - 路径会拒绝绝对路径以及 `..`。
 - 版本锁定后无法覆盖或删除。
 - 令牌明文只返回一次；服务器只保存哈希，并按 `expires_at` 自动拒绝过期 Token。
-- 已上线环境必须保留原 `HOSTCTL_MASTER_KEY`；旧版本从未配置时使用历史兼容值 `pagepilot-dev-master-key-0000000`。全新空库 Docker 部署建议复制 `.env.example` 为 `.env`，并填入 `openssl rand -base64 32` 生成的独立值；升级时不要更换主密钥。
+- 已上线环境必须保留原 `HOSTCTL_MASTER_KEY`，否则旧的加密数据可能无法解密。全新部署必须显式生成并配置独立主密钥（例如 `openssl rand -base64 32`）；生产环境未配置主密钥时服务不会启动。升级时不要更换主密钥，也不要把它提交到 Git。
+- 没有可用管理员（`is_admin=1` 且 `is_active=1`）的生产启动必须显式提供 `HOSTCTL_ADMIN_USERNAME` 和 `HOSTCTL_ADMIN_PASSWORD`；服务只在此时使用它们创建首个管理员，不会覆盖已有账号。
 - 访问密码票据只保存于 HttpOnly Cookie 中，有效期为 5 分钟，且与当前站点密码哈希和目标版本绑定。访问密码只授权浏览页面，不授予源码下载或模板复用权限；加密站点源码下载仅站点所有者和管理员可直接执行，普通用户即使知道访问密码也不能下载源码。托管页自身的 CSP 也会限制页面脚本直接调用管理 API，源码下载权限以服务端策略为准。
 - 生产服务模板使用受限的 systemd 沙箱。
 

@@ -22,6 +22,12 @@ import (
 
 const currentOriginHeader = "X-Hostctl-Current-Origin"
 
+// HealthResponse is returned by the public health endpoint.
+type HealthResponse struct {
+	Success bool   `json:"success"`
+	Status  string `json:"status"`
+}
+
 // Client 是 hostctl API 客户端。
 type Client struct {
 	baseURL string
@@ -86,18 +92,26 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
-		// P17：先尝试解析为 JSON，失败时把响应体原文存入 Detail（最多 500 字节）
-		var apiErr api.APIError
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		if jsonErr := json.Unmarshal(body, &apiErr); jsonErr != nil {
-			apiErr = api.APIError{
-				ErrorCode: "HTTP_ERROR",
-				Detail:     fmt.Sprintf("non-JSON response (status %d): %s", resp.StatusCode, truncateString(string(body), 500)),
-			}
-		}
-		return resp, &APIError{Status: resp.StatusCode, Body: &apiErr}
+		return resp, decodeResponseAPIError(resp.StatusCode, resp.Body)
 	}
 	return resp, nil
+}
+
+func decodeResponseAPIError(status int, reader io.Reader) *APIError {
+	body, readErr := io.ReadAll(io.LimitReader(reader, 4096))
+	var apiErr api.APIError
+	if readErr == nil && json.Unmarshal(body, &apiErr) == nil && apiErr.ErrorCode != "" {
+		return &APIError{Status: status, Body: &apiErr}
+	}
+	detail := fmt.Sprintf("non-JSON response (status %d): %s", status, truncateString(string(body), 500))
+	if readErr != nil {
+		detail = fmt.Sprintf("could not read error response (status %d): %v", status, readErr)
+	}
+	return &APIError{Status: status, Body: &api.APIError{
+		Success:   false,
+		ErrorCode: "HTTP_ERROR",
+		Detail:    detail,
+	}}
 }
 
 func truncateString(s string, n int) string {
@@ -147,6 +161,52 @@ func (c *Client) doDelete(ctx context.Context, path string, v any) error {
 }
 
 // ===== API 方法 =====
+
+// Health calls the public service health endpoint.
+func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
+	var resp HealthResponse
+	if err := c.doGet(ctx, "/api/health", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Config reads the public runtime configuration exposed by the server.
+func (c *Client) Config(ctx context.Context) (*api.ConfigResponse, error) {
+	var resp api.ConfigResponse
+	if err := c.doGet(ctx, "/api/config", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// AnonymousSession validates that the anonymous publishing path is available.
+func (c *Client) AnonymousSession(ctx context.Context) (*api.AnonymousSessionResponse, error) {
+	var resp api.AnonymousSessionResponse
+	if err := c.doGet(ctx, "/api/session", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// AdminSession validates the configured bearer token as an admin session.
+func (c *Client) AdminSession(ctx context.Context) (*api.AdminSessionResponse, error) {
+	var resp api.AdminSessionResponse
+	if err := c.doGet(ctx, "/api/admin/session", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// OpenAPI reads the server OpenAPI document. Its schema is intentionally
+// dynamic so callers can inspect document metadata without a duplicate model.
+func (c *Client) OpenAPI(ctx context.Context) (map[string]any, error) {
+	var resp map[string]any
+	if err := c.doGet(ctx, "/openapi.json", &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
 
 // Deploy 调用 POST /api/deploy。
 func (c *Client) Deploy(ctx context.Context, req api.DeployRequest) (*api.DeployResponse, error) {
@@ -205,13 +265,16 @@ func (c *Client) DeployMultipart(ctx context.Context, req MultipartDeployRequest
 		return nil, err
 	}
 	defer resp.Body.Close()
+	// A proxy may reject the request before consuming its body (for example
+	// with 413). Closing the pipe reader releases the multipart writer before
+	// we wait for it, otherwise the writer can block forever on pw.Write.
+	if resp.StatusCode >= 400 {
+		_ = pr.Close()
+		_ = <-errCh
+		return nil, decodeResponseAPIError(resp.StatusCode, resp.Body)
+	}
 	if writeErr := <-errCh; writeErr != nil {
 		return nil, writeErr
-	}
-	if resp.StatusCode >= 400 {
-		var apiErr api.APIError
-		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
-		return nil, &APIError{Status: resp.StatusCode, Body: &apiErr}
 	}
 	var out api.DeployResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -270,13 +333,13 @@ func (c *Client) OverwriteMultipart(ctx context.Context, code string, version in
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		_ = pr.Close()
+		_ = <-errCh
+		return nil, decodeResponseAPIError(resp.StatusCode, resp.Body)
+	}
 	if writeErr := <-errCh; writeErr != nil {
 		return nil, writeErr
-	}
-	if resp.StatusCode >= 400 {
-		var apiErr api.APIError
-		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
-		return nil, &APIError{Status: resp.StatusCode, Body: &apiErr}
 	}
 	var out api.DeployResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -383,35 +446,23 @@ func (c *Client) RawDeploy(ctx context.Context, body []byte) (map[string]any, er
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		apiErr := decodeResponseAPIError(resp.StatusCode, bytes.NewReader(bodyBytes))
+		if readErr != nil {
+			apiErr = decodeResponseAPIError(resp.StatusCode, strings.NewReader(fmt.Sprintf("could not read error response: %v", readErr)))
+		}
+		var out map[string]any
+		if json.Unmarshal(bodyBytes, &out) != nil {
+			out = nil
+		}
+		return out, apiErr
+	}
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	if resp.StatusCode >= 400 {
-		return out, &APIError{Status: resp.StatusCode, Body: parseAPIError(out)}
-	}
 	return out, nil
-}
-
-// parseAPIError 从 RawDeploy 等返回的 map 里抽出 api.APIError。
-func parseAPIError(m map[string]any) *api.APIError {
-	if m == nil {
-		return nil
-	}
-	out := &api.APIError{}
-	if v, ok := m["errorCode"].(string); ok {
-		out.ErrorCode = api.ErrorCode(v)
-	}
-	if v, ok := m["stage"].(string); ok {
-		out.Stage = v
-	}
-	if v, ok := m["detail"].(string); ok {
-		out.Detail = v
-	}
-	if v, ok := m["hint"].(string); ok {
-		out.Hint = v
-	}
-	return out
 }
 
 // SearchMarketplace 调用 GET /api/deploys —— 公开创作市场搜索。

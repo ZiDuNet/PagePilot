@@ -32,6 +32,60 @@ func TestScreensRejectAnonymousList(t *testing.T) {
 	}
 }
 
+func TestDevicePairingStartRateLimitsUnauthenticatedRequests(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+	body, err := json.Marshal(DevicePairingStartRequest{DeviceName: "rate-limit-screen"})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	for attempt := 0; attempt < pairingStartPerIP; attempt++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/device/pairing/start", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "198.51.100.20:1234"
+		rr := httptest.NewRecorder()
+		srv.mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("attempt %d status = %d, body = %s; want 200", attempt+1, rr.Code, rr.Body.String())
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/device/pairing/start", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "198.51.100.20:1234"
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("rate-limited status = %d, body = %s; want 429", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("rate-limited pairing response omitted Retry-After")
+	}
+}
+
+func TestDevicePairingCompleteRateLimitsUnauthenticatedRequests(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+	body := []byte(`{"pairingId":"missing","pairingSecret":"invalid"}`)
+	for attempt := 0; attempt < pairingCompletePerIP; attempt++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/device/pairing/complete", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "198.51.100.21:1234"
+		rr := httptest.NewRecorder()
+		srv.mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("attempt %d status = %d, body = %s; want %d", attempt+1, rr.Code, rr.Body.String(), http.StatusAccepted)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/device/pairing/complete", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "198.51.100.21:1234"
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusTooManyRequests || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate-limited completion status = %d, headers = %v, body = %s; want 429 with Retry-After", rr.Code, rr.Header(), rr.Body.String())
+	}
+}
+
 func TestScreenBindInvalidPairingCodeReturnsActionableError(t *testing.T) {
 	srv, cleanup := newScreenAPITestServer(t)
 	defer cleanup()
@@ -57,6 +111,48 @@ func TestScreenBindInvalidPairingCodeReturnsActionableError(t *testing.T) {
 	}
 	if apiErr.Detail == "" || apiErr.Detail == "not found" || apiErr.Hint == "" {
 		t.Fatalf("bind error should explain invalid pairing code, got %+v", apiErr)
+	}
+}
+
+func TestScreenBindRateLimitsFailedAttemptsByUserAndIP(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+
+	_, aliceToken := createScreenAPIUser(t, srv, "alice")
+	bindBody, _ := json.Marshal(ScreenBindRequest{PairingCode: "000000"})
+	for attempt := 0; attempt < screenBindFailThreshold; attempt++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+aliceToken)
+		req.RemoteAddr = "198.51.100.41:1234"
+		rr := httptest.NewRecorder()
+		srv.mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("failed bind attempt %d status = %d, body = %s; want 400", attempt+1, rr.Code, rr.Body.String())
+		}
+	}
+
+	// Rotating the source address must not bypass the user bucket.
+	userLimitedReq := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
+	userLimitedReq.Header.Set("Content-Type", "application/json")
+	userLimitedReq.Header.Set("Authorization", "Bearer "+aliceToken)
+	userLimitedReq.RemoteAddr = "198.51.100.42:1234"
+	userLimitedRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(userLimitedRR, userLimitedReq)
+	if userLimitedRR.Code != http.StatusTooManyRequests || userLimitedRR.Header().Get("Retry-After") == "" {
+		t.Fatalf("user rate-limit response = %d, headers = %v, body = %s; want 429 with Retry-After", userLimitedRR.Code, userLimitedRR.Header(), userLimitedRR.Body.String())
+	}
+
+	// A different user on the original address must still hit the IP bucket.
+	_, bobToken := createScreenAPIUser(t, srv, "bob")
+	ipLimitedReq := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
+	ipLimitedReq.Header.Set("Content-Type", "application/json")
+	ipLimitedReq.Header.Set("Authorization", "Bearer "+bobToken)
+	ipLimitedReq.RemoteAddr = "198.51.100.41:1234"
+	ipLimitedRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(ipLimitedRR, ipLimitedReq)
+	if ipLimitedRR.Code != http.StatusTooManyRequests || ipLimitedRR.Header().Get("Retry-After") == "" {
+		t.Fatalf("IP rate-limit response = %d, headers = %v, body = %s; want 429 with Retry-After", ipLimitedRR.Code, ipLimitedRR.Header(), ipLimitedRR.Body.String())
 	}
 }
 
@@ -555,6 +651,75 @@ func TestScreenWebSocketAcceptsDeviceTokenQueryFallback(t *testing.T) {
 	}
 	if hello.Type != "manifest" || hello.Manifest == nil || hello.Manifest.ScreenID != "screen-1" {
 		t.Fatalf("hello websocket message = %+v, want manifest for screen-1", hello)
+	}
+}
+
+func TestDeviceHTTPRejectsDeviceTokenQueryFallback(t *testing.T) {
+	srv, cleanup := newScreenAPITestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, token := createScreenAPIUser(t, srv, "alice")
+	seedScreenPairing(t, srv, "pair-http-query", "123457", "pair-secret-http", "screen-http-query")
+	bindBody, _ := json.Marshal(ScreenBindRequest{PairingCode: "123457"})
+	bindReq := httptest.NewRequest(http.MethodPost, "/api/screens/bind", bytes.NewReader(bindBody))
+	bindReq.Header.Set("Content-Type", "application/json")
+	bindReq.Header.Set("Authorization", "Bearer "+token)
+	bindRR := httptest.NewRecorder()
+	srv.mux.ServeHTTP(bindRR, bindReq)
+	if bindRR.Code != http.StatusOK {
+		t.Fatalf("bind status = %d, body = %s", bindRR.Code, bindRR.Body.String())
+	}
+	if err := srv.deployer.CompleteScreenPairing(ctx, "pair-http-query", auth.HashToken("pair-secret-http"), auth.HashToken("device-token-http")); err != nil {
+		t.Fatalf("complete pairing: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/device/manifest?deviceToken=device-token-http", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("manifest query-token status = %d, body = %s; want %d", rr.Code, rr.Body.String(), http.StatusUnauthorized)
+	}
+}
+
+func TestScreenWebSocketOriginPolicy(t *testing.T) {
+	sameOrigin := httptest.NewRequest(http.MethodGet, "http://screen.example/api/device/ws", nil)
+	sameOrigin.Host = "screen.example"
+	sameOrigin.Header.Set("Origin", "http://screen.example")
+	if !screenWSOriginAllowed(sameOrigin) {
+		t.Fatal("same-origin websocket request was rejected")
+	}
+
+	crossOrigin := httptest.NewRequest(http.MethodGet, "http://screen.example/api/device/ws", nil)
+	crossOrigin.Host = "screen.example"
+	crossOrigin.Header.Set("Origin", "http://evil.example")
+	if screenWSOriginAllowed(crossOrigin) {
+		t.Fatal("cross-origin websocket request was accepted")
+	}
+
+	native := httptest.NewRequest(http.MethodGet, "http://screen.example/api/device/ws", nil)
+	native.Host = "screen.example"
+	if !screenWSOriginAllowed(native) {
+		t.Fatal("native websocket request without Origin was rejected")
+	}
+}
+
+func TestScreenHubLimitsConnectionsPerScreen(t *testing.T) {
+	hub := newScreenHub()
+	clients := make([]*screenWSClient, 0, screenWSMaxClients)
+	for i := 0; i < screenWSMaxClients; i++ {
+		client := &screenWSClient{screenID: "screen-cap"}
+		clients = append(clients, client)
+		if !hub.register(client) {
+			t.Fatalf("register client %d failed before connection limit", i+1)
+		}
+	}
+	extra := &screenWSClient{screenID: "screen-cap"}
+	if hub.register(extra) {
+		t.Fatal("screen websocket hub accepted a client over the per-screen limit")
+	}
+	for _, client := range clients {
+		hub.unregister(client)
 	}
 }
 

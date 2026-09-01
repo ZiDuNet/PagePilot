@@ -3,7 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"math"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -331,6 +335,61 @@ func TestClaimAnonymousSessionMigratesSitesAndStats(t *testing.T) {
 	}
 }
 
+func TestPruneAnonymousSessionsRemovesOnlyExpiredAbandonedRows(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	old := now.Add(-48 * time.Hour)
+
+	tests := []AnonymousSession{
+		{ID: "expired-empty", CreatedAt: old, LastUsedAt: old},
+		{ID: "expired-deployed", DeployCount: 1, CreatedAt: old, LastUsedAt: old},
+		{ID: "expired-claimed", ClaimedByUserID: "user-1", CreatedAt: old, LastUsedAt: old},
+		{ID: "fresh-empty", CreatedAt: now, LastUsedAt: now},
+		{ID: "expired-with-site", CreatedAt: old, LastUsedAt: old},
+	}
+	for _, session := range tests {
+		if err := store.CreateAnonymousSession(ctx, session); err != nil {
+			t.Fatalf("create %s: %v", session.ID, err)
+		}
+	}
+	if err := store.CreateSite(ctx, Site{
+		Code:         "expired-site",
+		OwnerTokenID: "anon:expired-with-site",
+		CreatedAt:    old,
+		UpdatedAt:    old,
+		Source:       "api",
+	}); err != nil {
+		t.Fatalf("create site for expired session: %v", err)
+	}
+
+	if err := store.PruneAnonymousSessions(ctx, now.Add(-24*time.Hour)); err != nil {
+		t.Fatalf("prune anonymous sessions: %v", err)
+	}
+
+	for _, tc := range []struct {
+		id      string
+		removed bool
+	}{
+		{id: "expired-empty", removed: true},
+		{id: "expired-deployed", removed: false},
+		{id: "expired-claimed", removed: false},
+		{id: "fresh-empty", removed: false},
+		{id: "expired-with-site", removed: false},
+	} {
+		_, err := store.GetAnonymousSession(ctx, tc.id)
+		if tc.removed {
+			if !errors.Is(err, ErrNotFound) {
+				t.Fatalf("session %s error = %v, want ErrNotFound", tc.id, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("session %s lookup: %v", tc.id, err)
+		}
+	}
+}
+
 func TestClaimAnonymousSessionRejectsNewAnonymousDeploysAfterClaim(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()
@@ -412,6 +471,23 @@ func TestListMarketplaceDeploysCanFilterUncategorized(t *testing.T) {
 	}
 	if total != 1 || len(deploys) != 1 || deploys[0].Code != "uncategorized" {
 		t.Fatalf("uncategorized filter = total:%d deploys:%v; want only uncategorized", total, deploys)
+	}
+}
+
+func TestMarketplacePageOffsetSaturates(t *testing.T) {
+	if got := marketplacePageOffset(1, 100); got != 0 {
+		t.Fatalf("first page offset = %d, want 0", got)
+	}
+	if got := marketplacePageOffset(2, 100); got != 100 {
+		t.Fatalf("second page offset = %d, want 100", got)
+	}
+	maxInt := uint64(^uint(0) >> 1)
+	got := marketplacePageOffset(int(maxInt), int(maxInt))
+	if maxInt > uint64(math.MaxInt64)/maxInt && got != math.MaxInt64 {
+		t.Fatalf("overflowing page offset = %d, want %d", got, int64(math.MaxInt64))
+	}
+	if got < 0 {
+		t.Fatalf("page offset = %d, want non-negative", got)
 	}
 }
 
@@ -942,4 +1018,163 @@ func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 		}
 	})
 	return store
+}
+
+func TestCreateFirstAdminIsAtomic(t *testing.T) {
+	st := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	const attempts = 8
+	results := make(chan error, attempts)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- st.CreateFirstAdmin(ctx, AdminUser{
+				ID:           fmt.Sprintf("admin-%d", i),
+				Username:     fmt.Sprintf("admin-%d", i),
+				PasswordHash: "hash",
+				IsAdmin:      true,
+				IsActive:     true,
+				CanLike:      true,
+				DeployLimit:  -1,
+				CreatedAt:    time.Now().UTC(),
+			})
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var success, alreadyExists int
+	for err := range results {
+		switch {
+		case err == nil:
+			success++
+		case errors.Is(err, ErrAlreadyExists):
+			alreadyExists++
+		default:
+			t.Fatalf("CreateFirstAdmin error = %v; want nil or ErrAlreadyExists", err)
+		}
+	}
+	if success != 1 || alreadyExists != attempts-1 {
+		t.Fatalf("CreateFirstAdmin results: success=%d alreadyExists=%d; want 1/%d", success, alreadyExists, attempts-1)
+	}
+	if n, err := st.CountAdminUsers(ctx); err != nil || n != 1 {
+		t.Fatalf("admin count = %d, err=%v; want exactly one admin", n, err)
+	}
+}
+
+func TestBootstrapCountsOnlyActiveAdmins(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		isAdmin  bool
+		isActive bool
+	}{
+		{name: "regular user", isAdmin: false, isActive: true},
+		{name: "disabled admin", isAdmin: true, isActive: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newTestSQLiteStore(t)
+			ctx := context.Background()
+			if err := st.CreateAdminUser(ctx, AdminUser{
+				ID:           "existing-user",
+				Username:     "existing-user",
+				PasswordHash: "hash",
+				IsAdmin:      tc.isAdmin,
+				IsActive:     tc.isActive,
+				CanLike:      true,
+				DeployLimit:  -1,
+				CreatedAt:    time.Now().UTC(),
+			}); err != nil {
+				t.Fatalf("seed existing user: %v", err)
+			}
+			if got, err := st.CountAdminUsers(ctx); err != nil || got != 0 {
+				t.Fatalf("CountAdminUsers() = %d, err=%v; want 0", got, err)
+			}
+			if err := st.CreateFirstAdmin(ctx, AdminUser{
+				ID:           "bootstrap-admin",
+				Username:     "bootstrap-admin",
+				PasswordHash: "hash",
+				IsAdmin:      true,
+				IsActive:     true,
+				CanLike:      true,
+				DeployLimit:  -1,
+				CreatedAt:    time.Now().UTC(),
+			}); err != nil {
+				t.Fatalf("CreateFirstAdmin() error = %v; want nil", err)
+			}
+			if got, err := st.CountAdminUsers(ctx); err != nil || got != 1 {
+				t.Fatalf("CountAdminUsers() after bootstrap = %d, err=%v; want 1", got, err)
+			}
+		})
+	}
+}
+
+func TestAdminUserDeployQuotaIsAtomic(t *testing.T) {
+	st := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.CreateAdminUser(ctx, AdminUser{
+		ID:           "quota-user",
+		Username:     "quota-user",
+		PasswordHash: "hash",
+		IsActive:     true,
+		DeployLimit:  5,
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("create quota user: %v", err)
+	}
+
+	const attempts = 20
+	results := make(chan bool, attempts)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			allowed, err := st.TryConsumeAdminUserDeployQuota(ctx, "quota-user")
+			if err != nil {
+				t.Errorf("consume quota: %v", err)
+				return
+			}
+			results <- allowed
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var allowed int
+	for result := range results {
+		if result {
+			allowed++
+		}
+	}
+	if allowed != 5 {
+		t.Fatalf("allowed reservations = %d, want exactly 5", allowed)
+	}
+	user, err := st.GetAdminUserByID(ctx, "quota-user")
+	if err != nil {
+		t.Fatalf("get quota user: %v", err)
+	}
+	if user.DeployCount != 5 {
+		t.Fatalf("deploy count = %d, want 5", user.DeployCount)
+	}
+	if err := st.ReleaseAdminUserDeployQuota(ctx, "quota-user"); err != nil {
+		t.Fatalf("release quota: %v", err)
+	}
+	allowedAgain, err := st.TryConsumeAdminUserDeployQuota(ctx, "quota-user")
+	if err != nil {
+		t.Fatalf("consume released quota: %v", err)
+	}
+	if !allowedAgain {
+		t.Fatal("released quota slot was not reusable")
+	}
 }
