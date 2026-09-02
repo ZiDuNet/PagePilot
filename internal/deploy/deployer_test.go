@@ -82,6 +82,61 @@ func TestAnonymousDeployForcesUnlistedEvenWhenPublicRequested(t *testing.T) {
 	}
 }
 
+func TestDirectDeployAndVersionResponsesIncludeURLVariants(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDeployTestHarness(t)
+	if err := d.SetAppURLConfig(ctx, api.AppURLConfig{
+		AppURLMode:      api.AppURLModeDomain,
+		AppDomainSuffix: "*.apps.example.com.",
+		AppURLScheme:    "HTTPS",
+		AppURLPort:      "8443",
+	}); err != nil {
+		t.Fatalf("SetAppURLConfig returned error: %v", err)
+	}
+
+	resp, apiErr := d.Deploy(ctx, api.DeployRequest{
+		EnableCustomCode: true,
+		CustomCode:       "url-contract",
+		Filename:         "index.html",
+		Description:      "Verify direct deploy URL variants.",
+		Content:          "<!doctype html><html><head><title>URL contract</title></head><body><main>v1</main></body></html>",
+	}, "user:owner", "127.0.0.1")
+	if apiErr != nil {
+		t.Fatalf("Deploy returned API error: %s", apiErr.Detail)
+	}
+	if resp.URL != "https://url-contract.apps.example.com:8443/" || resp.PathURL != "/agent/url-contract/" || resp.DomainURL != resp.URL {
+		t.Fatalf("deploy URL contract = %+v", resp)
+	}
+	if resp.VersionURL != "https://url-contract.apps.example.com:8443/versions/1/" || resp.VersionPathURL != "/agent/url-contract/versions/1/" || resp.VersionDomainURL != resp.VersionURL {
+		t.Fatalf("deploy version URL contract = %+v", resp)
+	}
+
+	versions, apiErr := d.ListVersions(ctx, "url-contract")
+	if apiErr != nil {
+		t.Fatalf("ListVersions returned API error: %s", apiErr.Detail)
+	}
+	if len(versions.Versions) != 1 {
+		t.Fatalf("versions = %+v; want one version", versions.Versions)
+	}
+	item := versions.Versions[0]
+	if item.URL != resp.VersionURL || item.PathURL != resp.VersionPathURL || item.DomainURL != resp.VersionDomainURL {
+		t.Fatalf("version item URL contract = %+v; want deploy version URLs", item)
+	}
+
+	updated, apiErr := d.OverwriteVersion(ctx, "url-contract", 1, api.OverwriteRequest{
+		Filename:    "index.html",
+		Description: "Verify overwrite URL variants.",
+		Content:     "<!doctype html><html><head><title>URL contract</title></head><body><main>v2</main></body></html>",
+	})
+	if apiErr != nil {
+		t.Fatalf("OverwriteVersion returned API error: %s", apiErr.Detail)
+	}
+	if updated.URL != resp.URL || updated.PathURL != resp.PathURL || updated.DomainURL != resp.DomainURL ||
+		updated.VersionURL != resp.VersionURL || updated.VersionPathURL != resp.VersionPathURL || updated.VersionDomainURL != resp.VersionDomainURL {
+		t.Fatalf("overwrite URL contract = %+v; want deploy URL variants", updated)
+	}
+}
+
 func TestDeployPersistsBundleMetadataForContentModes(t *testing.T) {
 	ctx := context.Background()
 	d, st := newDeployTestHarness(t)

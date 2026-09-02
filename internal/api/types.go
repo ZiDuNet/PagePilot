@@ -108,12 +108,17 @@ type DeployResponse struct {
 
 	Code string `json:"code"`
 	URL  string `json:"url"`
+	// PathURL 和 DomainURL 是当前应用的显式 URL 变体，便于客户端不自行猜测模式。
+	PathURL   string `json:"pathUrl,omitempty"`
+	DomainURL string `json:"domainUrl,omitempty"`
 
 	// detailUrl 是应用本体的访问 URL（/agent/{code} 前缀）
 	DetailURL string `json:"detailUrl"`
 
 	// versionUrl 指向具体版本的预览。
-	VersionURL string `json:"versionUrl"`
+	VersionURL       string `json:"versionUrl"`
+	VersionPathURL   string `json:"versionPathUrl,omitempty"`
+	VersionDomainURL string `json:"versionDomainUrl,omitempty"`
 
 	// qrCode 是 base64 data URL（PNG）
 	QRCode string `json:"qrCode,omitempty"`
@@ -178,6 +183,10 @@ type VersionCreatedResponse struct {
 	URL                    string                 `json:"url"`
 	DetailURL              string                 `json:"detailUrl"`
 	VersionURL             string                 `json:"versionUrl"`
+	PathURL                string                 `json:"pathUrl,omitempty"`
+	DomainURL              string                 `json:"domainUrl,omitempty"`
+	VersionPathURL         string                 `json:"versionPathUrl,omitempty"`
+	VersionDomainURL       string                 `json:"versionDomainUrl,omitempty"`
 	CurrentVersionID       string                 `json:"currentVersionId"`
 	PreserveHint           string                 `json:"preserveHint,omitempty"`
 	PrimaryVersionStrategy PrimaryVersionStrategy `json:"primaryVersionStrategy"`
@@ -220,6 +229,10 @@ type VersionUpdatedResponse struct {
 	URL              string `json:"url"`
 	DetailURL        string `json:"detailUrl"`
 	VersionURL       string `json:"versionUrl"`
+	PathURL          string `json:"pathUrl,omitempty"`
+	DomainURL        string `json:"domainUrl,omitempty"`
+	VersionPathURL   string `json:"versionPathUrl,omitempty"`
+	VersionDomainURL string `json:"versionDomainUrl,omitempty"`
 	CurrentVersionID string `json:"currentVersionId"`
 	FileSize         int64  `json:"fileSize"`
 	Description      string `json:"description"`

@@ -104,6 +104,9 @@ interface VersionItem {
   id?: string;
   versionId?: string;
   versionNumber: number;
+  url?: string;
+  pathUrl?: string;
+  domainUrl?: string;
   templateSourceCode?: string;
   templateSourceVersion?: number;
   status?: string;
@@ -631,7 +634,8 @@ function buildAppURL(config: RuntimeConfig | null, code: string, version?: numbe
   const encodedCode = encodeURIComponent(code);
   const appURL = config?.appURL;
   const versionPath = version && version > 0 ? `versions/${version}/` : "";
-  if (appURL?.appURLMode === "domain" && appURL.appDomainSuffix) {
+  const appURLMode = appURL?.appURLMode?.toLowerCase();
+  if (appURLMode === "domain" && appURL?.appDomainSuffix) {
     const scheme = appURL.appURLScheme || "https";
     const suffix = appURL.appDomainSuffix.replace(/^\*\./, "").replace(/^\./, "").replace(/\.$/, "");
     const host = `${encodedCode}.${suffix}`;
@@ -644,9 +648,28 @@ function buildAppURL(config: RuntimeConfig | null, code: string, version?: numbe
   return sameSiteURL(`${pathBase}/${encodedCode}/${versionPath}`);
 }
 
+type ServerAppURL = Pick<MarketplaceDeploy, "url" | "pathUrl" | "domainUrl">;
+
+function appURLFromResponse(config: RuntimeConfig | null, urls: ServerAppURL): string {
+  if (urls.url) return sameSiteURL(urls.url);
+
+  const mode = config?.appURL?.appURLMode?.toLowerCase();
+  if (mode === "domain" && urls.domainUrl) return sameSiteURL(urls.domainUrl);
+  if (urls.pathUrl) return sameSiteURL(urls.pathUrl);
+  if (urls.domainUrl) return sameSiteURL(urls.domainUrl);
+  return "";
+}
+
 function appURLForDeploy(config: RuntimeConfig | null, item: MarketplaceDeploy, version?: number): string {
+  if (version) return buildAppURL(config, item.code, version);
+  const responseURL = appURLFromResponse(config, item);
+  if (responseURL) return responseURL;
   if (!version && item.filePath) return sameSiteURL(item.filePath);
   return buildAppURL(config, item.code, version);
+}
+
+function appURLForVersion(config: RuntimeConfig | null, code: string, version: VersionItem): string {
+  return appURLFromResponse(config, version) || buildAppURL(config, code, version.versionNumber);
 }
 
 function withPreviewParam(appURL: string): string {
@@ -2027,7 +2050,7 @@ function MarketDetailViewFull({
             <span>{versions.length} 个版本</span>
           </div>
           {visibleVersions.map((version) => {
-            const versionURL = buildAppURL(config, item.code, version.versionNumber);
+            const versionURL = appURLForVersion(config, item.code, version);
             return (
               <div className={`detail-version-item ${version.isCurrent ? "current" : ""}`} key={version.versionNumber}>
                 <div>
@@ -2791,15 +2814,19 @@ function DeployPage({ config, session }: { config: RuntimeConfig | null; session
         <DeployErrorPanel message={error} error={errorDetail} />
       )}
 
-      {result && <DeployResult result={result} onClose={() => setResult(null)} />}
+      {result && <DeployResult config={config} result={result} onClose={() => setResult(null)} />}
     </section>
   );
 }
 
-function DeployResult({ result, onClose }: { result: DeployResponse; onClose: () => void }) {
-  const appURL = sameSiteURL(result.url);
-  const detailURL = sameSiteURL(result.detailUrl || result.url);
-  const versionURL = sameSiteURL(result.versionUrl || "");
+function DeployResult({ config, result, onClose }: { config: RuntimeConfig | null; result: DeployResponse; onClose: () => void }) {
+  const appURL = appURLFromResponse(config, result) || buildAppURL(config, result.code);
+  const detailURL = sameSiteURL(result.detailUrl) || appURL;
+  const versionURL = appURLFromResponse(config, {
+    url: result.versionUrl,
+    pathUrl: result.versionPathUrl,
+    domainUrl: result.versionDomainUrl
+  }) || (result.versionNumber ? buildAppURL(config, result.code, result.versionNumber) : "");
   const rows = [
     ["code", result.code],
     ["访问地址", appURL],

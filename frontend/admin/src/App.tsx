@@ -105,6 +105,7 @@ interface RuntimeConfig {
     appDomainSuffix?: string;
     appURLScheme?: string;
     appURLPort?: string;
+    appPathBase?: string;
   };
   anonymousPolicy?: { deployLimit?: number };
   registrationAllowed?: boolean;
@@ -134,6 +135,12 @@ interface RuntimeConfig {
 
 interface SiteItem {
   code: string;
+  /** Canonical URL selected by the server for the active application URL mode. */
+  url?: string;
+  /** Path route remains available for compatibility when domain serving is enabled. */
+  pathUrl?: string;
+  /** Application subdomain route when domain or dual mode is enabled. */
+  domainUrl?: string;
   publicId?: string;
   ownerTokenId?: string;
   ownerUsername?: string;
@@ -160,6 +167,39 @@ interface SiteItem {
   isPinned?: boolean;
   createdAt?: string;
   lastVersionAt?: string;
+}
+
+interface AdminVersionItem {
+  versionNumber: number;
+  url?: string;
+  pathUrl?: string;
+  domainUrl?: string;
+  id?: string;
+  title?: string;
+  description?: string;
+  size?: number;
+  fileSize?: number;
+  fileCount?: number;
+  isLocked?: boolean;
+  isCurrent?: boolean;
+  status?: string;
+  createdAt?: string;
+  templateSourceCode?: string;
+  templateSourceVersion?: number;
+}
+
+interface AdminDeployResponse {
+  success?: boolean;
+  code: string;
+  url?: string;
+  pathUrl?: string;
+  domainUrl?: string;
+  detailUrl?: string;
+  versionUrl?: string;
+  versionPathUrl?: string;
+  versionDomainUrl?: string;
+  versionNumber?: number;
+  size?: number;
 }
 
 interface BundleDetail {
@@ -199,7 +239,7 @@ interface ReuseDetail {
 interface SiteDetailResponse {
   success?: boolean;
   site: SiteItem;
-  versions?: any[];
+  versions?: AdminVersionItem[];
   bundle?: BundleDetail;
   files?: ContentFile[];
   reuse?: ReuseDetail;
@@ -765,8 +805,50 @@ function skillDownloadPath() {
   return "/skill/pagep.zip";
 }
 
-function siteURL(code: string) {
-  return `/agent/${encodeURIComponent(code)}/`;
+function configuredAppURL(config: RuntimeConfig | null, code: string, version?: number) {
+  const encodedCode = encodeURIComponent(code);
+  const appURL = config?.appURL;
+  const versionPath = version && version > 0 ? `versions/${version}/` : "";
+  if (appURL?.appURLMode?.toLowerCase() === "domain" && appURL.appDomainSuffix) {
+    const scheme = appURL.appURLScheme || "https";
+    const suffix = appURL.appDomainSuffix.replace(/^\*\./, "").replace(/^\./, "").replace(/\.$/, "");
+    const host = `${encodedCode}.${suffix}`;
+    const port = appURL.appURLPort && !((scheme === "https" && appURL.appURLPort === "443") || (scheme === "http" && appURL.appURLPort === "80"))
+      ? `:${appURL.appURLPort}`
+      : "";
+    return `${scheme}://${host}${port}/${versionPath}`;
+  }
+  const pathBase = (appURL?.appPathBase || "/agent").replace(/\/+$/, "") || "/agent";
+  return sameSiteURL(`${pathBase}/${encodedCode}/${versionPath}`);
+}
+
+type ServerAppURL = Pick<SiteItem, "url" | "pathUrl" | "domainUrl">;
+
+function appURLFromResponse(config: RuntimeConfig | null, urls: ServerAppURL) {
+  const canonicalURL = sameSiteURL(urls.url);
+  if (canonicalURL) return canonicalURL;
+  if (config?.appURL?.appURLMode?.toLowerCase() === "domain" && urls.domainUrl) return sameSiteURL(urls.domainUrl);
+  if (urls.pathUrl) return sameSiteURL(urls.pathUrl);
+  if (urls.domainUrl) return sameSiteURL(urls.domainUrl);
+  return "";
+}
+
+function appURLForSite(config: RuntimeConfig | null, site: Pick<SiteItem, "code" | "url" | "pathUrl" | "domainUrl">) {
+  return appURLFromResponse(config, site) || configuredAppURL(config, site.code);
+}
+
+function appURLForVersion(config: RuntimeConfig | null, code: string, version: Pick<AdminVersionItem, "versionNumber" | "url" | "pathUrl" | "domainUrl">) {
+  return appURLFromResponse(config, version) || configuredAppURL(config, code, version.versionNumber);
+}
+
+function withPreviewParam(appURL: string) {
+  try {
+    const url = new URL(appURL, currentOrigin());
+    url.searchParams.set("preview", "1");
+    return url.toString();
+  } catch {
+    return `${appURL}${appURL.includes("?") ? "&" : "?"}preview=1`;
+  }
 }
 
 function siteDisplayName(site: SiteItem) {
@@ -966,7 +1048,7 @@ export default function App() {
         {activeTab === "overview" && <Overview config={config} session={session} setError={setError} setTab={selectTab} />}
         {activeTab === "account" && <AccountPanel session={session} onSessionRevoked={() => { setAuthNotice("密码已修改，请重新登录"); setSession(null); }} />}
         {activeTab === "deploy" && <DeployPanel config={config} showToast={showToast} setError={setError} />}
-        {activeTab === "sites" && <SitesPanel isAdmin={isAdmin} showToast={showToast} setError={setError} />}
+        {activeTab === "sites" && <SitesPanel config={config} isAdmin={isAdmin} showToast={showToast} setError={setError} />}
         {activeTab === "categories" && isAdmin && <CategoriesPanel showToast={showToast} setError={setError} />}
         {activeTab === "screens" && <ScreensPanel isAdmin={isAdmin} showToast={showToast} setError={setError} />}
         {activeTab === "tokens" && <TokensPanel isAdmin={isAdmin} showToast={showToast} setError={setError} />}
@@ -1372,7 +1454,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
   const [content, setContent] = useState("");
   const [entry, setEntry] = useState("");
   const [files, setFiles] = useState<DeployFile[]>([]);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<AdminDeployResponse | null>(null);
   const [deployError, setDeployError] = useState("");
   const [deployErrorDetail, setDeployErrorDetail] = useState<StructuredAPIErrorPayload | null>(null);
   const [fieldError, setFieldError] = useState<Record<string, string>>({});
@@ -1515,6 +1597,10 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
     }
   }
 
+  const resultAppURL = result
+    ? appURLFromResponse(config, result) || configuredAppURL(config, result.code)
+    : "";
+
   return (
     <section className="deploy-page-v2">
       <div className="deploy-topbar">
@@ -1650,12 +1736,12 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
         <Modal title="部署成功" onClose={() => setResult(null)}>
           <div className="result-modal">
             <InfoRow label="Code" value={result.code} />
-            <InfoRow label="访问地址" value={sameSiteURL(result.url)} copy />
+            <InfoRow label="访问地址" value={resultAppURL} copy />
             <InfoRow label="版本" value={`v${result.versionNumber || "-"}`} />
             <InfoRow label="大小" value={formatSize(result.size)} />
             <div className="actions">
-              <a className="button primary" href={sameSiteURL(result.url)} target="_blank" rel="noreferrer"><Eye size={16} />打开</a>
-              <button className="button" type="button" onClick={() => navigator.clipboard.writeText(sameSiteURL(result.url))}><Copy size={16} />复制</button>
+              <a className="button primary" href={resultAppURL} target="_blank" rel="noreferrer"><Eye size={16} />打开</a>
+              <button className="button" type="button" onClick={() => navigator.clipboard.writeText(resultAppURL)}><Copy size={16} />复制</button>
             </div>
           </div>
         </Modal>
@@ -1664,7 +1750,7 @@ function DeployPanel({ config, showToast, setError: setGlobalError }: { config: 
   );
 }
 
-function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showToast: (msg: string) => void; setError: (msg: string) => void }) {
+function SitesPanel({ config, isAdmin, showToast, setError }: { config: RuntimeConfig | null; isAdmin: boolean; showToast: (msg: string) => void; setError: (msg: string) => void }) {
   const [sites, setSites] = useState<SiteItem[]>([]);
   const [categories, setCategories] = useState<MarketCategoryInfo[]>([]);
   const [query, setQuery] = useState("");
@@ -1675,7 +1761,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
   const [kind, setKind] = useState("");
   const [ownerScope, setOwnerScope] = useState("");
   const [viewMode, setViewMode] = useState<SiteViewMode>("list");
-  const [versions, setVersions] = useState<any[] | null>(null);
+  const [versions, setVersions] = useState<AdminVersionItem[] | null>(null);
   const [passwordTarget, setPasswordTarget] = useState<SiteItem | null>(null);
   const [passwordInput, setPasswordInput] = useState("");
   const [deleteSiteTarget, setDeleteSiteTarget] = useState<SiteItem | null>(null);
@@ -1888,8 +1974,8 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
 
   async function openVersions(site: SiteItem) {
     setVersionCode(site.code);
-    const data = await api<any>(`/api/deploys/${encodeURIComponent(site.code)}/versions`);
-    setVersions((data.versions || []).slice().sort((a: any, b: any) => Number(b.versionNumber) - Number(a.versionNumber)));
+    const data = await api<{ versions?: AdminVersionItem[] }>(`/api/deploys/${encodeURIComponent(site.code)}/versions`);
+    setVersions((data.versions || []).slice().sort((a, b) => Number(b.versionNumber) - Number(a.versionNumber)));
   }
 
   async function openSiteDetail(site: SiteItem) {
@@ -2013,7 +2099,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                 <td>{formatDate(site.lastVersionAt || site.createdAt)}</td>
                 <td>
                   <div className="actions tight">
-                    <a className="button compact" href={siteURL(site.code)} target="_blank" rel="noreferrer">打开</a>
+                    <a className="button compact" href={appURLForSite(config, site)} target="_blank" rel="noreferrer">打开</a>
                     <ToggleBadge checked={site.visibility === "public"} checkedLabel="已公开" uncheckedLabel="未公开" onChange={() => setVisibilityTarget(site)} />
                     <button className="button compact" type="button" onClick={() => { setPasswordTarget(site); setPasswordInput(""); setShowPassword(true); }}><Lock size={14} />{site.accessProtected ? "改密" : "加密"}</button>
                     {site.accessProtected && <button className="button compact ghost" type="button" onClick={() => void revealPassword(site)} title="查看密码"><Eye size={14} /></button>}
@@ -2033,7 +2119,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
         <div className="site-render-grid">
           {filtered.map((site) => (
             <article className="site-render-card" key={site.code}>
-              <div className="site-thumb"><iframe title={`${site.code} 预览`} src={`${siteURL(site.code)}?preview=1`} sandbox={PREVIEW_IFRAME_SANDBOX} /></div>
+              <div className="site-thumb"><iframe title={`${site.code} 预览`} src={withPreviewParam(appURLForSite(config, site))} sandbox={PREVIEW_IFRAME_SANDBOX} /></div>
               <div className="site-render-body">
                 <div>
                   <strong>{siteDisplayName(site)}</strong>
@@ -2050,7 +2136,7 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                   {categories.map((item) => <option value={item.slug} key={item.slug}>{item.label}</option>)}
                 </select>
                 <div className="actions tight">
-                  <a className="button compact" href={siteURL(site.code)} target="_blank" rel="noreferrer">打开</a>
+                  <a className="button compact" href={appURLForSite(config, site)} target="_blank" rel="noreferrer">打开</a>
                   <button className="button compact" type="button" onClick={() => void openSiteDetail(site)}>详情</button>
                   <button className="button compact" type="button" onClick={() => void openVersions(site)}>版本</button>
                   <button className="button compact" type="button" onClick={() => setVisibilityTarget(site)}>
@@ -2082,10 +2168,10 @@ function SitesPanel({ isAdmin, showToast, setError }: { isAdmin: boolean; showTo
                 <div><strong>v{version.versionNumber}</strong><span>{version.isCurrent && <span className="badge green">当前</span>} {version.isLocked && <span className="badge amber">锁定</span>} {statusBadge(version.status || "active")}</span></div>
                 <p>{formatDate(version.createdAt)} · {formatSize(version.fileSize || version.size)}</p>
                 <div className="actions">
-                  <a className="button compact" href={`/agent/${encodeURIComponent(versionCode)}/versions/${version.versionNumber}/`} target="_blank" rel="noreferrer">预览</a>
+                  <a className="button compact" href={appURLForVersion(config, versionCode, version)} target="_blank" rel="noreferrer">预览</a>
                   {!version.isCurrent && <button className="button compact" type="button" onClick={() => void versionAction("current", version.versionNumber)}>设为当前</button>}
                   <button className="button compact" type="button" onClick={() => void versionAction("lock", version.versionNumber, version.isLocked)}>{version.isLocked ? "解锁" : "锁定"}</button>
-                  {!version.isLocked && <button className="button compact danger" type="button" onClick={() => setDeleteVersionTarget({ site: versions![0], version: version.versionNumber })}>删除</button>}
+                  {!version.isLocked && <button className="button compact danger" type="button" onClick={() => setDeleteVersionTarget({ site: sites.find((candidate) => candidate.code === versionCode) || { code: versionCode }, version: version.versionNumber })}>删除</button>}
                 </div>
               </div>
             ))}

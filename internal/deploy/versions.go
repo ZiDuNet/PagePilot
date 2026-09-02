@@ -28,11 +28,17 @@ func (d *Deployer) ListVersions(ctx context.Context, code string) (*api.ListVers
 		return nil, api.NewError(api.CodeInternal, "list_versions", err.Error())
 	}
 
+	appURLs := d.AppURLConfig()
 	items := make([]api.VersionItem, 0, len(versions))
 	for _, v := range versions {
 		isCurrent := site.CurrentVersion != nil && *site.CurrentVersion == v.VersionNumber
+		version := v.VersionNumber
+		urlSet := appURLs.URLSet(code, &version)
 		items = append(items, api.VersionItem{
 			VersionNumber:         v.VersionNumber,
+			URL:                   urlSet.URL,
+			PathURL:               urlSet.PathURL,
+			DomainURL:             urlSet.DomainURL,
 			ID:                    v.ID,
 			Title:                 v.Title,
 			Description:           v.Description,
@@ -281,16 +287,22 @@ func (d *Deployer) OverwriteVersion(ctx context.Context, code string, version in
 
 	// 拼响应
 	appURLs := d.AppURLConfig()
+	appSet := appURLs.URLSet(code, nil)
+	versionSet := appURLs.URLSet(code, &version)
 	return &api.DeployResponse{
-		Success:       true,
-		Code:          code,
-		URL:           appURLs.PrimaryAppURL(code, nil),
-		DetailURL:     appURLs.PrimaryAppURL(code, nil),
-		VersionURL:    appURLs.PrimaryAppURL(code, &version),
-		VersionNumber: int(version),
-		PreserveHint:  "Lock this version to prevent modifications.",
-		Size:          totalSize,
-		CreatedAt:     v.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		Success:          true,
+		Code:             code,
+		URL:              appSet.URL,
+		PathURL:          appSet.PathURL,
+		DomainURL:        appSet.DomainURL,
+		DetailURL:        appSet.URL,
+		VersionURL:       versionSet.URL,
+		VersionPathURL:   versionSet.PathURL,
+		VersionDomainURL: versionSet.DomainURL,
+		VersionNumber:    int(version),
+		PreserveHint:     "Lock this version to prevent modifications.",
+		Size:             totalSize,
+		CreatedAt:        v.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}, nil
 }
 

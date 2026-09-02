@@ -402,7 +402,9 @@ func (d *Deployer) deploy(ctx context.Context, req api.DeployRequest, ownerToken
 	allVersions, _ := d.store.ListVersions(ctx, code)
 	appURLs := d.AppURLConfig()
 	cfg := d.configSnapshot()
-	publicURL := appURLs.PrimaryAppURL(code, nil)
+	appSet := appURLs.URLSet(code, nil)
+	versionSet := appURLs.URLSet(code, &versionNumber)
+	publicURL := appSet.URL
 	strategy := api.StrategyLikes
 	if site.PrimaryVersionStrategy == string(api.StrategyLatest) {
 		strategy = api.StrategyLatest
@@ -418,8 +420,12 @@ func (d *Deployer) deploy(ctx context.Context, req api.DeployRequest, ownerToken
 		ID:                     versionID,
 		Code:                   code,
 		URL:                    publicURL,
+		PathURL:                appSet.PathURL,
+		DomainURL:              appSet.DomainURL,
 		DetailURL:              publicURL,
-		VersionURL:             appURLs.PrimaryAppURL(code, &versionNumber),
+		VersionURL:             versionSet.URL,
+		VersionPathURL:         versionSet.PathURL,
+		VersionDomainURL:       versionSet.DomainURL,
 		QRCode:                 generateQRCodeDataURL(publicURL),
 		Description:            desc,
 		VersionID:              versionID,

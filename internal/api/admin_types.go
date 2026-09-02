@@ -97,7 +97,11 @@ type ConfigUpdateResponse struct {
 
 // SiteListItem 是 admin 站点列表的一项。
 type SiteListItem struct {
-	Code                  string     `json:"code"`
+	Code string `json:"code"`
+	// URL 是当前应用 URL 模式下的权威站点链接；其余字段列出可用变体。
+	URL                   string     `json:"url,omitempty"`
+	PathURL               string     `json:"pathUrl,omitempty"`
+	DomainURL             string     `json:"domainUrl,omitempty"`
 	PublicID              string     `json:"publicId"`
 	OwnerTokenID          string     `json:"ownerTokenId"`
 	OwnerUsername         string     `json:"ownerUsername,omitempty"`

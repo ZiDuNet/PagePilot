@@ -66,6 +66,12 @@ export interface MarketplaceDeploy {
   title?: string;
   description?: string;
   filename?: string;
+  /** Canonical URL selected by the server for the active app URL mode. */
+  url?: string;
+  /** Backwards-compatible path route when application subdomains are enabled. */
+  pathUrl?: string;
+  /** Application subdomain route when domain or dual mode is enabled. */
+  domainUrl?: string;
   filePath?: string;
   status?: string;
   visibility?: string;
@@ -137,8 +143,12 @@ export interface DeployResponse {
   id?: string;
   code: string;
   url: string;
+  pathUrl?: string;
+  domainUrl?: string;
   detailUrl?: string;
   versionUrl?: string;
+  versionPathUrl?: string;
+  versionDomainUrl?: string;
   versionNumber?: number;
   versionId?: string;
   category?: string;

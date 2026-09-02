@@ -4,7 +4,11 @@ import "time"
 
 // VersionItem 是 list versions 响应里的一项。
 type VersionItem struct {
-	VersionNumber         int64     `json:"versionNumber"`
+	VersionNumber int64 `json:"versionNumber"`
+	// URL 是当前应用 URL 模式下的权威历史版本链接。
+	URL                   string    `json:"url,omitempty"`
+	PathURL               string    `json:"pathUrl,omitempty"`
+	DomainURL             string    `json:"domainUrl,omitempty"`
 	ID                    string    `json:"id"`
 	Title                 string    `json:"title,omitempty"`
 	Description           string    `json:"description"`

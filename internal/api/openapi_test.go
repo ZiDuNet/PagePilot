@@ -257,6 +257,101 @@ func TestOpenAPIIncludesAuditAndSiteDetailContracts(t *testing.T) {
 	}
 }
 
+func TestOpenAPIIncludesAppURLContracts(t *testing.T) {
+	srv := New(config.Default(), nil, nil, true, log.New(httptest.NewRecorder(), "", 0))
+	rr := httptest.NewRecorder()
+	srv.handleOpenAPI(rr, httptest.NewRequest(http.MethodGet, "/openapi.json", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var doc struct {
+		Paths      map[string]any `json:"paths"`
+		Components struct {
+			Schemas map[string]any `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode openapi: %v", err)
+	}
+
+	wantFields := map[string][]string{
+		"DeployResponse":            {"url", "pathUrl", "domainUrl", "versionUrl", "versionPathUrl", "versionDomainUrl"},
+		"VersionCreatedResponse":    {"url", "pathUrl", "domainUrl", "versionUrl", "versionPathUrl", "versionDomainUrl"},
+		"VersionItem":               {"url", "pathUrl", "domainUrl"},
+		"SiteListItem":              {"url", "pathUrl", "domainUrl"},
+		"MarketplaceDeployResponse": {"url", "pathUrl", "domainUrl", "filePath", "qrCodePath"},
+	}
+	for schemaName, fields := range wantFields {
+		schema, ok := doc.Components.Schemas[schemaName].(map[string]any)
+		if !ok {
+			t.Fatalf("openapi missing schema %s", schemaName)
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("schema %s properties are missing", schemaName)
+		}
+		for _, field := range fields {
+			if properties[field] == nil {
+				t.Fatalf("schema %s missing URL field %s", schemaName, field)
+			}
+		}
+	}
+
+	for responseName, expectedRef := range map[string]string{
+		"ListVersionsResponse": "#/components/schemas/VersionItem",
+		"SiteListResponse":     "#/components/schemas/SiteListItem",
+	} {
+		schema, ok := doc.Components.Schemas[responseName].(map[string]any)
+		if !ok {
+			t.Fatalf("openapi missing schema %s", responseName)
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("schema %s properties are missing", responseName)
+		}
+		propertyName := "versions"
+		if responseName == "SiteListResponse" {
+			propertyName = "sites"
+		}
+		property, ok := properties[propertyName].(map[string]any)
+		if !ok {
+			t.Fatalf("schema %s missing %s array property", responseName, propertyName)
+		}
+		items, ok := property["items"].(map[string]any)
+		if !ok || items["$ref"] != expectedRef {
+			t.Fatalf("schema %s.%s items = %+v, want ref %s", responseName, propertyName, items, expectedRef)
+		}
+	}
+	paths, ok := doc.Paths["/api/deploys"].(map[string]any)
+	if !ok {
+		t.Fatal("openapi missing GET /api/deploys")
+	}
+	getMarket, ok := paths["get"].(map[string]any)
+	if !ok {
+		t.Fatal("openapi missing GET /api/deploys operation")
+	}
+	responses, ok := getMarket["responses"].(map[string]any)
+	if !ok {
+		t.Fatal("openapi GET /api/deploys responses are missing")
+	}
+	marketResponse, ok := responses["200"].(map[string]any)
+	if !ok || marketResponse["content"] == nil {
+		t.Fatal("openapi GET /api/deploys missing JSON response schema")
+	}
+	content, ok := marketResponse["content"].(map[string]any)
+	if !ok {
+		t.Fatal("openapi GET /api/deploys response content is invalid")
+	}
+	applicationJSON, ok := content["application/json"].(map[string]any)
+	if !ok {
+		t.Fatal("openapi GET /api/deploys missing application/json content")
+	}
+	schema, ok := applicationJSON["schema"].(map[string]any)
+	if !ok || schema["$ref"] != "#/components/schemas/MarketplaceListResponse" {
+		t.Fatalf("openapi GET /api/deploys schema = %+v", schema)
+	}
+}
+
 func TestSanitizeMultipartDeployPath(t *testing.T) {
 	cases := []struct {
 		name     string

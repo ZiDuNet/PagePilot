@@ -25,6 +25,15 @@ type AppURLConfig struct {
 	PathBaseURL     string `json:"-"`
 }
 
+// AppURLSet contains the canonical application URL and the explicitly
+// addressable path/domain variants.  Keeping the three values together avoids
+// making each frontend guess which URL shape is valid for the current mode.
+type AppURLSet struct {
+	URL       string `json:"url"`
+	PathURL   string `json:"pathUrl"`
+	DomainURL string `json:"domainUrl,omitempty"`
+}
+
 func normalizeAppURLMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case AppURLModeDomain:
@@ -95,14 +104,46 @@ func (c AppURLConfig) WithPathBaseURL(baseURL string) AppURLConfig {
 	return c
 }
 
+func (c AppURLConfig) normalized() AppURLConfig {
+	c.AppURLMode = normalizeAppURLMode(c.AppURLMode)
+	c.AppDomainSuffix = normalizeAppDomainSuffix(c.AppDomainSuffix)
+	c.AppURLScheme = normalizeAppURLScheme(c.AppURLScheme)
+	c.AppURLPort = normalizeAppURLPort(c.AppURLPort)
+	pathBase := strings.Trim(c.AppPathBase, "/ ")
+	if pathBase == "" {
+		c.AppPathBase = "/agent"
+	} else {
+		c.AppPathBase = "/" + pathBase
+	}
+	return c
+}
+
 func (c AppURLConfig) PrimaryAppURL(code string, version *int64) string {
+	c = c.normalized()
 	if c.AppURLMode == AppURLModeDomain && c.AppDomainSuffix != "" {
 		return c.DomainAppURL(code, version)
 	}
 	return c.PathAppURL(code, version)
 }
 
+// URLSet returns all valid public URL variants for an application or version.
+// DomainURL is omitted when domain serving is not enabled; in domain/dual mode
+// the path URL remains available for backwards-compatible links.
+func (c AppURLConfig) URLSet(code string, version *int64) AppURLSet {
+	c = c.normalized()
+	pathURL := c.PathAppURL(code, version)
+	set := AppURLSet{
+		URL:     c.PrimaryAppURL(code, version),
+		PathURL: pathURL,
+	}
+	if c.AppDomainSuffix != "" && (c.AppURLMode == AppURLModeDomain || c.AppURLMode == AppURLModeDual) {
+		set.DomainURL = c.DomainAppURL(code, version)
+	}
+	return set
+}
+
 func (c AppURLConfig) PathAppURL(code string, version *int64) string {
+	c = c.normalized()
 	base := strings.TrimRight(c.PathBaseURL, "/")
 	pathBase := strings.TrimRight(c.AppPathBase, "/")
 	if pathBase == "" {
@@ -115,6 +156,7 @@ func (c AppURLConfig) PathAppURL(code string, version *int64) string {
 }
 
 func (c AppURLConfig) DomainAppURL(code string, version *int64) string {
+	c = c.normalized()
 	if c.AppDomainSuffix == "" {
 		return c.PathAppURL(code, version)
 	}
@@ -130,6 +172,7 @@ func (c AppURLConfig) DomainAppURL(code string, version *int64) string {
 }
 
 func (c AppURLConfig) AssetURL(code string, version int64, path string) string {
+	c = c.normalized()
 	if c.AppURLMode == AppURLModeDomain && c.AppDomainSuffix != "" {
 		baseVersion := c.DomainAppURL(code, &version)
 		return strings.TrimRight(baseVersion, "/") + "/" + strings.TrimLeft(path, "/")
@@ -138,6 +181,7 @@ func (c AppURLConfig) AssetURL(code string, version int64, path string) string {
 }
 
 func (c AppURLConfig) CodeFromRequestHost(r *http.Request) string {
+	c = c.normalized()
 	suffix := c.AppDomainSuffix
 	if suffix == "" || c.AppURLMode == AppURLModePath {
 		return ""
@@ -153,7 +197,7 @@ func (c AppURLConfig) CodeFromRequestHost(r *http.Request) string {
 		return ""
 	}
 	code := strings.TrimSuffix(host, needle)
-	if strings.Contains(code, ".") {
+	if strings.Contains(code, ".") || !routeCodeRe.MatchString(code) {
 		return ""
 	}
 	return code

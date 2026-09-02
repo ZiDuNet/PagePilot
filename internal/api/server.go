@@ -870,17 +870,56 @@ func (s *Server) appURLConfigForRequest(r *http.Request) AppURLConfig {
 	return cfg
 }
 
+// decorateVersionURLs fills the URL contract on version list responses.  The
+// version records are storage data and intentionally do not remember the URL
+// mode that was active when they were created; links are resolved from the
+// current server configuration at read time.
+func (s *Server) decorateVersionURLs(r *http.Request, code string, versions []VersionItem) {
+	if strings.TrimSpace(code) == "" {
+		return
+	}
+	appURLs := s.appURLConfigForRequest(r)
+	for i := range versions {
+		version := versions[i].VersionNumber
+		set := appURLs.URLSet(code, &version)
+		versions[i].URL = set.URL
+		versions[i].PathURL = set.PathURL
+		versions[i].DomainURL = set.DomainURL
+	}
+}
+
+// decorateSiteURL adds the same URL contract to admin site records and keeps
+// every admin response consistent, including mutation responses.
+func (s *Server) decorateSiteURL(r *http.Request, item *SiteListItem) {
+	if item == nil || strings.TrimSpace(item.Code) == "" {
+		return
+	}
+	set := s.appURLConfigForRequest(r).URLSet(item.Code, nil)
+	item.URL = set.URL
+	item.PathURL = set.PathURL
+	item.DomainURL = set.DomainURL
+}
+
 // WithVersion 设置服务端版本号（用于 /api/config 响应）。
 func (s *Server) rewriteDeployResponseURLs(r *http.Request, resp *DeployResponse) {
 	if resp == nil || strings.TrimSpace(resp.Code) == "" {
 		return
 	}
 	appURLs := s.appURLConfigForRequest(r)
-	version := int64(resp.VersionNumber)
-	resp.URL = appURLs.PrimaryAppURL(resp.Code, nil)
+	appSet := appURLs.URLSet(resp.Code, nil)
+	resp.URL = appSet.URL
+	resp.PathURL = appSet.PathURL
+	resp.DomainURL = appSet.DomainURL
 	resp.DetailURL = resp.URL
+	resp.VersionURL = ""
+	resp.VersionPathURL = ""
+	resp.VersionDomainURL = ""
+	version := int64(resp.VersionNumber)
 	if version > 0 {
-		resp.VersionURL = appURLs.PrimaryAppURL(resp.Code, &version)
+		versionSet := appURLs.URLSet(resp.Code, &version)
+		resp.VersionURL = versionSet.URL
+		resp.VersionPathURL = versionSet.PathURL
+		resp.VersionDomainURL = versionSet.DomainURL
 	}
 	resp.QRCode = generateQRCodeDataURL(resp.URL)
 	if resp.AgentGuideURL != "" {
@@ -903,6 +942,10 @@ func (s *Server) versionCreatedResponseForRequest(r *http.Request, resp *DeployR
 		URL:                    resp.URL,
 		DetailURL:              resp.DetailURL,
 		VersionURL:             resp.VersionURL,
+		PathURL:                resp.PathURL,
+		DomainURL:              resp.DomainURL,
+		VersionPathURL:         resp.VersionPathURL,
+		VersionDomainURL:       resp.VersionDomainURL,
 		CurrentVersionID:       resp.CurrentVersionID,
 		PreserveHint:           resp.PreserveHint,
 		PrimaryVersionStrategy: resp.PrimaryVersionStrategy,
@@ -2073,6 +2116,9 @@ type marketplaceDeployResponse struct {
 	Title                  string        `json:"title"`
 	Description            string        `json:"description"`
 	Filename               string        `json:"filename"`
+	URL                    string        `json:"url,omitempty"`
+	PathURL                string        `json:"pathUrl,omitempty"`
+	DomainURL              string        `json:"domainUrl,omitempty"`
 	FilePath               string        `json:"filePath"`
 	FileSize               int64         `json:"fileSize"`
 	QrCodePath             string        `json:"qrCodePath"`
@@ -2377,8 +2423,13 @@ func (s *Server) toMarketplaceResponse(r *http.Request, d store.MarketplaceDeplo
 	}
 	_ = primaryVerID
 	var filePath, qrPath string
+	var appURL, pathURL, domainURL string
 	if d.Code != "" {
-		filePath = appURLs.PrimaryAppURL(d.Code, nil)
+		appURLSet := appURLs.URLSet(d.Code, nil)
+		appURL = appURLSet.URL
+		pathURL = appURLSet.PathURL
+		domainURL = appURLSet.DomainURL
+		filePath = appURL
 		qrPath = base + "/api/deploys/" + d.Code + "/qr"
 	}
 	var expiresAt *string
@@ -2402,6 +2453,9 @@ func (s *Server) toMarketplaceResponse(r *http.Request, d store.MarketplaceDeplo
 		Title:                  d.Title,
 		Description:            d.Description,
 		Filename:               d.Filename,
+		URL:                    appURL,
+		PathURL:                pathURL,
+		DomainURL:              domainURL,
 		FilePath:               filePath,
 		FileSize:               d.FileSize,
 		QrCodePath:             qrPath,
@@ -3270,6 +3324,7 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErrWithReqID(apiErr, reqID))
 		return
 	}
+	s.decorateVersionURLs(r, code, resp.Versions)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -4508,15 +4563,20 @@ func (s *Server) siteCodeFromCSPDocumentURI(documentURI string) string {
 	if err != nil {
 		return ""
 	}
-	if strings.HasPrefix(u.Path, "/agent/") {
-		rest := strings.TrimPrefix(u.Path, "/agent/")
+	appURL := s.appURLConfig().normalized()
+	pathBase := strings.Trim(appURL.AppPathBase, "/")
+	if pathBase == "" {
+		pathBase = "agent"
+	}
+	pathPrefix := "/" + pathBase + "/"
+	if strings.HasPrefix(u.Path, pathPrefix) {
+		rest := strings.TrimPrefix(u.Path, pathPrefix)
 		code := strings.Split(rest, "/")[0]
 		if routeCodeRe.MatchString(code) {
 			return code
 		}
 	}
-	appURL := s.appURLConfig()
-	suffix := strings.TrimSpace(appURL.AppDomainSuffix)
+	suffix := appURL.AppDomainSuffix
 	if suffix == "" || appURL.AppURLMode == AppURLModePath {
 		return ""
 	}
@@ -6485,7 +6545,7 @@ func (s *Server) handleAdminListSites(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(site.OwnerTokenID, "user:") {
 			ownerUsername = usernames[strings.TrimPrefix(site.OwnerTokenID, "user:")]
 		}
-		items = append(items, SiteListItem{
+		item := SiteListItem{
 			Code:                 site.Code,
 			PublicID:             site.PublicID,
 			OwnerTokenID:         site.OwnerTokenID,
@@ -6511,7 +6571,9 @@ func (s *Server) handleAdminListSites(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:            site.CreatedAt,
 			Source:               site.Source,
 			LastVersionAt:        site.LastVersionAt,
-		})
+		}
+		s.decorateSiteURL(r, &item)
+		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, SiteListResponse{Success: true, Sites: items})
 }
@@ -6565,7 +6627,9 @@ func (s *Server) handleAdminGetSiteDetail(w http.ResponseWriter, r *http.Request
 		return
 	}
 	item := siteListItemFromSite(site, s.siteOwnerUsername(r.Context(), site.OwnerTokenID))
+	s.decorateSiteURL(r, &item)
 	item.VersionCount = len(versionsResp.Versions)
+	s.decorateVersionURLs(r, code, versionsResp.Versions)
 	if bundle != nil {
 		item.Filename = bundle.MainEntry
 		item.TotalSize = bundle.TotalSize
@@ -6609,6 +6673,12 @@ func siteListItemFromSite(site store.Site, ownerUsername string) SiteListItem {
 		CreatedAt:             site.CreatedAt,
 		Source:                site.Source,
 	}
+}
+
+func (s *Server) siteListItemWithURL(r *http.Request, site store.Site, ownerUsername string) SiteListItem {
+	item := siteListItemFromSite(site, ownerUsername)
+	s.decorateSiteURL(r, &item)
+	return item
 }
 
 func (s *Server) siteOwnerUsername(ctx context.Context, ownerTokenID string) string {
@@ -6735,7 +6805,7 @@ func (s *Server) handleAdminSetSiteReusePolicy(w http.ResponseWriter, r *http.Re
 	})
 	writeJSON(w, http.StatusOK, SiteReusePolicyResponse{
 		Success: true,
-		Site:    siteListItemFromSite(site, s.siteOwnerUsername(r.Context(), site.OwnerTokenID)),
+		Site:    s.siteListItemWithURL(r, site, s.siteOwnerUsername(r.Context(), site.OwnerTokenID)),
 	})
 }
 
@@ -6789,7 +6859,7 @@ func (s *Server) handleAdminSetSiteSecurityMode(w http.ResponseWriter, r *http.R
 	})
 	writeJSON(w, http.StatusOK, SiteSecurityModeResponse{
 		Success: true,
-		Site:    siteListItemFromSite(site, s.siteOwnerUsername(r.Context(), site.OwnerTokenID)),
+		Site:    s.siteListItemWithURL(r, site, s.siteOwnerUsername(r.Context(), site.OwnerTokenID)),
 	})
 }
 
@@ -7021,7 +7091,7 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 	// 从 code 或 url 提取 code
 	code := strings.TrimSpace(req.Code)
 	if code == "" && req.URL != "" {
-		code = extractCodeFromURL(req.URL)
+		code = extractCodeFromURLWithConfig(req.URL, s.appURLConfigForRequest(r))
 	}
 	if code == "" {
 		writeError(w, apiErrWithReqID(NewError(CodeInvalidInput, "validate",
@@ -7115,36 +7185,83 @@ func (s *Server) handlePatchDeployContent(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, s.versionCreatedResponseForRequest(r, resp))
 }
 
-// extractCodeFromURL 从类似 https://host/foo 或 https://host/agent/foo 的 URL 提取 code。
-func extractCodeFromURL(u string) string {
-	u = strings.TrimSpace(u)
-	if u == "" {
+// extractCodeFromURL keeps the legacy path-only helper available to package
+// callers.  The request handler uses extractCodeFromURLWithConfig so domain
+// URLs are accepted only for the configured application suffix.
+func extractCodeFromURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	cfg := AppURLConfig{AppURLMode: AppURLModePath, AppPathBase: "/agent"}
+	if parsed, err := url.Parse(trimmed); err == nil && parsed.Hostname() != "" {
+		scheme := parsed.Scheme
+		if scheme == "" {
+			scheme = "http"
+		}
+		cfg.PathBaseURL = scheme + "://" + parsed.Host
+	}
+	return extractCodeFromURLWithConfig(trimmed, cfg)
+}
+
+// extractCodeFromURLWithConfig extracts a site code from either an /agent
+// path URL or a configured application-subdomain URL.  It deliberately does
+// not infer a code from an arbitrary host, which would make a typo or an
+// external URL mutate the wrong site through the compatibility endpoint.
+func extractCodeFromURLWithConfig(raw string, cfg AppURLConfig) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
 		return ""
 	}
-	// 去掉 scheme
-	if i := strings.Index(u, "://"); i >= 0 {
-		u = u[i+3:]
-	}
-	// 去掉 host
-	if i := strings.Index(u, "/"); i >= 0 {
-		u = u[i+1:]
-	} else {
+	cfg = cfg.normalized()
+	parsed, err := url.Parse(raw)
+	if err != nil {
 		return ""
 	}
-	// 去掉 query
-	if i := strings.IndexAny(u, "?#"); i >= 0 {
-		u = u[:i]
+
+	if parsed.Hostname() != "" {
+		host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+		suffix := normalizeAppDomainSuffix(cfg.AppDomainSuffix)
+		if cfg.AppURLMode != AppURLModePath && suffix != "" {
+			needle := "." + suffix
+			if strings.HasSuffix(host, needle) {
+				code := strings.TrimSuffix(host, needle)
+				if routeCodeRe.MatchString(code) && !strings.Contains(code, ".") {
+					return code
+				}
+				return ""
+			}
+		}
+		// Absolute path URLs are accepted only for the current control origin.
+		// Without this check, an arbitrary external URL such as
+		// https://evil.example/demo/ could be mistaken for a PagePilot site.
+		pathBaseURL := strings.TrimSpace(cfg.PathBaseURL)
+		if pathBaseURL == "" {
+			return ""
+		}
+		base, err := url.Parse(pathBaseURL)
+		if err != nil || base.Hostname() == "" ||
+			!strings.EqualFold(stripHostPort(base.Host), stripHostPort(parsed.Host)) {
+			return ""
+		}
 	}
-	u = strings.Trim(u, "/")
-	// 处理 /agent/{code} 前缀
-	if strings.HasPrefix(u, "agent/") {
-		u = strings.TrimPrefix(u, "agent/")
+
+	pathValue := strings.Trim(parsed.Path, "/")
+	if pathValue == "" {
+		return ""
 	}
-	// 取第一段
-	if i := strings.Index(u, "/"); i >= 0 {
-		u = u[:i]
+	parts := strings.Split(pathValue, "/")
+	pathBase := strings.Trim(cfg.AppPathBase, "/")
+	if pathBase == "" {
+		pathBase = "agent"
 	}
-	return u
+	if len(parts) >= 2 && parts[0] == pathBase && routeCodeRe.MatchString(parts[1]) {
+		return parts[1]
+	}
+	// Older clients occasionally sent a bare /{code}/ path.  Preserve that
+	// compatibility only for a single segment; /versions/{n} must not become a
+	// site code.
+	if len(parts) == 1 && routeCodeRe.MatchString(parts[0]) {
+		return parts[0]
+	}
+	return ""
 }
 
 // handleAppServe 处理 GET /agent/{code}、GET /agent/{code}/{path...}
