@@ -1,226 +1,208 @@
 # Docker 部署
 
-本文档说明如何使用仓库内置的 `Dockerfile` 与 `docker-compose.yml` 部署 PagePilot。
+本文档说明如何使用仓库内置的 `Dockerfile` 和 `docker-compose.yml` 部署 PagePilot。上线前请先阅读 [运维手册](../docs/OPERATIONS.md)；应用泛域名配置请阅读 [APP_URL_MODE.md](APP_URL_MODE.md)。
 
 ## 适用场景
 
-- 单机部署或先在服务器上验证生产配置。
-- 希望把 SQLite 数据库、托管文件和维护 SQL 固定挂载到宿主机目录。
-- 已经有外层 Nginx、Caddy、宝塔或云厂商负载均衡负责 HTTPS，只需要 PagePilot 容器监听内网端口。
-
-如果你希望直接使用 systemd + Caddy，请参考 [deploy/README.md](README.md)。
+Docker 适合单机部署、快速验证生产配置和需要固定数据卷的环境。容器只负责运行 PagePilot，公网 TLS、DNS 和域名路由仍由外层 Caddy、Nginx、宝塔或云负载均衡负责。
 
 ## 快速启动
 
-PagePilot 不需要配置入口域名。浏览器访问时，首页、后台、`/agents/`、`/screens/`、Skill/MCP 文案、二维码和 `/agent/{code}/` 路径模式链接都会跟随当前打开的域名或 IP。Skill ZIP 默认使用服务端内置包，管理员也可以在后台上传自定义 ZIP 覆盖；包内默认 server 不会在下载时动态改写。
-
-如果同一套服务通过多个入口访问，PagePilot 会按用户实际打开的入口生成链接。外层反向代理建议透传 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。
-
-Skill、MCP 和 CLI 不读取所谓“主站域名配置”。它们使用 `--server`、`PAGEPILOT_SERVER` 或客户端保存的服务器地址作为 API 控制面入口，并把这个入口交给后端用于路径模式 URL 生成。发布成功后的 URL 仍以后端响应为准。旧 `HOSTCTL_SERVER` 仍兼容读取，但新配置建议使用 `PAGEPILOT_SERVER`。
-
-主密钥必须由部署者显式提供：
-
-- 已上线环境：继续使用原来的 `HOSTCTL_MASTER_KEY`，否则旧的加密数据可能无法解密。不要在升级时更换，也不要把它提交到 Git。
-- 全新部署：准备 `.env` 并生成独立主密钥：
-
-```bash
+~~~bash
 cp .env.example .env
 openssl rand -base64 32
-```
-
-把生成结果填入 `.env` 中的 `HOSTCTL_MASTER_KEY`。这个主密钥用于加密服务端敏感数据；升级或重启容器时不要更换，否则旧的加密数据可能无法解密。`.env` 文件不要提交到 Git。
-
-然后启动：
-
-```bash
+# 把生成的值写入 .env 的 HOSTCTL_MASTER_KEY，
+# 同时设置自己的 HOSTCTL_ADMIN_USERNAME/HOSTCTL_ADMIN_PASSWORD
 docker compose up -d --build
 docker compose logs -f hostctl
-```
+~~~
 
-默认映射端口为 `127.0.0.1:8787:8787`，只允许本机反向代理访问。若确实需要直接暴露端口，请在受控网络中明确改成 `8787:8787`；生产环境更建议保持本机绑定并由 HTTPS 反向代理接入。外层反向代理使用其它端口（例如 `1143`）时，页面展示、复制和下载说明会直接使用当前外部地址。
+默认映射 `127.0.0.1:8787:8787`，只允许本机反向代理访问。生产环境不要把容器端口直接暴露到公网；如果必须直连，请额外配置防火墙和 HTTPS。
 
-镜像构建会先运行前端 `npm ci && npm run build`，再把用户端和后台产物打进 Go 二进制。源码方式直接编译二进制时，请确认以下产物来自最新代码：
+验证：
 
-- 用户端 React：`frontend/user` 构建到 `internal/web/user/app`。
-- 后台 React：`frontend/admin` 构建到 `internal/web/admin/app`。
-- 内置 Skill 包：`internal/web/skill/hostctl-deploy.zip`，由 `skill/hostctl-deploy` 重新打包得到，对外主下载地址为 `/skill/pagep.zip`。
-- `/admin`、`/deploy`、`/market`、`/agents/`、`/screens/` 都应由 PagePilot 服务自身返回；旧 `/api-docs.html` 仅作为兼容入口重定向到 `/admin?tab=apiDocs`。
+~~~bash
+curl -fsS http://127.0.0.1:8787/api/health
+curl -fsS http://127.0.0.1:8787/openapi.json | jq '.info.title'
+~~~
 
-## 首次管理员
+访问页面：
 
-没有可用管理员的首次启动时，容器不会使用固定管理员或固定密码。除显式配置
-`HOSTCTL_MASTER_KEY` 外，还必须配置你自己的
-`HOSTCTL_ADMIN_USERNAME` 和 `HOSTCTL_ADMIN_PASSWORD`；服务只在没有可用管理员（`is_admin=1` 且 `is_active=1`）时使用它们创建首个管理员，不会覆盖已有账号。
+- `http://服务器地址:8787/`（仅适合内网验证）
+- `http://服务器地址:8787/admin`（生产应通过 HTTPS 代理访问）
+
+## 首个管理员和主密钥
+
+- `HOSTCTL_MASTER_KEY` 用于加密访问密码、设备授权等敏感数据。已上线环境必须沿用原值，不能因为升级或重建容器而重新生成。
+- 空数据库首次启动还必须设置 `HOSTCTL_ADMIN_USERNAME` 和 `HOSTCTL_ADMIN_PASSWORD`。这两个变量只在数据库没有可用管理员时创建首个管理员，不会覆盖已有账号。
+- 生产环境必须启用 `REQUIRE_AUTH=true`。开发模式的内置会话不能当作公网认证。
+- `.env` 不要提交到 Git；建议使用 Docker Secret、受限环境文件或密码管理器注入。
 
 ## 数据卷
 
-`docker-compose.yml` 默认使用宿主机 bind mount：
+Compose 默认把数据写到：
 
-| 宿主机路径 | 容器路径 | 用途 |
-|---|---|---|
-| `./data/docker/hostctl` | `/var/lib/hostctl` | SQLite 数据库与运行数据 |
-| `./data/docker/sql` | `/var/lib/hostctl/sql` | 人工维护、备份或迁移用 SQL |
-| `./data/docker/hosted` | `/var/www/hosted` | 已发布的静态站点文件 |
-| `./data/docker/logs` | `/var/log/hostctl` | 服务日志目录 |
+| 宿主机 | 容器 | 用途 |
+| --- | --- | --- |
+| `./data/docker/hostctl` | `/var/lib/hostctl` | SQLite、运行数据和后台上传的 Skill ZIP。 |
+| `./data/docker/sql` | `/var/lib/hostctl/sql` | 维护和迁移辅助 SQL。 |
+| `./data/docker/hosted` | `/var/www/hosted` | 已发布站点文件。 |
+| `./data/docker/logs` | `/var/log/hostctl` | 日志目录。 |
 
-升级容器前请保留这些目录。删除这些目录会删除数据库和已发布站点。
+不要使用 `docker compose down -v`，也不要为了重新构建删除 `data/docker`。数据库和 hosted 必须一起备份。
 
-本轮运行时重构新增了 `site_search_fts`、`audit_logs`、`render_cache` 和 `version_bundles` 等表，并会在服务启动时自动补齐老数据库结构、回填市场搜索索引。只要继续挂载上表中的 `./data/docker/hostctl` 和 `./data/docker/hosted`，迁移设计不会主动清空旧版本数据；不要为了“重新构建”删除 `data/docker`。
+## 环境变量
 
-发布前仍需要拿真实旧版本 SQLite 数据库和 hosted 文件目录跑一次 Docker 升级验证，确认站点、版本、用户、Token、访问密码、分类、屏幕绑定、文件资源、FTS 回填和新增表迁移都正常。仓库提供了可复现的容器升级演练脚本：
+Compose 已提供生产安全默认值。常见覆盖项：
 
-```bash
-node scripts/docker-upgrade-qa.mjs
-```
+~~~yaml
+environment:
+  HOSTCTL_APP_URL_MODE: "path"
+  HOSTCTL_APP_DOMAIN_SUFFIX: ""
+  HOSTCTL_APP_URL_SCHEME: "https"
+  HOSTCTL_APP_URL_PORT: ""
+  REQUIRE_AUTH: "true"
+  HOSTCTL_COOLDOWN_SECONDS: "10"
+  HOSTCTL_ALLOW_REGISTRATION: "true"
+  HOSTCTL_STORAGE_BACKEND: "local"
+  HOSTCTL_EMAIL_VERIFICATION_ENABLED: "false"
+~~~
 
-该脚本会在临时目录构造旧 SQLite + hosted 数据，生成临时 compose override，执行真实 `docker compose up -d --build`，再通过容器 HTTP 接口和直接 SQLite 校验确认升级结果。它需要服务器已安装 Docker Compose 和 Go；需要保留现场排查时可加 `--keep`。当前完整待办见 [../docs/CURRENT_STATUS_AND_TODO.md](../docs/CURRENT_STATUS_AND_TODO.md)。
+完整变量、默认值、旧变量兼容和运行设置见 [配置参考](../docs/CONFIGURATION.md)。不要同时设置 `HOSTCTL_*` 和没有前缀的旧变量；旧变量可能覆盖新变量。
 
-## 注册、邮箱验证与 OSS
+## 泛域名模式前置条件
 
-常用环境变量可以直接写入 `docker-compose.yml` 或 systemd unit：
+把 `HOSTCTL_APP_URL_MODE` 改为 `domain` 或 `dual` 之前，必须完成：
 
-```yaml
-HOSTCTL_ALLOW_REGISTRATION: "true"
-HOSTCTL_STORAGE_BACKEND: "local" # local 或 oss
-# HOSTCTL_STORAGE_BACKEND: "oss"
-# HOSTCTL_OSS_ENDPOINT: "https://oss-cn-hangzhou.aliyuncs.com" # 也可省略协议，系统默认按 HTTPS 处理
-# HOSTCTL_OSS_BUCKET: "pagepilot-assets"
-# HOSTCTL_OSS_ACCESS_KEY_ID: "..."
-# HOSTCTL_OSS_ACCESS_KEY_SECRET: "..."
-# HOSTCTL_OSS_PREFIX: "prod/pagepilot"
-```
+1. `*.pg.example.com` DNS A/AAAA/CNAME 指向同一反向代理。
+2. TLS 证书覆盖主站 `pagepilot.example.com` 和 `*.pg.example.com`。
+3. Nginx/Caddy 同时接收主站和泛域名，并将整个站点转发到容器 `127.0.0.1:8787`。
+4. Nginx 转发 `Host`、`X-Forwarded-Host`、`X-Forwarded-Proto`、`X-Forwarded-For`，并为 `/api/device/ws` 保留 WebSocket Upgrade。
 
-- `HOSTCTL_ALLOW_REGISTRATION=false` 会关闭公开注册；登录页只保留登录入口，管理员仍可在后台维护用户。
-- `HOSTCTL_STORAGE_BACKEND=oss` 时，新发布版本会写入阿里云 OSS；每个版本都会在 SQLite 记录自己的 `storage_backend` 和 `storage_prefix`，旧库升级时历史版本默认标记为 `local`。预览读取、源码下载、覆盖版本、删除版本和删除站点都会按版本自己的存储归属执行，避免切换存储后旧作品直接 404。OSS 对象不存在时仍会回退本地 `/var/www/hosted` 历史目录作为兜底；历史文件不会自动迁移到 OSS，确认稳定后可再单独迁移或清理本地旧文件。
-- 开启邮箱验证后，注册页会先通过图片验证码请求邮箱验证码，再用 6 位邮箱验证码完成注册；后台运行设置会展示 SMTP 是否配置完整。
+只配置容器环境变量不会自动创建泛解析或证书。`HOSTCTL_APP_DOMAIN_SUFFIX` 只填写 `pg.example.com`，不要填写 `*.pg.example.com`。完整配置见 [APP_URL_MODE.md](APP_URL_MODE.md)。
+
 ## 反向代理
 
-PagePilot 容器内监听 `0.0.0.0:8787`。外层反向代理只需要把整个站点转发到容器端口，不需要维护路径白名单。
+Caddy：
 
-Caddy 示例：
-
-```caddyfile
-pagepilot.example.com {
+~~~caddyfile
+pagepilot.example.com, *.pg.example.com {
     reverse_proxy 127.0.0.1:8787
 }
-```
+~~~
 
-Nginx 示例：
+Nginx：
 
-```nginx
+~~~nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
 server {
-    listen 443 ssl http2;
-    server_name pagepilot.example.com;
+    listen 443 ssl;
+    server_name pagepilot.example.com *.pg.example.com;
 
     location / {
         proxy_pass http://127.0.0.1:8787;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Host $host;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Host $http_host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
     }
 }
-```
+~~~
 
-如果你使用的是 `https://pagepilot.example.com:1143` 这类带端口地址，浏览器页面会直接使用当前打开地址生成链接。请确保反向代理传给后端的 `Host` 或 `X-Forwarded-Host` 也包含外部端口。
+使用 `https://host:1143` 等非标准端口时，让 `Host`/`X-Forwarded-Host` 保留端口，并设置 `HOSTCTL_APP_URL_PORT=1143`；`X-Forwarded-Port` 只能作为补充。不要使用 `$host` 生成带端口的链接。代理应使用统一 `location /`，不要只放行 `/api` 或 `/agent`。
 
-应用访问地址默认使用 `/agent/{code}/`。如需让应用使用 `https://{code}.example.com/` 泛域名访问，或在路径模式和泛域名之间切换，请参考 [APP_URL_MODE.md](APP_URL_MODE.md)。外部 Nginx 只需要一条泛域名 `server_name`，不需要为每个应用单独配置。
+## 构建产物
 
-浏览器页面会把当前 `origin` 传给后端；普通 HTTP 请求会依赖 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto` 判断真实公网域名和协议。反向代理仍建议保留这些头，不要把内网地址写进去。
+Docker builder 会在编译 Go 二进制前：
 
-后台“Skill & MCP”页只维护下载包，不提供源码编辑。需要调整 Skill 时，请在仓库或本地修改 `skill/hostctl-deploy`，打包成 `pagep.zip` 后在后台上传。上传包保存在数据目录下，优先级高于服务端内置包；删除或缺失上传包时会回退到内置包。
+1. 安装前端依赖并构建 `frontend/user`、`frontend/admin`。
+2. 运行 `python scripts/build_skill_zip.py`。
+3. 将前端和 Skill ZIP embed 到服务端。
+
+源码方式构建时也要刷新这些产物：
+
+~~~bash
+(cd frontend/user && npm install && npm run build)
+(cd frontend/admin && npm install && npm run build)
+python scripts/build_skill_zip.py
+go build -o bin/hostctl-server ./cmd/hostctl-server
+~~~
+
+内置 Skill 对外地址为 `/skill/pagep.zip`；旧 `/skill/hostctl-deploy.zip` 兼容保留。后台上传的包优先于内置包。
 
 ## 常用命令
 
-```bash
-# 构建并启动
+~~~bash
 docker compose up -d --build
-
-# 用临时旧库和 hosted 目录跑一次真实容器升级演练
-node scripts/docker-upgrade-qa.mjs
-
-# 查看日志
+docker compose ps
 docker compose logs -f hostctl
-
-# 健康检查
-curl -fsS http://127.0.0.1:8787/api/health
-
-# 进入容器执行 CLI
 docker compose exec hostctl pagep --help
-
-# 停止
+curl -fsS http://127.0.0.1:8787/api/health
+docker compose stop hostctl
+docker compose start hostctl
 docker compose down
-```
+~~~
 
 ## 升级
 
-```bash
+~~~bash
+# 先备份 data/docker，再更新代码
 git pull
 docker compose up -d --build
 docker compose logs -f hostctl
-```
-
-如果需要强制拉取基础镜像再构建，可以使用：
-
-```bash
-git pull
-docker compose build --pull hostctl
-docker compose up -d hostctl
-docker compose logs -f hostctl
-```
-
-升级后建议检查：
-
-```bash
-node scripts/docker-upgrade-qa.mjs
 curl -fsS http://127.0.0.1:8787/api/health
-curl -fsS http://127.0.0.1:8787/deploy >/dev/null
-curl -fsSI http://127.0.0.1:8787/api-docs.html | grep -i 'location: /admin?tab=apiDocs'
-curl -fsS http://127.0.0.1:8787/screens/ >/dev/null
-curl -fsS http://127.0.0.1:8787/admin >/dev/null
-```
+~~~
 
-`/admin`、`/deploy`、`/market`、`/agents/` 和 `/screens/` 是内置页面，应该由 PagePilot 直接返回，不能被反向代理拦截成 404。旧 `/api-docs.html` 只保留为 302 兼容重定向，真正的 API 文档在 `/admin?tab=apiDocs`，机器可读契约在 `/openapi.json`。
+升级不会自动清空数据库或 hosted。建议先执行：
 
-## 备份与恢复
+~~~bash
+node scripts/legacy-upgrade-qa.mjs
+node scripts/docker-upgrade-qa.mjs
+~~~
+
+第二个脚本需要 Docker Compose 和 Go；它使用临时目录，不应指向生产数据。升级后检查首页、部署页、市场、后台、当前/历史应用、Skill ZIP 和 WebSocket。
+
+## 备份和恢复
 
 备份：
 
-```bash
+~~~bash
 mkdir -p backup
 docker compose stop hostctl
 tar -czf backup/pagepilot-$(date +%F).tar.gz data/docker
 docker compose start hostctl
-```
+~~~
 
 恢复：
 
-```bash
+~~~bash
 docker compose down
 tar -xzf backup/pagepilot-YYYY-MM-DD.tar.gz
 docker compose up -d
-```
+~~~
 
-如果数据量较大，可以使用 SQLite `.backup` 命令导出数据库，同时归档 `./data/docker/hosted`。
+恢复后检查宿主机目录属主、SQLite 文件权限、`hosted` 软链接和 `/api/health`。不要只恢复数据库或只恢复 hosted。
 
-## 安全注意
+## 安全和排障
 
-- 生产环境保持 `REQUIRE_AUTH=true`。
-- 已上线环境必须保留原 `HOSTCTL_MASTER_KEY`；全新空库使用 `openssl rand -base64 32` 生成独立值并写入 `.env`。生产环境未配置主密钥时服务不会启动，不要把 `.env` 提交到 Git。
-- 没有可用管理员的首次启动必须显式提供首个管理员凭据；首次登录后请使用后台账号设置更新密码。
-- Token 明文只返回一次，请使用密码管理器或 CI Secret 保存。
-- 访问密码仅保护前台查看入口。匿名用户也可以输入访问密码查看加密站点；输入正确后浏览器获得 5 分钟访问票据，改密码后旧票据立即失效。
-- 用户上传的 HTML/JS 会以托管应用形式运行。路径模式默认加 CSP sandbox，建议生产环境使用泛域名模式隔离用户上传脚本，详见 [APP_URL_MODE.md](APP_URL_MODE.md)。
-- CORS 只控制外部网页跨域调用 API，不控制 iframe 嵌入。是否允许其它网站嵌入应用 URL，请在后台“运行设置 -> 跨域与嵌入”配置 iframe 嵌入策略；可选任意、仅本站、白名单或禁止嵌入。白名单来源必须写完整 `http(s)://域名[:端口]`，不要带路径。
-- 不要把 `./data/docker/hostctl/hostctl.db`、`./data/docker/hosted` 或备份包提交到 Git。
+- Token 明文只返回一次；用密码管理器或 CI Secret 保存。
+- 访问密码只授权浏览，源码下载和模板复用仍由站点策略控制。
+- 用户上传 HTML/JS 会运行在托管应用上下文；生产建议使用泛域名模式隔离，并配置合理 CSP/iframe 策略。
+- CORS 只控制 API fetch/XHR，不控制 iframe；两者分别在运行设置中配置。
+- 不要在日志、工单或提交中暴露 Token、主密钥、管理员密码、数据库和用户源码。
 
-## 排障
-
-| 现象 | 检查项 |
-|---|---|
-| 首页可访问但 `/deploy` 或 `/screens/` 404 | 确认容器已重新构建并启动最新镜像；反向代理应把所有路径转发到 PagePilot。 |
-| `/skill/pagep.zip` 404 | 确认镜像包含 `internal/web/skill/hostctl-deploy.zip`，并已重新构建；正常情况下没有后台上传包也会返回内置默认包。旧 `/skill/hostctl-deploy.zip` 也保留兼容。 |
-| 二维码或分享链接域名错误 | 请先确认浏览器当前打开的域名正确；再检查反向代理是否传递 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，不要把内网地址透传给后端。 |
-| Skill/MCP 发布后返回内网链接 | 检查 `--server` 或 `PAGEPILOT_SERVER` 是否使用了内网地址。路径模式下要返回公网链接，就让 Skill/MCP 用公网入口调用 PagePilot。旧 `HOSTCTL_SERVER` 仅兼容读取。 |
-| 首个管理员登录失败 | 检查启动时数据库是否没有可用管理员（`is_admin=1` 且 `is_active=1`），并显式设置 `HOSTCTL_ADMIN_USERNAME`、`HOSTCTL_ADMIN_PASSWORD`；这两个变量不会覆盖已有账号，请使用已有管理员或备份恢复。 |
-| 发布后静态文件丢失 | 检查 `./data/docker/hosted` 是否正确挂载且未被清空。 |
+| 现象 | 检查 |
+| --- | --- |
+| `/deploy`、`/market` 或 `/screens/` 404 | 代理是否统一转发整个站点；容器是否已重建。 |
+| 应用链接指向内网 | `Host`/`X-Forwarded-Host` 和 CLI/Skill/MCP 的 server 是否使用公网入口。 |
+| HTTPS 页面出现 Mixed Content | scheme、外部端口、证书和反代头是否一致。 |
+| 泛域名打不开 | `dig`、证书 SAN、`server_name` 和 `curl --resolve`。 |
+| `/api/device/ws` 失败 | Nginx 是否启用 HTTP/1.1、Upgrade 和 Connection。 |
+| Skill ZIP 404 | 重打包并重建服务端，检查 `/skill/pagep.zip`。 |

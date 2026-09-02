@@ -1,158 +1,242 @@
-# PagePilot 应用访问地址模式
+# 应用访问地址模式
 
-PagePilot 默认使用路径模式访问应用，兼容已经上线的地址：
+PagePilot 的“应用链接规则”只决定发布接口、版本列表、二维码和前端展示哪个 URL 作为主链接。它不会自动创建 DNS 记录、申请证书或修改 Nginx；启用泛域名模式前，必须先完成网络层配置。
 
-```text
-https://pagepilot.example.com/agent/{code}/
-```
+## 先确认三件事
 
-如果你有泛域名解析和泛域名证书，也可以在后台切换到泛域名模式：
+以主站 `pagepilot.example.com`、应用后缀 `pg.example.com`、应用 code `demo` 为例：
 
-```text
-https://{code}.pagepilot.example.com/
-```
+~~~text
+主站入口：      https://pagepilot.example.com
+应用入口：      https://demo.pg.example.com
+泛解析记录：    *.pg.example.com -> 反向代理公网 IP
+TLS 证书：       pagepilot.example.com + *.pg.example.com
+PagePilot：      反向代理 -> 127.0.0.1:8787
+~~~
 
-`/agent/{code}/` 会继续保留，建议把它作为默认兼容入口；泛域名模式更适合隔离用户上传的 HTML/JS。
+以下三项缺一不可：
 
-## 三种应用模式
+1. DNS：添加 `*.pg.example.com` 的 A/AAAA 或 CNAME，指向接收主站流量的同一台 Nginx/Caddy。无需为每个 code 添加记录。
+2. TLS：证书必须覆盖主站和 `*.pg.example.com`。泛域名只覆盖一层子域名，不覆盖 `pg.example.com` 本身，也不覆盖 `a.demo.pg.example.com`；Let's Encrypt 泛域名通常需要 DNS-01 验证。
+3. 反向代理：主站和泛域名由同一个站点转发到 PagePilot，并保留外部 Host、协议和端口。`/api/device/ws` 还需要 WebSocket Upgrade。
 
-| 模式 | 含义 | 适合场景 |
-|---|---|---|
-| `path` | 只生成 `/agent/{code}/` 链接 | 默认模式，最少配置 |
-| `domain` | 发布接口主返回 `https://{code}.{suffix}/` 链接 | 已配置泛解析和证书，希望隔离上传 JS |
-| `dual` | 同时支持路径和泛域名，发布接口主返回仍按路径模式生成 | 灰度迁移、兼容历史链接 |
+如果只配置了 PagePilot 后台而没有完成这些网络条件，域名模式会生成看似正确但打不开的链接；HTTPS 市场页面还可能因为应用 URL 变成 HTTP 而触发 Mixed Content。
 
-后台入口：`/admin` -> 运行设置 -> 应用链接规则。
+## 三种模式
 
-Skill/CLI 入口：
+| 模式 | 主 URL | 历史版本 | 说明 |
+| --- | --- | --- | --- |
+| `path` | `https://pagepilot.example.com/agent/demo/` | `https://pagepilot.example.com/agent/demo/versions/2/` | 默认，不需要泛域名。 |
+| `domain` | `https://demo.pg.example.com/` | `https://demo.pg.example.com/versions/2/` | 主链接使用独立子域名。 |
+| `dual` | 同时返回 path 和 domain | 同时返回两种历史链接 | 迁移期间同时保留两套地址。 |
 
-```bash
-python scripts/pagep.py \
-  config set-app-url \
-  --mode domain \
-  --domain-suffix pagepilot.example.com \
-  --scheme https
-```
+说明：
 
-如果你的外部 HTTPS 端口不是标准 `443`，例如使用 `1143` 对外提供 HTTPS：
+- 环境变量 `HOSTCTL_APP_DOMAIN_SUFFIX`（后台字段 `appDomainSuffix`）只填 `pg.example.com`，不要填写 `*.pg.example.com`；服务端会规范化前后点号和 `*.`，但配置文件仍应保持清晰。
+- `appURLScheme` 必须与浏览器看到的外部协议一致。TLS 在代理终止时，PagePilot 仍应设置为 `https`。
+- `appURLPort` 只填写外部非标准端口，例如 `1143`；不要填写容器内部监听端口 `8787`。
+- `url` 是当前模式的主链接；`pathUrl` 和 `domainUrl` 是显式变体。调用方应使用服务端返回值，不要自行拼接。
+- 版本列表和新发布响应按当前配置重新生成 URL；版本数据不会记住“创建时的 URL 模式”。
 
-```bash
-python scripts/pagep.py \
-  config set-app-url \
-  --mode domain \
-  --domain-suffix pagepilot.example.com \
-  --scheme https \
-  --port 1143
-```
+## DNS 和证书
 
-也可以通过环境变量设置初始值：
+DNS 示例：
 
-```yaml
-HOSTCTL_APP_URL_MODE: "domain"
-HOSTCTL_APP_DOMAIN_SUFFIX: "pagepilot.example.com"
-HOSTCTL_APP_URL_SCHEME: "https"
-HOSTCTL_APP_URL_PORT: ""
-```
+~~~text
+pagepilot.example.com.  A     203.0.113.10
+*.pg.example.com.       A     203.0.113.10
+~~~
 
-带外部端口的示例：
+也可以使用指向主站的 CNAME（取决于 DNS 服务商是否允许在该位置使用 CNAME）。确认泛解析已经生效：
 
-```yaml
-HOSTCTL_APP_URL_MODE: "domain"
-HOSTCTL_APP_DOMAIN_SUFFIX: "pagepilot.example.com"
-HOSTCTL_APP_URL_SCHEME: "https"
-HOSTCTL_APP_URL_PORT: "1143"
-```
+~~~bash
+dig +short pagepilot.example.com
+dig +short demo.pg.example.com
+# 或
+nslookup demo.pg.example.com
+~~~
 
-## 访问入口与应用域名
+证书至少要包含：
 
-PagePilot 没有入口域名配置项。首页、后台提示、Skill/MCP 下载说明、OpenAPI、二维码，以及路径模式 `/agent/{code}/` 链接都跟随当前访问 PagePilot 的域名或 IP。
+~~~text
+pagepilot.example.com
+*.pg.example.com
+~~~
 
-应用链接规则只决定发布后的应用是否额外使用 `https://{code}.{suffix}/` 泛域名。也就是说，只有启用 `domain` 或 `dual` 模式时，才需要配置 `HOSTCTL_APP_DOMAIN_SUFFIX`、`HOSTCTL_APP_URL_SCHEME` 和 `HOSTCTL_APP_URL_PORT`。
+只给主站申请证书，或只给 `pg.example.com` 申请证书，都不能覆盖 `demo.pg.example.com`。
 
-发布接口返回的 `url`、`detailUrl` 和 `versionUrl` 是权威访问地址：
+## Nginx 反向代理
 
-- `path`：返回当前主站入口下的 `/agent/{code}/`。
-- `domain`：返回后台配置的泛域名应用地址，例如 `https://demo.apps.example.com/`。
-- `dual`：路径和泛域名都可访问，但主返回值仍是 `/agent/{code}/`，便于兼容历史链接。
+下面的配置把主站和所有应用子域名转到同一个 PagePilot。`$http_host` 会保留客户端请求中的端口，比 `$host` 更适合非标准端口；公网 Nginx 必须覆盖客户端可能伪造的转发头。
 
-浏览器页面会把当前 `origin` 发给后端；Skill、MCP 和 CLI 使用 `--server`、`PAGEPILOT_SERVER` 或保存的服务器地址作为当前入口。它们不应该自行拼接最终应用 URL，而应该展示服务端返回的 URL。旧 `HOSTCTL_SERVER` 仅作为兼容变量保留。
+在 `http {}` 级别添加一次：
 
-## Docker 与外部 Nginx
+~~~nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+~~~
 
-Docker 不需要为每个应用单独暴露端口，也不需要为每个 `code` 单独配置反向代理。外层 DNS 和 Nginx 接收所有泛域名后，统一转发到 PagePilot 容器即可。
+在 `server {}` 中：
 
-DNS 只需要两类记录：
-
-```text
-pagepilot.example.com       A/AAAA -> 你的服务器
-*.pagepilot.example.com     A/AAAA -> 你的服务器
-```
-
-Nginx 标准 443 示例：
-
-```nginx
+~~~nginx
 server {
-    listen 443 ssl http2;
-    server_name pagepilot.example.com *.pagepilot.example.com;
+    listen 443 ssl;
+    server_name pagepilot.example.com *.pg.example.com;
 
-    ssl_certificate     /etc/nginx/certs/pagepilot.example.com/fullchain.pem;
-    ssl_certificate_key /etc/nginx/certs/pagepilot.example.com/privkey.pem;
+    # ssl_certificate /etc/letsencrypt/live/pagepilot.example.com/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/pagepilot.example.com/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:8787;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
     }
 }
-```
+~~~
 
-如果你像 `https://pagepilot.example.com:1143` 这样把 `1143` 当作外部 HTTPS 端口使用：
+不要只配置 `/api` 或 `/agent` 白名单。首页、后台、市场、Skill、屏幕、API、当前应用和历史应用都由 PagePilot 路由，统一 `location /` 最不容易漏路径。
 
-```nginx
+### 外部使用 1143 端口
+
+如果用户访问的是 `https://pagepilot.example.com:1143`，代理需要监听 1143，证书仍然覆盖两个域名，PagePilot 配置使用：
+
+~~~nginx
 server {
-    listen 1143 ssl http2;
-    server_name pagepilot.example.com *.pagepilot.example.com;
-
-    ssl_certificate     /etc/nginx/certs/pagepilot.example.com/fullchain.pem;
-    ssl_certificate_key /etc/nginx/certs/pagepilot.example.com/privkey.pem;
+    listen 1143 ssl;
+    server_name pagepilot.example.com *.pg.example.com;
 
     location / {
         proxy_pass http://127.0.0.1:8787;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Host $host;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Host $http_host;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Port 1143;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
     }
 }
-```
+~~~
 
-关键点：
+对应设置：
 
-- `server_name` 同时包含 PagePilot 入口域名和对应的应用泛域名。
-- `proxy_set_header Host $host` 必须保留，PagePilot 需要用 Host 判断当前访问的是哪个应用。
-- `X-Forwarded-Host` 和 `X-Forwarded-Proto` 用于“按当前访问域名生成”模式。
-- 如果 Skill/MCP 使用内网地址调用 API，路径模式返回的 URL 也可能是内网地址；生产环境应把 `--server` / `PAGEPILOT_SERVER` 设置为用户可访问的公网入口。
-- Docker 容器仍然只监听 `8787`，不需要为每个泛域名单独配置。
-- 如果只使用路径模式，不需要泛解析，也不需要泛域名证书。
+~~~text
+HOSTCTL_APP_URL_MODE=domain
+HOSTCTL_APP_DOMAIN_SUFFIX=pg.example.com
+HOSTCTL_APP_URL_SCHEME=https
+HOSTCTL_APP_URL_PORT=1143
+~~~
 
-## CORS 与 iframe 嵌入
+`X-Forwarded-Port` 是补充信息；当前 URL 生成主要依赖带端口的 `Host`/`X-Forwarded-Host`，所以不要把 `$host` 用在这个场景。
 
-CORS 白名单只决定外部网站能否用浏览器 `fetch` / XHR 调用 PagePilot API。它不会控制其它网站是否可以 iframe 嵌入应用页面。
+## Caddy
 
-iframe 嵌入由后台“运行设置 -> 跨域与嵌入 -> iframe 嵌入”单独控制：
+Caddy 会自动处理普通 HTTP/2 和 WebSocket 代理。域名模式示例：
 
-- 允许任意网站嵌入：不下发 `frame-ancestors` 限制。
-- 只允许本站嵌入：下发 `frame-ancestors 'self'`。
-- 本站 + 白名单来源：下发 `frame-ancestors 'self' https://portal.example.com ...`。
-- 禁止被任何网站嵌入：下发 `frame-ancestors 'none'`。
+~~~caddyfile
+pagepilot.example.com, *.pg.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+~~~
 
-白名单来源必须是完整 origin，例如 `https://portal.example.com` 或 `https://display.example.com:1143`，不要带路径。
+Caddy 自动申请泛域名证书通常也需要 DNS provider 和 DNS-01；请按实际 DNS 服务商配置，确认最终证书包含主站和应用后缀。
 
-## 安全说明
+## 修改 PagePilot 配置
 
-用户上传的 HTML/JS 是不可信内容。PagePilot 会在托管内容响应上加安全头，尤其是 CSP `sandbox`，并且不授予 `allow-same-origin`。这能降低路径模式下用户 JS 与平台同源带来的风险。
+### 后台
 
-泛域名模式仍然是更清晰的隔离方案：每个应用运行在自己的子域名，平台 API 保持在当前 PagePilot 入口；应用子域名只允许读取静态内容，以及提交本应用的访问密码校验，其它平台 API 不会在应用子域名开放。
+管理员进入“运行设置 -> 应用链接规则”，选择 `path`、`domain` 或 `dual`，填写应用域名后缀、协议和外部端口。保存后新请求立即使用新规则；切换前先确保 DNS、证书和代理已就绪。
+
+### 环境变量
+
+适合容器或 systemd：
+
+~~~bash
+HOSTCTL_APP_URL_MODE=domain
+HOSTCTL_APP_DOMAIN_SUFFIX=pg.example.com
+HOSTCTL_APP_URL_SCHEME=https
+HOSTCTL_APP_URL_PORT=
+~~~
+
+修改环境变量后重启服务。完整环境变量说明见 [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md)。
+
+### pagep Skill
+
+Python Skill 提供服务端配置命令，要求当前 Token 有管理员权限：
+
+~~~bash
+python scripts/pagep.py config set-app-url \
+  --server https://pagepilot.example.com \
+  --mode domain \
+  --domain-suffix pg.example.com \
+  --scheme https
+~~~
+
+该命令修改的是服务端运行设置；`pagep config set server` 只保存客户端控制面地址，两者不要混淆。
+
+## 验证当前和历史链接
+
+假设已有站点 `demo`、版本 2：
+
+~~~bash
+# 主站和泛域名 DNS
+dig +short pagepilot.example.com
+dig +short demo.pg.example.com
+
+# 通过域名访问当前应用
+curl -fsS https://demo.pg.example.com/ >/dev/null
+
+# 访问历史版本
+curl -fsS https://demo.pg.example.com/versions/2/ >/dev/null
+
+# 不改本机 DNS，直接把域名解析到代理 IP
+curl --resolve demo.pg.example.com:443:203.0.113.10 \
+  -fsS https://demo.pg.example.com/ >/dev/null
+curl --resolve demo.pg.example.com:443:203.0.113.10 \
+  -fsS https://demo.pg.example.com/versions/2/ >/dev/null
+~~~
+
+非标准端口使用 `:1143`：
+
+~~~bash
+curl --resolve demo.pg.example.com:1143:203.0.113.10 \
+  -fsS https://demo.pg.example.com:1143/ >/dev/null
+~~~
+
+同时检查：
+
+- 浏览器地址栏、接口返回和 iframe 的协议是否都是 `https`。
+- `url`、`domainUrl` 和 `versionDomainUrl` 是否带正确端口。
+- Nginx access log 中 Host 是否分别出现主站和 `demo.pg.example.com`。
+- `/api/device/ws` 是否返回 WebSocket 握手，而不是 400/426。
+- 未知 code 应返回 404，不应把任意子域名当成有效站点。
+
+## 切换、回滚和历史链接
+
+- 从 `path` 切到 `dual`：先完成 DNS/证书/代理，再保存配置；新响应同时提供两种地址。
+- 从 `dual` 切到 `domain`：确认所有消费者已使用 `domainUrl` 或 `versionDomainUrl`，再停止对外宣传路径地址。
+- 回滚到 `path`：把模式改回 `path`，保留 DNS 和代理也不会影响路径链接。
+- 旧路径链接是否继续可用，取决于代理是否仍转发 `/agent/*`；切换模式不会删除版本。
+- 历史版本必须使用带版本号的地址：路径模式 `/agent/{code}/versions/{version}/`，泛域名模式 `https://{code}.{suffix}/versions/{version}/`。删除版本或删除整个站点后，对应地址才会失效。
+
+## 常见错误
+
+| 现象 | 原因和处理 |
+| --- | --- |
+| `demo.pg.example.com` DNS 不存在 | 没有 `*.pg.example.com` 记录，或 DNS 尚未生效。 |
+| 证书报错 | 证书缺少 `*.pg.example.com` 或端口使用了另一套证书。 |
+| 返回 PagePilot 首页而不是应用 | 泛域名没有进入同一个 Nginx `server_name`，或 `Host` 被改成内网地址。 |
+| 返回链接带 `http` | `appURLScheme`、`X-Forwarded-Proto` 或代理终止 TLS 配置不一致。 |
+| HTTPS 市场 iframe 被拦截 | 应用 URL 使用了 HTTP，修正 scheme/port 和反代头后重新请求市场。 |
+| 历史版本 404 | 代理漏掉 `/versions/*`，或版本已删除/文件存储丢失。 |
+| 屏幕控制断开 | 代理没有转发 `/api/device/ws` 的 HTTP/1.1 Upgrade。 |

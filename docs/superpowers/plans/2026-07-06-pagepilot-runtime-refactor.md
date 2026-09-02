@@ -1,5 +1,7 @@
 # PagePilot 运行时大重构实现计划
 
+> 历史执行计划（保留用于追溯）。当前运行时能力和剩余外部验证请以 [README.md](../../../README.md)、[文档索引](../../README.md) 与 [CURRENT_STATUS_AND_TODO.md](../../CURRENT_STATUS_AND_TODO.md) 为准；本文件中的步骤和状态不应直接作为当前任务清单。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框语法来跟进进度。
 
 **目标：** 把 PagePilot 的 HTML/Markdown/ZIP 发布链路重构为可维护、可审计、可搜索、CLI/MCP/Skill 对齐的应用运行时。

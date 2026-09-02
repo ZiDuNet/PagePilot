@@ -1,188 +1,213 @@
 # 生产环境部署
 
-本目录包含 PagePilot / hostctl 在生产环境运行所需的 Docker、Caddy 与 systemd 模板。
+本目录提供 PagePilot 的 Docker、systemd 和 Caddy 模板。建议先阅读：
 
-## Docker 部署
+- [../docs/OPERATIONS.md](../docs/OPERATIONS.md)：上线检查、备份、升级、监控和排障。
+- [APP_URL_MODE.md](APP_URL_MODE.md)：路径、泛域名、双模式和历史版本链接。
+- [DOCKER.md](DOCKER.md)：Docker Compose 的完整步骤。
+- [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md)：环境变量和运行设置。
 
-推荐先用 Docker 验证生产配置，或直接用于单机部署：
+## 选择部署方式
 
-```bash
-cp .env.example .env
-openssl rand -base64 32
-# 将生成的主密钥以及你自己的管理员凭据写入 .env
-docker compose up -d --build
-```
+| 方式 | 适合 | 入口 |
+| --- | --- | --- |
+| Docker Compose | 单机、快速上线、已有容器运维 | [DOCKER.md](DOCKER.md) |
+| systemd + Caddy | Linux VPS、希望由系统服务管理 | 本页 |
+| systemd + Nginx | 已有 Nginx/宝塔/统一网关 | 本页 + [APP_URL_MODE.md](APP_URL_MODE.md) |
 
-完整 Docker 部署、升级、备份、反向代理和排障说明请见 [deploy/DOCKER.md](DOCKER.md)。
-应用访问地址默认使用 `/agent/{code}/`，泛域名或双模式配置请参考 [APP_URL_MODE.md](APP_URL_MODE.md)。
-
-主站不需要配置域名。浏览器页面会按当前打开域名生成首页、后台、Skill/MCP、二维码和路径模式应用链接；反向代理只需要透传 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。
-
-Skill、MCP 和 CLI 通过 `--server`、`PAGEPILOT_SERVER` 或客户端保存的服务器地址连接 PagePilot。这个地址只表示本次 API 控制面入口；路径模式下发布成功返回的应用链接会按该入口生成，泛域名模式下应用链接按后台配置的应用域名生成。旧 `HOSTCTL_SERVER` 仅兼容读取。
-
-Docker 没有固定管理员或固定密码。生产环境必须在 `.env` 中显式设置
-`HOSTCTL_MASTER_KEY`；当数据库中没有可用管理员（`is_admin=1` 且 `is_active=1`）时，还必须设置你自己的
-`HOSTCTL_ADMIN_USERNAME` 和 `HOSTCTL_ADMIN_PASSWORD`。服务只会在此时使用这两个变量创建首个管理员，不会覆盖已有账号。
-
-Docker 默认把这些目录挂载到宿主机的 `./data/docker/` 下：
-
-| 宿主机路径 | 容器路径 | 用途 |
-|---|---|---|
-| `./data/docker/hostctl` | `/var/lib/hostctl` | SQLite 数据库与运行数据 |
-| `./data/docker/sql` | `/var/lib/hostctl/sql` | 人工维护、备份或迁移用的 SQL 文件 |
-| `./data/docker/hosted` | `/var/www/hosted` | 已发布的静态站点文件 |
-| `./data/docker/logs` | `/var/log/hostctl` | 服务日志目录 |
-
-如果外层使用 Nginx、Caddy、宝塔或云厂商负载均衡，只需要把整个站点反向代理到容器端口。`/deploy`、`/market`、`/agents/`、`/screens/`、`/api/*`、`/agent/*` 和应用访问地址都由 PagePilot 自己处理，不要在反向代理里维护路径白名单。旧 `/api-docs.html` 只保留为兼容重定向，后台文档入口是 `/admin?tab=apiDocs`。
-
-`CORS_ALLOW_ORIGINS` 默认留空，也就是默认关闭浏览器跨域访问。只有在另一个网页前端必须跨域调用 PagePilot API 时，才填写明确的 origin 白名单；不要配置成 `*`。
-
-内置前端说明：
-
-- 用户端 React 工程位于 `frontend/user`，构建产物为 `internal/web/user/app`。
-- 后台 React 工程位于 `frontend/admin`，构建产物为 `internal/web/admin/app`。
-- 内置 Skill 下载包位于 `internal/web/skill/hostctl-deploy.zip`，用于保证新部署时 `/skill/pagep.zip` 可直接下载；旧 `/skill/hostctl-deploy.zip` 保留兼容。
-- Go 服务通过 `embed` 打包这些产物，所以源码方式发布二进制前需要先构建前端，并确认内置 Skill ZIP 是最新的。
+无论选择哪种方式，SQLite 数据库和 hosted 文件都必须持久化并一起备份。PagePilot 只监听内网，公网 TLS 和域名由反向代理负责。
 
 ## 1. 准备服务器
 
-Ubuntu 22.04 / Debian 12:
+以下以 Ubuntu 22.04 / Debian 12 为例：
 
-```bash
+~~~bash
 sudo apt update
 sudo apt install -y caddy sqlite3 ca-certificates
-
 sudo useradd -r -s /usr/sbin/nologin -d /var/lib/hostctl -M hostctl
 sudo mkdir -p /var/www/hosted /var/lib/hostctl /var/log/hostctl /backup
 sudo chown -R hostctl:hostctl /var/www/hosted /var/lib/hostctl /var/log/hostctl
-```
+~~~
 
-把域名 A / AAAA 记录指向这台 VPS，Caddy 会自动申请并续签 TLS 证书。
+主站只需要一个 A/AAAA 记录。启用泛域名模式时，还必须添加 `*.pg.example.com` 并申请覆盖主站和泛域名的 TLS 证书，详见 [APP_URL_MODE.md](APP_URL_MODE.md)。
 
 ## 2. 构建并上传二进制
 
-在开发机上执行：
+在开发机执行：
 
-```bash
+~~~bash
 make build-linux
-scp bin/hostctl-server-linux-amd64 root@vps:/usr/local/bin/hostctl-server
-scp bin/pagep-linux-amd64 root@vps:/usr/local/bin/pagep
-ssh root@vps 'chmod +x /usr/local/bin/hostctl-server /usr/local/bin/pagep'
-```
+scp bin/hostctl-server-linux-amd64 root@server:/usr/local/bin/hostctl-server
+scp bin/pagep-linux-amd64 root@server:/usr/local/bin/pagep
+ssh root@server 'chmod +x /usr/local/bin/hostctl-server /usr/local/bin/pagep'
+~~~
 
-如果不使用 `make`，可以手动构建前端和服务端：
+`make build-linux` 会先构建两个前端并刷新内置 Skill ZIP。手动构建时必须保持相同顺序：
 
-```bash
+~~~bash
 (cd frontend/user && npm install && npm run build)
 (cd frontend/admin && npm install && npm run build)
-# 如果改过 skill/hostctl-deploy，请重新生成 internal/web/skill/hostctl-deploy.zip
+python scripts/build_skill_zip.py
 go build -o bin/hostctl-server ./cmd/hostctl-server
 go build -o bin/pagep ./cmd/hostctl
-```
+~~~
 
-## 3. 安装 systemd
+## 3. 配置环境
 
-检查 `deploy/hostctl-server.service` 里的监听地址、数据目录和运行用户是否符合你的服务器环境。
+不要把密码写入 unit 文件。建议创建只允许 root 读取的环境文件：
 
-```bash
+~~~bash
+sudo install -d -m 750 /etc/hostctl
+sudo install -m 600 /dev/null /etc/hostctl/hostctl.env
+sudoedit /etc/hostctl/hostctl.env
+~~~
+
+最小生产配置：
+
+~~~ini
+HOSTCTL_MASTER_KEY=<固定的随机主密钥>
+HOSTCTL_ADMIN_USERNAME=<首个管理员用户名>
+HOSTCTL_ADMIN_PASSWORD=<首个管理员密码>
+REQUIRE_AUTH=true
+
+# 路径模式（不需要泛域名）
+HOSTCTL_APP_URL_MODE=path
+HOSTCTL_APP_URL_SCHEME=https
+
+# 或者泛域名模式（先完成 DNS/证书/反代）
+# HOSTCTL_APP_URL_MODE=domain
+# HOSTCTL_APP_DOMAIN_SUFFIX=pg.example.com
+# HOSTCTL_APP_URL_SCHEME=https
+# HOSTCTL_APP_URL_PORT=
+~~~
+
+`HOSTCTL_MASTER_KEY` 在升级和重启时必须保持不变；管理员用户名和密码只在数据库没有可用管理员时创建首个账号，不会覆盖已有用户。完整配置见 [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md)。
+
+## 4. 安装 systemd
+
+先检查 [hostctl-server.service](hostctl-server.service) 的用户、目录和二进制路径，再安装：
+
+~~~bash
 sudo cp deploy/hostctl-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now hostctl-server
 sudo systemctl status hostctl-server
-```
+~~~
 
-该 unit 默认把 API 跑在 `127.0.0.1:8787`，SQLite 存放在 `/var/lib/hostctl/hostctl.db`，静态站点存放在 `/var/www/hosted`，并开启 `--require-auth`。
+unit 默认：
 
-## 注册、邮箱验证与 OSS
+- 监听 `127.0.0.1:8787`；
+- 数据库为 `/var/lib/hostctl/hostctl.db`；
+- 静态文件为 `/var/www/hosted`；
+- 使用 `--require-auth`；
+- 通过 systemd sandbox 限制权限。
 
-常用环境变量可以直接写入 `docker-compose.yml` 或 systemd unit：
+模板会自动读取可选的 `/etc/hostctl/hostctl.env`；文件不存在时服务仍可启动，但生产环境必须创建并填写主密钥。修改环境文件后执行 `sudo systemctl daemon-reload && sudo systemctl restart hostctl-server`。
 
-```yaml
-HOSTCTL_ALLOW_REGISTRATION: "true"
-HOSTCTL_STORAGE_BACKEND: "local" # local 或 oss
-# HOSTCTL_STORAGE_BACKEND: "oss"
-# HOSTCTL_OSS_ENDPOINT: "https://oss-cn-hangzhou.aliyuncs.com" # 也可省略协议，系统默认按 HTTPS 处理
-# HOSTCTL_OSS_BUCKET: "pagepilot-assets"
-# HOSTCTL_OSS_ACCESS_KEY_ID: "..."
-# HOSTCTL_OSS_ACCESS_KEY_SECRET: "..."
-# HOSTCTL_OSS_PREFIX: "prod/pagepilot"
-```
+## 5. 配置 Caddy
 
-- `HOSTCTL_ALLOW_REGISTRATION=false` 会关闭公开注册；登录页只保留登录入口，管理员仍可在后台维护用户。
-- `HOSTCTL_STORAGE_BACKEND=oss` 时，新发布版本会写入阿里云 OSS；每个版本都会在 SQLite 记录自己的 `storage_backend` 和 `storage_prefix`，旧库升级时历史版本默认标记为 `local`。预览读取、源码下载、覆盖版本、删除版本和删除站点都会按版本自己的存储归属执行，避免切换存储后旧作品直接 404。OSS 对象不存在时仍会回退本地 `/var/www/hosted` 历史目录作为兜底；历史文件不会自动迁移到 OSS，确认稳定后可再单独迁移或清理本地旧文件。
-- 开启邮箱验证后，注册页会先通过图片验证码请求邮箱验证码，再用 6 位邮箱验证码完成注册；后台运行设置会展示 SMTP 是否配置完整。
-## 4. 安装 Caddy
+### 路径模式
 
-编辑 `deploy/Caddyfile`，替换其中的 `host.example.com`。
+编辑 [Caddyfile](Caddyfile)，把 `host.example.com` 改为主站：
 
-```bash
+~~~caddyfile
+pagepilot.example.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8787
+}
+~~~
+
+安装并验证：
+
+~~~bash
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
-```
+~~~
 
-Caddy 直接把整个站点反向代理到 hostctl 即可。hostctl 自己处理首页、后台、API、Skill 下载、应用访问与应用访问路由，不需要在 Caddy 里维护路径白名单。
+### 泛域名/双模式
 
-后台“Skill & MCP”页只维护 `pagep.zip` 下载包，不再直接编辑 Skill 源文件。需要调整 Skill 时，请在仓库或本地修改并打包，再上传 ZIP 覆盖内置包。
+同一个 Caddy site 接收主站和泛域名：
 
-## 5. 首次登录
+~~~caddyfile
+pagepilot.example.com, *.pg.example.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8787
+}
+~~~
 
-首次登录请使用你在部署环境中配置的管理员凭据，并随后进入后台“账号设置”更新密码。
+Caddy 自动签发泛域名证书通常需要 DNS provider 和 DNS-01；请确认最终证书包含 `pagepilot.example.com` 与 `*.pg.example.com`。Caddy 不需要手动配置 WebSocket Upgrade。
 
-systemd 部署在没有可用管理员的首次启动时也必须显式提供管理员凭据（建议通过受限的环境文件注入）：
+## 6. 使用 Nginx 或宝塔
 
-```ini
-Environment=HOSTCTL_MASTER_KEY=<generated-secret>
-Environment=HOSTCTL_ADMIN_USERNAME=<your-admin-username>
-Environment=HOSTCTL_ADMIN_PASSWORD=<your-strong-password>
-```
+外层 Nginx/宝塔必须把整个站点转发到 `127.0.0.1:8787`，并保留外部 Host、协议和端口。泛域名还要让 `server_name` 同时包含主站和 `*.pg.example.com`，并转发 `/api/device/ws` 的 WebSocket。
 
-主密钥必须在升级和重启期间保持不变；管理员变量只会在数据库没有可用管理员（`is_admin=1` 且 `is_active=1`）时生效，不会覆盖已有账号。
+完整 Nginx 配置（含非标准端口和 WebSocket）见 [APP_URL_MODE.md](APP_URL_MODE.md)。不要只代理 `/api` 或 `/agent`，否则后台、市场、Skill、屏幕和历史版本会出现 404。
 
-## 6. 验证
+## 7. 首次登录和验证
 
-```bash
-curl -s https://host.example.com/api/health
-curl -s https://host.example.com/openapi.json | jq '.info.title'
-curl -fsS https://host.example.com/deploy >/dev/null
-curl -fsSI https://host.example.com/api-docs.html | grep -i 'location: /admin?tab=apiDocs'
-curl -fsS https://host.example.com/screens/ >/dev/null
-curl -fsS https://host.example.com/admin >/dev/null
-curl -fsS https://host.example.com/skill/pagep.zip >/dev/null
-```
+首次启动后使用环境文件里的管理员凭据登录 `/admin`，然后进入“账号设置”修改密码。验证：
 
-登录后台后，也可以在 Agent 技能里执行：
+~~~bash
+curl -fsS https://pagepilot.example.com/api/health
+curl -fsS https://pagepilot.example.com/openapi.json | jq '.info.title'
+curl -fsS https://pagepilot.example.com/deploy >/dev/null
+curl -fsS https://pagepilot.example.com/market >/dev/null
+curl -fsS https://pagepilot.example.com/admin >/dev/null
+curl -fsS https://pagepilot.example.com/skill/pagep.zip >/dev/null
+~~~
 
-```bash
-python scripts/pagep.py \
-  --server https://host.example.com \
-  doctor
-```
+泛域名模式再验证一个真实站点和历史版本：
 
-## 备份
+~~~bash
+curl -fsS https://demo.pg.example.com/ >/dev/null
+curl -fsS https://demo.pg.example.com/versions/2/ >/dev/null
+~~~
 
-需要同时备份 SQLite 数据库和托管文件：
+## 8. 注册、邮箱和 OSS
 
-```bash
+按需在环境文件中配置：
+
+~~~ini
+HOSTCTL_ALLOW_REGISTRATION=true
+HOSTCTL_EMAIL_VERIFICATION_ENABLED=false
+HOSTCTL_STORAGE_BACKEND=local
+~~~
+
+启用邮箱验证时配置 SMTP host、from、端口和安全模式；启用 OSS 时配置 endpoint、bucket、access key、secret 和 prefix。切换存储不会自动迁移历史文件，每个版本按数据库中的存储归属读取。完整说明见 [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md)。
+
+## 9. 备份、监控和升级
+
+备份：
+
+~~~bash
 sudo systemctl stop hostctl-server
-sudo tar -czf /backup/hostctl-$(date +%F).tar.gz /var/lib/hostctl /var/www/hosted
+sudo tar -czf /backup/pagepilot-$(date +%F).tar.gz /var/lib/hostctl /var/www/hosted
 sudo systemctl start hostctl-server
-```
+~~~
 
-如果要降低停机时间，可以使用 SQLite 备份工具导出数据库，再归档 `/var/www/hosted`。
+监控：
 
-## 监控
-
-```bash
+~~~bash
 journalctl -u hostctl-server -f
 journalctl -u caddy -f
 df -h /var/www/hosted /var/lib/hostctl
-```
+~~~
 
-推荐外部检查项：
+升级前备份并保留旧二进制，完成后运行：
 
-- `GET /api/health`
-- `GET /openapi.json`
-- `GET /deploy`
-- `GET /api-docs.html`：兼容重定向到 `/admin?tab=apiDocs`
-- `GET /screens/`
+~~~bash
+sudo systemctl restart hostctl-server
+curl -fsS https://pagepilot.example.com/api/health
+node scripts/legacy-upgrade-qa.mjs
+~~~
+
+`node scripts/docker-upgrade-qa.mjs` 用于真实容器升级演练，需要 Docker Compose 和 Go；它必须使用临时目录。更多升级和恢复步骤见 [../docs/OPERATIONS.md](../docs/OPERATIONS.md)。
+
+## 安全边界
+
+- 不要暴露 `8787` 到公网，生产流量走 HTTPS 反向代理。
+- 不要轮换已上线环境的 `HOSTCTL_MASTER_KEY`。
+- 不要提交 `/etc/hostctl/hostctl.env`、SQLite、hosted 文件、Token 或备份包。
+- CORS 与 iframe 嵌入是两套独立策略，按 [配置参考](../docs/CONFIGURATION.md) 设置。
+- 用户上传的 HTML/JS 会运行在托管应用上下文；需要源隔离时启用泛域名模式并保留合理 CSP。

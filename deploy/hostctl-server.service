@@ -1,6 +1,6 @@
 [Unit]
-Description=hostctl static hosting control plane
-Documentation=https://github.com/yourorg/hostctl
+Description=PagePilot static hosting control plane
+Documentation=https://github.com/ZiDuNet/PagePilot
 After=network-online.target
 Wants=network-online.target
 
@@ -11,6 +11,7 @@ Group=hostctl
 WorkingDirectory=/var/lib/hostctl
 StateDirectory=hostctl
 LogsDirectory=hostctl
+EnvironmentFile=-/etc/hostctl/hostctl.env
 
 ExecStart=/usr/local/bin/hostctl-server \
 	--addr 127.0.0.1:8787 \

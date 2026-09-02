@@ -1,5 +1,7 @@
 # PagePilot React 前端整改计划
 
+> 历史计划（保留用于追溯）。当前前端能力和验证范围请以 [README.md](../../../README.md)、[文档索引](../../README.md) 与 [CURRENT_STATUS_AND_TODO.md](../../CURRENT_STATUS_AND_TODO.md) 为准；本文件中的后续阶段不代表当前未完成事项。
+
 ## 目标
 
 把用户端和后台从多份原生 HTML 页面逐步迁移到框架化实现，同时保持现有 API、部署、匿名会话、Token、屏幕投放和详情页访问不破坏。

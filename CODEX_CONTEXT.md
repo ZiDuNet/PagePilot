@@ -1,137 +1,92 @@
 # PagePilot Codex Context
 
-This file is committed on purpose so another machine or Codex session can resume development without relying on local chat memory.
+This file is committed so another machine or Codex session can resume work without relying on local chat memory. It is a maintainer note, not the end-user manual.
 
-## Project Identity
+## Project identity
 
-- Product name: PagePilot.
+- Product: PagePilot.
 - Repository: `ZiDuNet/PagePilot`.
-- Current release version: `0.3.1`.
-- Main working branch after this cleanup: `main`.
-- Historical implementation branch: `codex/public-url-embed-settings`; it has been promoted into `main`.
-- Do not commit `竞品/`; it is a local read-only competitor reference checkout.
+- Current release: `0.3.1`.
+- Main branch: `main`.
+- Primary CLI/MCP names: `pagep` and `pagep-mcp`; old `hostctl` names remain compatibility aliases.
+- Do not commit the local competitor checkout or user demo data.
 
-## Product Direction
+## Current product surface
 
-PagePilot is an Agent-first publishing platform for HTML, Markdown, ZIP, and multi-file static sites. Core product surfaces:
+- User homepage: `/`.
+- Manual deploy: `/deploy`.
+- Creation Market: `/market`.
+- Agent/Skill/MCP guide: `/agents/`.
+- Screen guide: `/screens/`.
+- Admin console: `/admin`.
+- Admin API docs: `/admin?tab=apiDocs`.
+- Machine API contract: `/openapi.json`.
+- Skill download: `/skill/pagep.zip`; old `/skill/hostctl-deploy.zip` remains compatible.
 
-- Public homepage.
-- Creation Market at `/market`.
-- Manual deploy at `/deploy`.
-- Agent / Skill / MCP page at `/agents/`.
-- Screen publishing page at `/screens/`.
-- User/admin console at `/admin`.
-- API documentation is inside the admin console at `/admin?tab=apiDocs`; machine-readable OpenAPI remains `/openapi.json`.
+PagePilot accepts single HTML, Markdown, ZIP and multi-file static sites. It manages versions, access passwords, visibility, market reuse, source permissions, audit logs, tokens, and Android screen publishing.
 
-The public UI should feel like a polished PagePilot product, not a generic admin template. Current theme uses blue/cyan PagePilot branding, but future redesigns may change the visual system if they improve clarity and quality.
+## Runtime facts
 
-## Runtime And Storage
+- Default app URL mode is `path`: `/agent/{code}/`.
+- `domain` and `dual` use `HOSTCTL_APP_DOMAIN_SUFFIX`, `HOSTCTL_APP_URL_SCHEME` and `HOSTCTL_APP_URL_PORT`.
+- Domain mode requires wildcard DNS, a certificate covering the main host and wildcard host, and one reverse proxy that forwards the whole site. See [deploy/APP_URL_MODE.md](deploy/APP_URL_MODE.md).
+- Browser sessions use HttpOnly SameSite=Lax cookies. CLI/Skill/MCP use Bearer tokens. Devices use Device Tokens.
+- New sites consume one app quota. Appending versions does not; deleting the whole site restores one slot, deleting one version does not.
+- Local storage uses `/var/www/hosted` in production, `data/hosted` in dev, and `./data/docker/hosted` on the Docker host.
+- SQLite metadata uses `/var/lib/hostctl/hostctl.db` in production and `./data/docker/hostctl` on the Docker host.
+- OSS and email verification are implemented behind configuration but require live provider validation before release claims.
+- Production requires a stable `HOSTCTL_MASTER_KEY`. Empty databases also need bootstrap admin credentials.
 
-- Default app URL mode is path mode: `/agent/{code}/`.
-- Domain and dual modes are still supported through env/config: `HOSTCTL_APP_URL_MODE`, `HOSTCTL_APP_DOMAIN_SUFFIX`, `HOSTCTL_APP_URL_SCHEME`, `HOSTCTL_APP_URL_PORT`.
-- Production Docker has no fixed administrator or password. Set `HOSTCTL_ADMIN_USERNAME` and `HOSTCTL_ADMIN_PASSWORD` explicitly before starting with an empty database; existing databases are never overwritten. `HOSTCTL_MASTER_KEY` is also mandatory in production.
-- Uploaded files persist through the configured storage backend:
-  - `HOSTCTL_STORAGE_BACKEND=local` uses local filesystem paths.
-  - `HOSTCTL_STORAGE_BACKEND=oss` uses Aliyun OSS for publish, preview/read, source download, version overwrite cleanup, version delete, and whole-site delete.
-- Local filesystem paths:
-  - Docker host: `./data/docker/hosted`
-  - Container: `/var/www/hosted`
-  - Dev mode: `./data/hosted`
-- SQLite data persists under Docker host `./data/docker/hostctl`.
-- OSS envs: `HOSTCTL_OSS_ENDPOINT`, `HOSTCTL_OSS_BUCKET`, `HOSTCTL_OSS_ACCESS_KEY_ID`, `HOSTCTL_OSS_ACCESS_KEY_SECRET`, `HOSTCTL_OSS_PREFIX`, `HOSTCTL_OSS_PUBLIC_BASE_URL`.
-- Email registration verification is implemented behind env/config: captcha -> email code -> register -> `email_verified=true`; admin user management exposes email and verification state.
+## Build and test
 
-## Important Compatibility Rules
-
-- Keep `/skill/pagep.zip` as the primary Skill download URL.
-- Keep `/skill/hostctl-deploy.zip` as a compatibility alias.
-- Keep compatibility for old deploy APIs used by existing Skill/CLI/MCP flows.
-- New UI/docs should use PagePilot and `pagep` naming.
-- Avoid reintroducing public `/api-docs.html` navigation; docs belong in admin.
-- Do not implement short-link sharing until explicitly requested. Current primary app URL is `/agent/{code}/`; wildcard app domains are reserved/supported separately.
-
-## Build And Test Commands
-
-Use these before committing:
-
-```bash
-go test -count=1 ./cmd/... ./internal/... ./apps/...
-npm run build --prefix frontend/admin
-npm run build --prefix frontend/user
+~~~bash
+make build
+make test
+go test -count=1 ./cmd/... ./internal/...
+(cd frontend/user && npm run typecheck && npm run build)
+(cd frontend/admin && npm run typecheck && npm run build)
+node --test frontend/user/scripts/*.test.mjs
+node --test frontend/admin/scripts/*.test.mjs
 python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py skill/hostctl-deploy/scripts/pagep.py
 python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
-```
+python scripts/build_skill_zip.py
+node scripts/runtime-qa.mjs
+node scripts/visual-qa.mjs
+node scripts/legacy-upgrade-qa.mjs
+node scripts/docker-upgrade-qa.mjs
+~~~
 
-Do not use plain `go test ./...` while the local reference checkout exists under this workspace; it includes nested Go files and causes invalid import path failures.
+The runtime, visual and legacy scripts use temporary data. Docker upgrade QA requires Docker Compose and Go and must not point at production data. If a local competitor checkout makes a broad Go pattern noisy, use the targeted command above.
 
-## Skill Packaging
+## Implementation constraints
 
-After editing `skill/hostctl-deploy`, rebuild:
+- Keep URL fields and compatibility routes stable. API changes must update Go types, OpenAPI, frontend, CLI/Skill/MCP and [docs/API_INTEGRATION.md](docs/API_INTEGRATION.md).
+- Use service-returned `url`/`pathUrl`/`domainUrl`/`versionUrl`. Clients must not reconstruct public URLs.
+- Keep `filename` optional; let server-side Bundle detection choose normal HTML/Markdown/ZIP entries.
+- Preserve ZIP path safety and structured `errorCode`/`stage`/`hint` responses.
+- Keep access-password viewing separate from source download and template reuse.
+- Keep CORS limited to API/OpenAPI; iframe embedding is controlled separately by CSP frame-ancestors.
+- Keep `/api/device/ws` WebSocket support and proxy Upgrade headers.
+- Keep old Skill and binary aliases, but use PagePilot/pagep in new UI and docs.
+- Do not add public API-doc navigation or short-link sharing without an explicit product request.
+- Do not remove `demo/` or other user-created untracked files.
 
-PowerShell-safe rebuild command:
+## Current status and remaining external checks
 
-```powershell
-@'
-from pathlib import Path
-import zipfile
-root = Path('skill/hostctl-deploy')
-out = Path('internal/web/skill/hostctl-deploy.zip')
-with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
-    for path in sorted(root.rglob('*')):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root)
-        if '__pycache__' in rel.parts or path.suffix in {'.pyc', '.pyo'}:
-            continue
-        z.write(path, Path('pagep') / rel)
-'@ | python -
-```
+Implemented: multipart and ZIP Bundle publishing, Markdown rendering/CSP, FTS market search, versions and quotas, source/reuse policies, access-password tickets, audit logs, screen control, embedded frontend/Skill assets, URL variants, and migration/QA scripts. See [docs/CURRENT_STATUS_AND_TODO.md](docs/CURRENT_STATUS_AND_TODO.md).
 
-## Current Completion State
+Remaining checks are external rather than missing menus:
 
-The latest pushed remediation commit before this context update was `ad49ce6`.
+1. Run real DNS/TLS/reverse-proxy tests for path/domain/dual, including a non-standard public port.
+2. Run real Aliyun OSS publish/read/overwrite/delete/restore tests.
+3. Run real SMTP registration and failure-path tests.
+4. Review production-scale visual data and complex ZIP/Markdown/security cases.
+5. Run Docker old-database upgrade and rollback rehearsals on the target host.
 
-Implemented and verified in the current round:
+## Documentation workflow
 
-- PagePilot/pagep naming alignment across CLI/MCP/docs while keeping compatibility aliases.
-- Embedded user/admin SPA assets, updated logo assets, and removal of old standalone HTML pages.
-- Email fields and admin user management support for `email` and `email_verified`.
-- Old SQLite migration fix for `admin_users.email`: the email index is created after migrations add the column.
-- Registration email-verification flow behind config/env.
-- OSS storage adapter and storage abstraction for deployed files.
-- Default publish visibility is `unlisted`.
-- Anonymous/public visibility tests.
-- Markdown hosted rendering improvements: code blocks, tables, task lists, Mermaid/math semantic blocks, relative images, safer URL handling.
-- Stricter no-script CSP for hosted Markdown while keeping HTML app compatibility.
-- Skill ZIP includes Reveal.js assets as optional user-bundled static presentation support.
-- README, Docker/deploy docs, remediation plan, and Skill docs were updated.
-- `docs/CURRENT_STATUS_AND_TODO.md` is the canonical checklist for the current code state and remaining productization work.
-
-Verification commands that passed:
-
-```bash
-go test -count=1 ./cmd/... ./internal/... ./apps/...
-npm run build --prefix frontend/user
-npm run build --prefix frontend/admin
-python -m py_compile skill/hostctl-deploy/scripts/hostctl_deploy.py skill/hostctl-deploy/scripts/pagep.py
-python skill/hostctl-deploy/scripts/hostctl_deploy_test.py
-```
-
-## Known Follow-Ups
-
-See `docs/CODEX_HANDOFF.md` for the detailed unfinished checklist.
-
-High-priority remaining work:
-
-- Runtime smoke-test a clean checkout and an upgraded old SQLite database.
-- Productize admin audit-log API/UI. Store tables and methods exist, but no admin API/page is exposed yet.
-- Productize file tree, Bundle type, security mode, and reuse-parameter display in creation-market detail and admin site detail.
-- Upgrade Markdown from safe semantic rendering to a maintained local high-level pipeline only after CSP/XSS review.
-- Complete template reuse flow, runtime visual QA, and real Docker old-database upgrade validation.
-- Full UI/UX review of homepage, market, deploy, screens, login/register, encrypted page, and all admin pages.
-- Marketplace product-logic review for categories, tags, owned updates, anonymous claim, favorites, deletes, and permissions.
-- Live-test SMTP email verification with a real provider, and decide whether login should require verified email for non-admin accounts.
-- Live-test OSS with real Aliyun credentials; still consider local-to-OSS migration tooling and signed/private object access policy.
-- Decide whether to keep the minimal safe Markdown renderer or add an advanced pipeline: server-side Markdown parsing, highlight.js, KaTeX, CSP nonce handling, render cache, theme switching, and a platform-owned Mermaid browser runtime.
-- Continue tightening preview isolation: independent preview endpoints, sandbox/CSP by content type, and no parent-context access from user HTML.
-- Consider public share-key separation later, but not in the current product plan.
+- End-user changes: update [README.md](README.md) and the relevant file under [docs/](docs/README.md).
+- Deployment/config changes: update [docs/CONFIGURATION.md](docs/CONFIGURATION.md), [docs/OPERATIONS.md](docs/OPERATIONS.md), and [deploy/](deploy/README.md).
+- Skill changes: update `skill/hostctl-deploy/SKILL.md`, run its tests, rebuild `internal/web/skill/hostctl-deploy.zip`.
+- Frontend changes: build both SPAs before compiling a release binary.
+- Before handoff: run `git diff --check`, link checks, focused tests, and report anything not run.

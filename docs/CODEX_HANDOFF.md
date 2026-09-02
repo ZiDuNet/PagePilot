@@ -1,6 +1,8 @@
 # PagePilot Codex Handoff
 
-This document is a handoff note for continuing PagePilot development on another machine or in another Codex session.
+> 历史交接记录（保留用于追溯）。当前功能、配置、部署和剩余风险请先阅读 [README.md](../README.md)、[docs/README.md](README.md) 与 [CURRENT_STATUS_AND_TODO.md](CURRENT_STATUS_AND_TODO.md)。本文件中的日期、分支和未完成清单可能早于当前代码，不应直接当作操作手册。
+
+This document is a historical handoff note for continuing PagePilot development on another machine or in another Codex session.
 
 Last updated: 2026-07-07
 Latest commit: use `git log -1 --oneline` on the active branch.

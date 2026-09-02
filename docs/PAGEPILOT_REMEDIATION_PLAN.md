@@ -1,5 +1,7 @@
 # PagePilot 全盘整改技术计划
 
+> 历史整改计划（保留用于追溯）。当前功能、配置、部署和剩余风险请先阅读 [README.md](../README.md)、[文档索引](README.md) 与 [CURRENT_STATUS_AND_TODO.md](CURRENT_STATUS_AND_TODO.md)。本文件中的阶段、日期和待办可能早于当前代码，不应直接当作操作手册。
+
 本文档用于约束 PagePilot 后续整改顺序、产品取舍、接口默认值、Skill/CLI/MCP 行为和验收标准。后续开发按阶段推进，每阶段完成后必须同步测试、构建和文档。
 
 ## 2026-07-07 当前验证状态

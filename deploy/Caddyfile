@@ -4,6 +4,11 @@
 #   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
 #   sudo caddy validate --config /etc/caddy/Caddyfile
 #   sudo systemctl reload caddy
+#
+# Path mode only needs the main host below. For domain/dual mode, replace the
+# site label with both the main host and the application wildcard, for example:
+#   pagepilot.example.com, *.pg.example.com {
+# Caddy wildcard certificates normally require a DNS provider and DNS-01.
 
 host.example.com {
 	encode gzip
